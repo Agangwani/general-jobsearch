@@ -48,6 +48,33 @@ def parse_when(value) -> Optional[datetime]:
     return None
 
 
+def walk_collect(obj, predicate, _out=None) -> list[dict]:
+    """Recursively collect every dict in a nested JSON payload that satisfies
+    `predicate`. Lets browser fetchers harvest job records from captured XHR
+    bodies without hard-coding each site's response nesting."""
+    if _out is None:
+        _out = []
+    if isinstance(obj, dict):
+        if predicate(obj):
+            _out.append(obj)
+        else:
+            for value in obj.values():
+                walk_collect(value, predicate, _out)
+    elif isinstance(obj, list):
+        for item in obj:
+            walk_collect(item, predicate, _out)
+    return _out
+
+
+def first(record: dict, keys: tuple[str, ...], default=""):
+    """Return the first non-empty value among `keys` in `record`."""
+    for key in keys:
+        value = record.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    return default
+
+
 _WORKDAY_DAYS_RE = re.compile(r"posted\s+(\d+)\+?\s+days?\s+ago", re.I)
 
 

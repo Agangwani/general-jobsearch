@@ -15,6 +15,14 @@ a report that prioritizes **recently posted** jobs.
 2. **Fetch** — every enabled board is queried in parallel for senior
    software engineer roles. A broken board never sinks the run; it lands in
    the report's "needs attention" section instead.
+   Boards with **no public API** (Goldman Sachs, JPMorgan, Millennium,
+   TikTok, Jane Street, D. E. Shaw) are scraped with **headless Chromium
+   (Playwright)** after the API pass: the browser loads the company's own
+   career page and captures the JSON its frontend fetches (XHR capture),
+   which is far more durable than CSS selectors. Apply links always point at
+   the company's own site — direct applications only, never a third-party
+   board. Meta and Apple also get a browser fallback for when their
+   undocumented APIs break.
 3. **Filter** — title regexes (senior/staff SWE, excluding intern, manager,
    principal, mobile, ...) and NYC location matching, both editable in
    `config/settings.yaml`.
@@ -30,8 +38,8 @@ a report that prioritizes **recently posted** jobs.
    never seen before (tracked in `data/seen_jobs.json`) are flagged 🆕.
 6. **Report** — `reports/latest.md` (plus a dated copy, CSV, and JSON) with:
    companies ranked by fit, top jobs by recency-weighted fit, new-since-last-run,
-   broken boards, and a "check manually" list for companies with no
-   scrapable board (Jane Street, Goldman Sachs, JPMorgan, ...).
+   broken boards, and a "check manually" list (currently just LinkedIn, whose
+   careers site sits behind bot protection that scraping would violate).
 
 ## Daily schedule
 
@@ -49,10 +57,14 @@ To run locally instead, `crontab -e`:
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium   # one-time, for browser-scraped boards
 
 python -m jobsearch run      # full daily run → reports/latest.md
 python -m jobsearch verify   # check every configured board is reachable
 ```
+
+If Chromium isn't installed the run still works — browser-scraped boards are
+skipped with an actionable note in the report instead of failing the run.
 
 > **Note:** ATS board slugs in `companies.yaml` are best-effort and companies
 > migrate ATS vendors over time. Run `python -m jobsearch verify` (or just

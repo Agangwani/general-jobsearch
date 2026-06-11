@@ -50,6 +50,8 @@ ranking:
 
 fetch:
   timeout_seconds: 30
+  # Per-page timeout for browser-scraped boards (headless Chromium).
+  browser_timeout_seconds: 45
   max_workers: 8
   # Cap on postings pulled per company before filtering (board dumps can be huge).
   max_per_company: 1500

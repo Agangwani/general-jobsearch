@@ -58,3 +58,18 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     if not results:
         raise RuntimeError("Meta GraphQL returned no job_search results (doc_id may have rotated)")
     return [parse_job(raw, company.name) for raw in results]
+
+
+def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]:
+    """Fallback: load metacareers.com search in Chromium and capture the
+    GraphQL XHR the page itself issues — sidesteps the rotating doc_id."""
+    from ..utils import walk_collect
+
+    url = "https://www.metacareers.com/jobs?offices[0]=New%20York%2C%20NY&q=software%20engineer"
+    payloads = runtime.capture_json(url, r"metacareers\.com/graphql")
+    records = walk_collect(
+        payloads, lambda d: "title" in d and "id" in d and ("locations" in d or "teams" in d)
+    )
+    if not records:
+        raise RuntimeError("no job records in captured metacareers.com GraphQL responses")
+    return [parse_job(raw, company.name) for raw in records]

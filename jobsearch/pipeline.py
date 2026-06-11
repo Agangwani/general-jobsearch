@@ -4,8 +4,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from .browser import BrowserRuntime, BrowserUnavailable
 from .config import load_companies, load_settings
-from .fetchers import FETCHERS
+from .fetchers import BROWSER_FETCHERS, FETCHERS
 from .filters import JobFilter
 from .http import make_session
 from .models import Company, FetchError, JobPosting
@@ -22,19 +23,24 @@ def fetch_all(
     jobs: list[JobPosting] = []
     errors: list[FetchError] = []
 
+    enabled = [c for c in companies if c.enabled]
+    api_companies = [c for c in enabled if c.ats in FETCHERS]
+    browser_jobs: list[tuple[Company, str, str]] = [  # (company, browser ats, primary error)
+        (c, c.ats, "") for c in enabled if c.ats in BROWSER_FETCHERS
+    ]
+    for company in enabled:
+        if company.ats not in FETCHERS and company.ats not in BROWSER_FETCHERS:
+            errors.append(FetchError(company.name, f"unknown ats type: {company.ats}"))
+
     def fetch_one(company: Company) -> list[JobPosting]:
-        fetcher = FETCHERS.get(company.ats)
-        if fetcher is None:
-            raise RuntimeError(f"unknown ats type: {company.ats}")
         session = make_session(timeout)
         try:
-            return fetcher(company, session, settings)
+            return FETCHERS[company.ats](company, session, settings)
         finally:
             session.close()
 
-    enabled = [c for c in companies if c.enabled]
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(fetch_one, c): c for c in enabled}
+        futures = {pool.submit(fetch_one, c): c for c in api_companies}
         for future in as_completed(futures):
             company = futures[future]
             try:
@@ -42,8 +48,36 @@ def fetch_all(
                 jobs.extend(fetched)
                 print(f"  {company.name}: {len(fetched)} postings", file=sys.stderr)
             except Exception as exc:  # noqa: BLE001 — one bad board must not sink the run
-                errors.append(FetchError(company.name, f"{type(exc).__name__}: {exc}"))
-                print(f"  {company.name}: ERROR {exc}", file=sys.stderr)
+                error = f"{type(exc).__name__}: {exc}"
+                fallback = company.params.get("fallback")
+                if fallback in BROWSER_FETCHERS:
+                    print(f"  {company.name}: API failed ({exc}); queueing browser fallback", file=sys.stderr)
+                    browser_jobs.append((company, fallback, error))
+                else:
+                    errors.append(FetchError(company.name, error))
+                    print(f"  {company.name}: ERROR {exc}", file=sys.stderr)
+
+    if browser_jobs:
+        browser_timeout = settings.get("fetch", {}).get("browser_timeout_seconds", 45)
+        try:
+            with BrowserRuntime(browser_timeout) as runtime:
+                for company, ats, primary_error in browser_jobs:
+                    try:
+                        fetched = BROWSER_FETCHERS[ats](company, runtime, settings)
+                        jobs.extend(fetched)
+                        print(f"  {company.name}: {len(fetched)} postings (browser)", file=sys.stderr)
+                    except Exception as exc:  # noqa: BLE001
+                        error = f"{type(exc).__name__}: {exc}"
+                        if primary_error:
+                            error = f"API: {primary_error}; browser fallback: {error}"
+                        errors.append(FetchError(company.name, error))
+                        print(f"  {company.name}: ERROR {exc}", file=sys.stderr)
+        except BrowserUnavailable as exc:
+            for company, _, primary_error in browser_jobs:
+                error = f"{exc}" if not primary_error else f"API: {primary_error}; {exc}"
+                errors.append(FetchError(company.name, error))
+            print(f"  Browser pass skipped: {exc}", file=sys.stderr)
+
     return jobs, errors
 
 

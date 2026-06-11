@@ -50,3 +50,18 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     data = post_json(session, API, json=body, headers=headers)
     results = (data.get("res") or data).get("searchResults", [])
     return [parse_job(raw, company.name) for raw in results]
+
+
+def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]:
+    """Fallback: load the jobs.apple.com search page in Chromium and capture
+    its own search XHR — sidesteps the CSRF token dance entirely."""
+    from ..utils import walk_collect
+
+    url = f"{SEARCH_PAGE}?location=new-york-city-NYC&sort=newest&search=senior%20software%20engineer"
+    payloads = runtime.capture_json(url, r"jobs\.apple\.com/api")
+    records = walk_collect(
+        payloads, lambda d: ("postingTitle" in d or "transformedPostingTitle" in d) and ("positionId" in d or "id" in d)
+    )
+    if not records:
+        raise RuntimeError("no job records in captured jobs.apple.com responses")
+    return [parse_job(raw, company.name) for raw in records]

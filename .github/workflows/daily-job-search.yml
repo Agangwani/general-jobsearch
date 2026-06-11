@@ -28,6 +28,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Get Playwright version
+        id: playwright-version
+        run: echo "version=$(pip show playwright | awk '/^Version:/{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Chromium for browser-scraped boards
+        run: playwright install --with-deps chromium
+
       - name: Run tests
         run: pip install pytest && python -m pytest -q
 

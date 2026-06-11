@@ -14,11 +14,13 @@ companies:
   - name: Meta
     tags: [faang, top50]
     ats: meta
+    fallback: browser_meta
     careers_url: https://www.metacareers.com/jobs?offices[0]=New%20York%2C%20NY
 
   - name: Apple
     tags: [faang, top50]
     ats: apple
+    fallback: browser_apple
     careers_url: https://jobs.apple.com/en-us/search?location=new-york-city-NYC
 
   - name: Amazon
@@ -369,24 +371,55 @@ companies:
     board: imc
     careers_url: https://careers.imc.com/
 
-# Companies whose career sites have no stable public API. The report links
-# them in a "check manually" section so they are never silently forgotten.
-manual_check:
-  - name: Jane Street
-    careers_url: https://www.janestreet.com/join-jane-street/open-roles/?type=experienced-candidates&location=new-york
-  - name: Goldman Sachs
-    careers_url: https://higher.gs.com/results?LOCATION=New%20York&page=1&sort=POSTED_DATE
-  - name: JPMorgan Chase
-    careers_url: https://careers.jpmorgan.com/us/en/search-results?qcountry=United%20States&qcity=New%20York
-  - name: Morgan Stanley
-    careers_url: https://morganstanley.eightfold.ai/careers?location=New%20York
-  - name: D. E. Shaw
-    careers_url: https://www.deshaw.com/careers/choose-your-path
-  - name: Millennium
-    careers_url: https://www.mlp.com/job-listings/
-  - name: LinkedIn
-    careers_url: https://careers.linkedin.com/jobs?location=New%20York
-  - name: TikTok
-    careers_url: https://lifeattiktok.com/search?location=New%20York
   - name: Jump Trading
+    tags: [top50]
+    ats: greenhouse
+    board: jumptrading
     careers_url: https://www.jumptrading.com/careers/
+
+  - name: Morgan Stanley
+    tags: [top50]
+    ats: eightfold
+    base_url: https://morganstanley.eightfold.ai
+    domain: morganstanley.com
+    careers_url: https://morganstanley.eightfold.ai/careers?location=New%20York
+
+  # ------------------------------------ Browser-scraped (no public API) ---
+  # These run through headless Chromium after the API pass; apply links still
+  # point at the company's own site.
+  - name: Goldman Sachs
+    tags: [top50]
+    ats: browser_goldman
+    careers_url: https://higher.gs.com/results?LOCATION=New%20York&page=1&sort=POSTED_DATE
+
+  - name: JPMorgan Chase
+    tags: [top50]
+    ats: browser_jpmorgan
+    careers_url: https://careers.jpmorgan.com/us/en/search-results?qcountry=United%20States&qcity=New%20York
+
+  - name: Millennium
+    tags: [top50]
+    ats: browser_millennium
+    careers_url: https://www.mlp.com/job-listings/
+
+  - name: TikTok
+    tags: [top50]
+    ats: browser_tiktok
+    careers_url: https://lifeattiktok.com/search?location=New%20York
+
+  - name: Jane Street
+    tags: [top50]
+    ats: browser_janestreet
+    careers_url: https://www.janestreet.com/join-jane-street/open-roles/?type=experienced-candidates&location=new-york
+
+  - name: D. E. Shaw
+    tags: [top50]
+    ats: browser_deshaw
+    careers_url: https://www.deshaw.com/careers/choose-your-path
+
+# Companies whose career sites have no stable public API and cannot be
+# responsibly scraped. The report links them in a "check manually" section so
+# they are never silently forgotten.
+manual_check:
+  - name: LinkedIn  # aggressive bot protection; scraping violates LinkedIn ToS
+    careers_url: https://careers.linkedin.com/jobs?location=New%20York
