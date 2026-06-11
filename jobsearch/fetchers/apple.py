@@ -1,0 +1,52 @@
+"""Apple jobs search API (jobs.apple.com).
+
+Apple requires a CSRF token issued on the search page before the JSON API
+accepts a POST, so this does a priming GET first. Apple changes this flow
+occasionally; failures land in the report's "needs attention" section.
+"""
+
+from __future__ import annotations
+
+from ..http import post_json
+from ..models import Company, JobPosting
+from ..utils import parse_when
+
+SEARCH_PAGE = "https://jobs.apple.com/en-us/search"
+API = "https://jobs.apple.com/api/v1/search"
+
+
+def parse_job(raw: dict, company_name: str) -> JobPosting:
+    locations = ", ".join(
+        loc.get("name", "") for loc in raw.get("locations") or [] if isinstance(loc, dict)
+    )
+    slug = raw.get("transformedPostingTitle") or ""
+    job_id = str(raw.get("positionId") or raw.get("id", ""))
+    return JobPosting(
+        company=company_name,
+        title=raw.get("postingTitle") or raw.get("title", ""),
+        location=locations or "New York City",
+        url=f"https://jobs.apple.com/en-us/details/{job_id}/{slug}",
+        job_id=job_id,
+        description=str(raw.get("jobSummary", "")),
+        posted_at=parse_when(raw.get("postingDate") or raw.get("postDateInGMT")),
+        source="apple",
+    )
+
+
+def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
+    query = settings.get("search", {}).get("query", "senior software engineer")
+    prime = session.get(SEARCH_PAGE, params={"location": "new-york-city-NYC"}, timeout=30)
+    prime.raise_for_status()
+    csrf = prime.headers.get("X-Apple-CSRF-Token", "")
+
+    body = {
+        "query": query,
+        "filters": {"postLocation": ["postLocation-NYC"]},
+        "page": 1,
+        "locale": "en-us",
+        "sort": "newest",
+    }
+    headers = {"X-Apple-CSRF-Token": csrf, "Content-Type": "application/json"}
+    data = post_json(session, API, json=body, headers=headers)
+    results = (data.get("res") or data).get("searchResults", [])
+    return [parse_job(raw, company.name) for raw in results]

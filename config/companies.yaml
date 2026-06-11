@@ -1,0 +1,392 @@
+# Company registry for the daily NYC job search.
+#
+# Every enabled company below is always included in the daily run; the report
+# sorts them by resume fit, it never drops them. FAANG companies are tagged
+# `faang`; the NYC top-50 software employers are tagged `top50`.
+#
+# `ats` selects the fetcher (see jobsearch/fetchers/). Any extra keys on an
+# entry (board, org, tenant, ...) are passed to that fetcher as params.
+#
+# Capital One is intentionally absent (current employer).
+
+companies:
+  # ---------------------------------------------------------------- FAANG ---
+  - name: Meta
+    tags: [faang, top50]
+    ats: meta
+    careers_url: https://www.metacareers.com/jobs?offices[0]=New%20York%2C%20NY
+
+  - name: Apple
+    tags: [faang, top50]
+    ats: apple
+    careers_url: https://jobs.apple.com/en-us/search?location=new-york-city-NYC
+
+  - name: Amazon
+    tags: [faang, top50]
+    ats: amazon
+    careers_url: https://www.amazon.jobs/en/search?base_query=senior+software+engineer&loc_query=New+York%2C+NY
+
+  - name: Netflix
+    tags: [faang, top50]
+    ats: eightfold
+    base_url: https://explore.jobs.netflix.net
+    domain: netflix.com
+    careers_url: https://explore.jobs.netflix.net/careers?location=New%20York
+
+  - name: Google
+    tags: [faang, top50]
+    ats: google
+    careers_url: https://www.google.com/about/careers/applications/jobs/results/?location=New%20York%2C%20NY
+
+  # ------------------------------------------------------- Big tech in NYC ---
+  - name: Microsoft
+    tags: [top50]
+    ats: microsoft
+    careers_url: https://jobs.careers.microsoft.com/global/en/search?lc=New%20York%2C%20New%20York%2C%20United%20States
+
+  - name: NVIDIA
+    tags: [top50]
+    ats: workday
+    tenant: nvidia
+    host: nvidia.wd5.myworkdayjobs.com
+    site: NVIDIAExternalCareerSite
+    careers_url: https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite
+
+  - name: Salesforce
+    tags: [top50]
+    ats: workday
+    tenant: salesforce
+    host: salesforce.wd12.myworkdayjobs.com
+    site: External_Career_Site
+    careers_url: https://careers.salesforce.com/en/jobs/
+
+  - name: Adobe
+    tags: [top50]
+    ats: workday
+    tenant: adobe
+    host: adobe.wd5.myworkdayjobs.com
+    site: external_experienced
+    careers_url: https://careers.adobe.com/us/en/search-results
+
+  - name: Uber
+    tags: [top50]
+    ats: uber
+    careers_url: https://www.uber.com/us/en/careers/list/?location=USA-New%20York-New%20York
+
+  - name: Lyft
+    tags: [top50]
+    ats: greenhouse
+    board: lyft
+    careers_url: https://www.lyft.com/careers
+
+  - name: Airbnb
+    tags: [top50]
+    ats: greenhouse
+    board: airbnb
+    careers_url: https://careers.airbnb.com/
+
+  - name: Pinterest
+    tags: [top50]
+    ats: greenhouse
+    board: pinterest
+    careers_url: https://www.pinterestcareers.com/
+
+  - name: Dropbox
+    tags: [top50]
+    ats: greenhouse
+    board: dropbox
+    careers_url: https://jobs.dropbox.com/
+
+  - name: Stripe
+    tags: [top50]
+    ats: greenhouse
+    board: stripe
+    careers_url: https://stripe.com/jobs
+
+  - name: DoorDash
+    tags: [top50]
+    ats: greenhouse
+    board: doordashusa
+    careers_url: https://careers.doordash.com/
+
+  - name: Roblox
+    tags: [top50]
+    ats: greenhouse
+    board: roblox
+    careers_url: https://careers.roblox.com/jobs
+
+  - name: Bloomberg
+    tags: [top50]
+    ats: bloomberg
+    careers_url: https://careers.bloomberg.com/job/search?ftsearch=software+engineer
+
+  - name: Spotify
+    tags: [top50]
+    ats: spotify
+    careers_url: https://www.lifeatspotify.com/jobs?l=new-york
+
+  # ----------------------------------------------------- NYC-native tech ---
+  - name: Datadog
+    tags: [top50]
+    ats: greenhouse
+    board: datadog
+    careers_url: https://careers.datadoghq.com/
+
+  - name: MongoDB
+    tags: [top50]
+    ats: greenhouse
+    board: mongodb
+    careers_url: https://www.mongodb.com/careers
+
+  - name: Squarespace
+    tags: [top50]
+    ats: greenhouse
+    board: squarespace
+    careers_url: https://www.squarespace.com/about/careers
+
+  - name: Etsy
+    tags: [top50]
+    ats: greenhouse
+    board: etsy
+    careers_url: https://careers.etsy.com/
+
+  - name: Vimeo
+    tags: [top50]
+    ats: greenhouse
+    board: vimeo
+    careers_url: https://vimeo.com/jobs
+
+  - name: Betterment
+    tags: [top50]
+    ats: greenhouse
+    board: betterment
+    careers_url: https://www.betterment.com/careers
+
+  - name: Justworks
+    tags: [top50]
+    ats: greenhouse
+    board: justworks
+    careers_url: https://www.justworks.com/careers
+
+  - name: Ramp
+    tags: [top50]
+    ats: ashby
+    org: ramp
+    careers_url: https://ramp.com/careers
+
+  - name: Plaid
+    tags: [top50]
+    ats: lever
+    org: plaid
+    careers_url: https://plaid.com/careers/
+
+  - name: Brex
+    tags: [top50]
+    ats: greenhouse
+    board: brex
+    careers_url: https://www.brex.com/careers
+
+  - name: Mercury
+    tags: [top50]
+    ats: greenhouse
+    board: mercury
+    careers_url: https://mercury.com/jobs
+
+  - name: Notion
+    tags: [top50]
+    ats: ashby
+    org: notion
+    careers_url: https://www.notion.com/careers
+
+  - name: Figma
+    tags: [top50]
+    ats: greenhouse
+    board: figma
+    careers_url: https://www.figma.com/careers/
+
+  - name: Grammarly
+    tags: [top50]
+    ats: greenhouse
+    board: grammarly
+    careers_url: https://www.grammarly.com/jobs
+
+  - name: Hinge
+    tags: [top50]
+    ats: greenhouse
+    board: hinge
+    careers_url: https://hinge.co/careers
+
+  - name: Oscar Health
+    tags: [top50]
+    ats: greenhouse
+    board: oscar
+    careers_url: https://www.hioscar.com/careers
+
+  - name: Peloton
+    tags: [top50]
+    ats: greenhouse
+    board: peloton
+    careers_url: https://careers.onepeloton.com/
+
+  - name: Spring Health
+    tags: [top50]
+    ats: greenhouse
+    board: springhealth
+    careers_url: https://careers.springhealth.com/
+
+  - name: Alloy
+    tags: [top50]
+    ats: greenhouse
+    board: alloy
+    careers_url: https://www.alloy.com/careers
+
+  - name: Attentive
+    tags: [top50]
+    ats: greenhouse
+    board: attentive
+    careers_url: https://www.attentive.com/careers
+
+  - name: Braze
+    tags: [top50]
+    ats: greenhouse
+    board: braze
+    careers_url: https://www.braze.com/company/careers
+
+  - name: Yext
+    tags: [top50]
+    ats: greenhouse
+    board: yext
+    careers_url: https://www.yext.com/careers
+
+  - name: Warby Parker
+    tags: [top50]
+    ats: greenhouse
+    board: warbyparker
+    careers_url: https://www.warbyparker.com/jobs
+
+  - name: Compass
+    tags: [top50]
+    ats: greenhouse
+    board: urbancompass
+    careers_url: https://www.compass.com/careers/
+
+  - name: Zocdoc
+    tags: [top50]
+    ats: greenhouse
+    board: zocdoc
+    careers_url: https://www.zocdoc.com/about/careers/
+
+  - name: Flatiron Health
+    tags: [top50]
+    ats: greenhouse
+    board: flatironhealth
+    careers_url: https://flatiron.com/careers
+
+  # ------------------------------------------------------------- AI labs ---
+  - name: Anthropic
+    tags: [top50]
+    ats: greenhouse
+    board: anthropic
+    careers_url: https://www.anthropic.com/careers
+
+  - name: OpenAI
+    tags: [top50]
+    ats: ashby
+    org: openai
+    careers_url: https://openai.com/careers
+
+  # ------------------------------------------------- Other strong NYC eng ---
+  - name: Palantir
+    tags: [top50]
+    ats: lever
+    org: palantir
+    careers_url: https://www.palantir.com/careers/
+
+  - name: Asana
+    tags: [top50]
+    ats: greenhouse
+    board: asana
+    careers_url: https://asana.com/jobs
+
+  - name: Affirm
+    tags: [top50]
+    ats: greenhouse
+    board: affirm
+    careers_url: https://www.affirm.com/careers
+
+  - name: Chainalysis
+    tags: [top50]
+    ats: greenhouse
+    board: chainalysis
+    careers_url: https://www.chainalysis.com/careers/
+
+  - name: Gemini
+    tags: [top50]
+    ats: greenhouse
+    board: gemini
+    careers_url: https://www.gemini.com/careers
+
+  - name: Coinbase
+    tags: [top50]
+    ats: greenhouse
+    board: coinbase
+    careers_url: https://www.coinbase.com/careers
+
+  # ------------------------------------------------------- Quant / fintech ---
+  - name: Two Sigma
+    tags: [top50]
+    ats: greenhouse
+    board: twosigma
+    careers_url: https://careers.twosigma.com/
+
+  - name: Hudson River Trading
+    tags: [top50]
+    ats: greenhouse
+    board: wehrtyou
+    careers_url: https://www.hudsonrivertrading.com/careers/
+
+  - name: Citadel
+    tags: [top50]
+    ats: greenhouse
+    board: citadelcorporate
+    careers_url: https://www.citadel.com/careers/
+
+  - name: Point72
+    tags: [top50]
+    ats: greenhouse
+    board: point72
+    careers_url: https://careers.point72.com/
+
+  - name: DRW
+    tags: [top50]
+    ats: greenhouse
+    board: drweng
+    careers_url: https://www.drw.com/careers
+
+  - name: IMC Trading
+    tags: [top50]
+    ats: greenhouse
+    board: imc
+    careers_url: https://careers.imc.com/
+
+# Companies whose career sites have no stable public API. The report links
+# them in a "check manually" section so they are never silently forgotten.
+manual_check:
+  - name: Jane Street
+    careers_url: https://www.janestreet.com/join-jane-street/open-roles/?type=experienced-candidates&location=new-york
+  - name: Goldman Sachs
+    careers_url: https://higher.gs.com/results?LOCATION=New%20York&page=1&sort=POSTED_DATE
+  - name: JPMorgan Chase
+    careers_url: https://careers.jpmorgan.com/us/en/search-results?qcountry=United%20States&qcity=New%20York
+  - name: Morgan Stanley
+    careers_url: https://morganstanley.eightfold.ai/careers?location=New%20York
+  - name: D. E. Shaw
+    careers_url: https://www.deshaw.com/careers/choose-your-path
+  - name: Millennium
+    careers_url: https://www.mlp.com/job-listings/
+  - name: LinkedIn
+    careers_url: https://careers.linkedin.com/jobs?location=New%20York
+  - name: TikTok
+    careers_url: https://lifeattiktok.com/search?location=New%20York
+  - name: Jump Trading
+    careers_url: https://www.jumptrading.com/careers/
