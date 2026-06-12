@@ -11,12 +11,13 @@ plain `requests` calls, which keeps the dependency list unchanged. Setup:
 
 Scope is gmail.readonly: the app never sends mail or modifies the inbox.
 
-Sync lists recent inbox messages, parses them (parse_message is pure and
-offline-tested), and stores the job-relevant ones through
-emailmod.store_message — which links them to applications and advances
-`applied → confirmed` on detected confirmations. A message is job-relevant
-if it matched an application or classified as confirmation / interview /
-rejection / offer; everything else is left alone.
+Sync is scoped server-side: the Gmail search query only asks for mail from
+companies you're actually applying to (any application past `not_applied`)
+plus the ATS platforms that send on their behalf (Greenhouse, Lever, …),
+over the last year. Nothing outside that filter is ever fetched or read.
+Matching messages are parsed (parse_message is pure and offline-tested) and
+stored through emailmod.store_message — which links them to applications
+and advances `applied → confirmed` on detected confirmations.
 """
 
 from __future__ import annotations
@@ -41,6 +42,16 @@ CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "token.json"
 
 RELEVANT = {"confirmation", "interview", "rejection", "offer"}
+
+# Domains the major ATS platforms send application mail from. Mail from these
+# only lands in your inbox if you applied through them, so including them in
+# the sender filter is safe — and necessary, because confirmation mail often
+# comes from the ATS, not the company's own domain.
+ATS_SENDERS = [
+    "greenhouse.io", "greenhouse-mail.io", "lever.co", "ashbyhq.com",
+    "myworkday.com", "smartrecruiters.com", "icims.com", "eightfold.ai",
+    "successfactors.com", "oraclecloud.com",
+]
 
 
 # ----------------------------------------------------------------- credentials
@@ -203,19 +214,58 @@ def is_job_relevant(conn, message: dict) -> bool:
 
 
 # ------------------------------------------------------------------------ sync
-def sync(conn, data_dir: Path, lookback_days: int = 30, max_messages: int = 200) -> dict:
-    """Pull recent inbox mail and store the job-relevant messages. Idempotent:
-    store_message dedupes on the Gmail message id."""
+def applied_companies(conn) -> list[str]:
+    """Companies with an application in flight — the sender filter for sync."""
+    rows = conn.execute(
+        """SELECT DISTINCT j.company FROM applications a
+           JOIN jobs j ON j.id = a.job_id
+           WHERE a.status != 'not_applied' ORDER BY j.company""").fetchall()
+    return [r["company"] for r in rows]
+
+
+def build_query(companies: list[str], lookback_days: int) -> str:
+    """Server-side Gmail search: only mail from the companies you're applying
+    to (matched on the From header, display name included) or from an ATS
+    platform. Pure — offline-tested."""
+    terms = [f'"{c}"' if re.search(r"\s", c) else c for c in companies]
+    senders = terms + ATS_SENDERS
+    return f"newer_than:{lookback_days}d from:({' OR '.join(senders)})"
+
+
+def purge_unmatched(conn) -> int:
+    """Remove previously stored mail the company filter wouldn't have fetched:
+    not linked to any application/job and from neither an applied-to company
+    nor an ATS sender. Cleans up after the pre-filter sync versions."""
+    keep = {t for c in applied_companies(conn) for t in emailmod._company_tokens(c)}
+    removed = 0
+    for row in conn.execute(
+            "SELECT id, from_addr FROM email_messages "
+            "WHERE application_id IS NULL AND job_id IS NULL").fetchall():
+        sender = row["from_addr"].lower()
+        if any(d in sender for d in ATS_SENDERS) or any(t in sender for t in keep):
+            continue
+        conn.execute("DELETE FROM email_messages WHERE id = ?", (row["id"],))
+        removed += 1
+    if removed:
+        conn.commit()
+    return removed
+
+
+def sync(conn, data_dir: Path, lookback_days: int = 365, max_messages: int = 500) -> dict:
+    """Pull mail matching the company filter and store the job-relevant
+    messages. Idempotent: store_message dedupes on the Gmail message id."""
     import requests
     headers = {"Authorization": f"Bearer {access_token(data_dir)}"}
     account = conn.execute(
         "SELECT id FROM email_accounts WHERE provider = 'gmail' "
         "AND status = 'connected' LIMIT 1").fetchone()
-    counts = {"checked": 0, "stored": 0, "skipped": 0}
+    counts = {"checked": 0, "stored": 0, "skipped": 0,
+              "purged": purge_unmatched(conn)}
+    query = build_query(applied_companies(conn), lookback_days)
 
     page_token = ""
     while counts["checked"] < max_messages:
-        params = {"q": f"newer_than:{lookback_days}d in:inbox", "maxResults": 100}
+        params = {"q": query, "maxResults": 100}
         if page_token:
             params["pageToken"] = page_token
         listing = requests.get(f"{API}/messages", params=params,

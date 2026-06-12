@@ -217,9 +217,10 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             return RedirectResponse(f"/emails?error={quote_plus(str(exc)[:200])}",
                                     status_code=303)
-        return RedirectResponse(
-            f"/emails?synced={counts['stored']}+stored+of+{counts['checked']}+checked",
-            status_code=303)
+        synced = f"{counts['stored']}+stored+of+{counts['checked']}+checked"
+        if counts.get("purged"):
+            synced += f",+{counts['purged']}+old+unmatched+purged"
+        return RedirectResponse(f"/emails?synced={synced}", status_code=303)
 
     # --------------------------------------------------------------- JSON API
     @app.get("/api/jobs")

@@ -96,6 +96,47 @@ def test_relevance_gating(conn):
                                             "body": "engineering digest"})
 
 
+def test_build_query_scopes_to_companies_and_ats():
+    q = gmail.build_query(["Datadog", "Warby Parker"], 365)
+    assert q.startswith("newer_than:365d from:(")
+    assert "Datadog" in q and '"Warby Parker"' in q  # multi-word names quoted
+    assert "greenhouse.io" in q and "lever.co" in q and "myworkday.com" in q
+
+
+def _seed_application(conn, company: str) -> None:
+    db.upsert_job(conn, {"key": f"k-{company}", "source": "t", "company": company,
+                         "title": "Senior SWE", "url": "https://x.com"})
+    conn.execute("UPDATE applications SET status = 'applied' WHERE job_id = "
+                 "(SELECT id FROM jobs WHERE key = ?)", (f"k-{company}",))
+    conn.commit()
+
+
+def test_applied_companies_only_in_flight(conn):
+    db.upsert_job(conn, {"key": "k-untouched", "source": "t", "company": "Stripe",
+                         "title": "Senior SWE", "url": "https://x.com"})  # not_applied
+    _seed_application(conn, "Datadog")
+    assert gmail.applied_companies(conn) == ["Datadog"]
+
+
+def test_purge_unmatched_removes_only_filterable_mail(conn):
+    _seed_application(conn, "Datadog")
+    now = db.utcnow()
+    rows = [
+        ("m-keep-company", "no-reply@datadoghq.com"),      # applied-to company
+        ("m-keep-ats", "no-reply@us.greenhouse-mail.io"),  # ATS sender
+        ("m-purge", "news@randomblog.com"),                # neither → purged
+    ]
+    for message_id, sender in rows:
+        conn.execute(
+            "INSERT INTO email_messages (message_id, from_addr, ingested_at) "
+            "VALUES (?, ?, ?)", (message_id, sender, now))
+    conn.commit()
+    assert gmail.purge_unmatched(conn) == 1
+    left = {r["message_id"] for r in conn.execute(
+        "SELECT message_id FROM email_messages").fetchall()}
+    assert left == {"m-keep-company", "m-keep-ats"}
+
+
 def test_oauth_routes_guarded(tmp_path):
     from fastapi.testclient import TestClient
     from webapp.app import create_app
