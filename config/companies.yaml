@@ -38,12 +38,14 @@ companies:
   - name: Google
     tags: [faang, top50]
     ats: google
+    fallback: browser_google
     careers_url: https://www.google.com/about/careers/applications/jobs/results/?location=New%20York%2C%20NY
 
   # ------------------------------------------------------- Big tech in NYC ---
   - name: Microsoft
     tags: [top50]
     ats: microsoft
+    fallback: browser_microsoft
     careers_url: https://jobs.careers.microsoft.com/global/en/search?lc=New%20York%2C%20New%20York%2C%20United%20States
 
   - name: NVIDIA
@@ -120,6 +122,7 @@ companies:
   - name: Bloomberg
     tags: [top50]
     ats: bloomberg
+    fallback: browser_bloomberg
     careers_url: https://careers.bloomberg.com/job/search?ftsearch=software+engineer
 
   - name: Spotify
@@ -148,15 +151,11 @@ companies:
 
   - name: Etsy
     tags: [top50]
-    ats: greenhouse
-    board: etsy
+    ats: workday
+    tenant: etsy
+    host: etsy.wd5.myworkdayjobs.com
+    site: Etsy_Careers
     careers_url: https://careers.etsy.com/
-
-  - name: Vimeo
-    tags: [top50]
-    ats: greenhouse
-    board: vimeo
-    careers_url: https://vimeo.com/jobs
 
   - name: Betterment
     tags: [top50]
@@ -206,17 +205,11 @@ companies:
     board: figma
     careers_url: https://www.figma.com/careers/
 
-  - name: Grammarly
+  - name: Superhuman
     tags: [top50]
     ats: greenhouse
     board: grammarly
-    careers_url: https://www.grammarly.com/jobs
-
-  - name: Hinge
-    tags: [top50]
-    ats: greenhouse
-    board: hinge
-    careers_url: https://hinge.co/careers
+    careers_url: https://superhuman.com/careers
 
   - name: Oscar Health
     tags: [top50]
@@ -233,7 +226,7 @@ companies:
   - name: Spring Health
     tags: [top50]
     ats: greenhouse
-    board: springhealth
+    board: springhealth66
     careers_url: https://careers.springhealth.com/
 
   - name: Alloy
@@ -318,8 +311,8 @@ companies:
 
   - name: Chainalysis
     tags: [top50]
-    ats: greenhouse
-    board: chainalysis
+    ats: ashby
+    org: chainalysis-careers
     careers_url: https://www.chainalysis.com/careers/
 
   - name: Gemini
@@ -335,12 +328,6 @@ companies:
     careers_url: https://www.coinbase.com/careers
 
   # ------------------------------------------------------- Quant / fintech ---
-  - name: Two Sigma
-    tags: [top50]
-    ats: greenhouse
-    board: twosigma
-    careers_url: https://careers.twosigma.com/
-
   - name: Hudson River Trading
     tags: [top50]
     ats: greenhouse
@@ -350,7 +337,7 @@ companies:
   - name: Citadel
     tags: [top50]
     ats: greenhouse
-    board: citadelcorporate
+    board: citadel
     careers_url: https://www.citadel.com/careers/
 
   - name: Point72
@@ -380,6 +367,7 @@ companies:
   - name: Morgan Stanley
     tags: [top50]
     ats: eightfold
+    fallback: browser_eightfold
     base_url: https://morganstanley.eightfold.ai
     domain: morganstanley.com
     careers_url: https://morganstanley.eightfold.ai/careers?location=New%20York
@@ -423,3 +411,12 @@ companies:
 manual_check:
   - name: LinkedIn  # aggressive bot protection; scraping violates LinkedIn ToS
     careers_url: https://careers.linkedin.com/jobs?location=New%20York
+
+  - name: Vimeo  # Greenhouse board closed; no stable public API currently
+    careers_url: https://vimeo.com/careers
+
+  - name: Hinge  # uses Match Group custom portal; no stable public Greenhouse/Lever board
+    careers_url: https://hinge.co/careers
+
+  - name: Two Sigma  # custom careers portal (careers.twosigma.com); Greenhouse board twosigma is inactive
+    careers_url: https://careers.twosigma.com/careers/OpenRoles

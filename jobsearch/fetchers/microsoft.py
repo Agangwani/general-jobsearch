@@ -47,3 +47,19 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
         if len(page_jobs) < PAGE_SIZE:
             break
     return jobs
+
+
+def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]:
+    """Fallback: load the careers search page and capture its own search XHR —
+    sidesteps TLS/endpoint changes on the gcsservices host."""
+    from ..utils import walk_collect
+
+    url = (
+        "https://jobs.careers.microsoft.com/global/en/search"
+        "?q=senior%20software%20engineer&lc=New%20York%2C%20New%20York%2C%20United%20States&o=Recent"
+    )
+    payloads = runtime.capture_json(url, r"(search/api/v1/search|careers\.microsoft\.com.*search)")
+    records = walk_collect(payloads, lambda d: "jobId" in d and "title" in d)
+    if not records:
+        raise RuntimeError("no job records captured from jobs.careers.microsoft.com")
+    return [parse_job(raw, company.name) for raw in records]

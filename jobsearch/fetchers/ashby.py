@@ -31,4 +31,6 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     data = get_json(session, url)
     limit = settings.get("fetch", {}).get("max_per_company", 1500)
     jobs = [raw for raw in data.get("jobs", []) if raw.get("isListed", True)]
+    if not jobs:
+        raise RuntimeError(f"ashby board '{org}' returned 0 postings — org may have migrated ATS")
     return [parse_job(raw, company.name) for raw in jobs[:limit]]

@@ -30,4 +30,7 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     url = f"https://api.lever.co/v0/postings/{org}?mode=json"
     data = get_json(session, url)
     limit = settings.get("fetch", {}).get("max_per_company", 1500)
-    return [parse_job(raw, company.name) for raw in data[:limit]]
+    jobs = [parse_job(raw, company.name) for raw in data[:limit]]
+    if not jobs:
+        raise RuntimeError(f"lever board '{org}' returned 0 postings — org may have migrated ATS")
+    return jobs

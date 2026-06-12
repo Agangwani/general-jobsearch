@@ -49,4 +49,25 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
         jobs.extend(parse_job(raw, company.name) for raw in page_jobs)
         if not page_jobs or len(jobs) >= data.get("count", 0):
             break
+    if not jobs:
+        raise RuntimeError("Google careers API returned no jobs — endpoint may have moved")
     return jobs
+
+
+def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]:
+    """Fallback: the careers frontend moved to google.com/about/careers/applications
+    and the old api/v3 endpoint 404s. Load the search page in Chromium and
+    capture whatever jobs JSON the new frontend fetches."""
+    from ..utils import walk_collect
+
+    url = (
+        "https://www.google.com/about/careers/applications/jobs/results/"
+        "?location=New%20York%2C%20NY&q=%22software%20engineer%22&sort_by=date"
+    )
+    payloads = runtime.capture_json(url, r"google\.com/.*(search|jobs|careers)")
+    records = walk_collect(
+        payloads, lambda d: "title" in d and ("id" in d or "job_id" in d) and "locations" in d
+    )
+    if not records:
+        raise RuntimeError("no job records captured from Google careers page")
+    return [parse_job(raw, company.name) for raw in records]

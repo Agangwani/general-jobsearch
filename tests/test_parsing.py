@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from jobsearch.fetchers import ashby, greenhouse, lever, workday
+from jobsearch.fetchers import ashby, greenhouse, lever, smartrecruiters, workday
 from jobsearch.models import Company
 from jobsearch.utils import parse_when, parse_workday_posted_on, strip_html
 
@@ -73,6 +73,19 @@ def test_ashby_parse():
     job = ashby.parse_job(raw, "Ramp")
     assert "New York" in job.location and "Remote - US" in job.location
     assert job.description == "Fintech backend"
+
+
+def test_smartrecruiters_parse():
+    raw = {
+        "id": "744000012345",
+        "name": "Senior Software Engineer II",
+        "releasedDate": "2026-06-10T08:00:00.000Z",
+        "location": {"city": "Brooklyn", "region": "NY", "country": "us"},
+    }
+    job = smartrecruiters.parse_job(raw, "Etsy", "Etsy2")
+    assert job.url == "https://jobs.smartrecruiters.com/Etsy2/744000012345"
+    assert job.location == "Brooklyn, NY, us"
+    assert job.posted_at.day == 10
 
 
 def test_workday_parse():

@@ -33,4 +33,23 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     params = {"ftsearch": query, "location": "New York", "sort": "POSTED_DATE"}
     data = get_json(session, API, params=params)
     results = data.get("results") or data.get("jobs") or []
+    if not results:
+        raise RuntimeError("Bloomberg joblist API returned no results — endpoint may have moved")
     return [parse_job(raw, company.name) for raw in results]
+
+
+def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]:
+    """Fallback: load the Bloomberg careers search page in Chromium and
+    capture whatever jobs JSON its frontend loads."""
+    from ..utils import walk_collect
+
+    url = "https://careers.bloomberg.com/job/search?ftsearch=senior%20software%20engineer&location=New%20York"
+    payloads = runtime.capture_json(url, r"careers\.bloomberg\.com/.*(json|api|search)")
+    records = walk_collect(
+        payloads,
+        lambda d: any(k in d for k in ("JobTitle", "jobTitle", "title"))
+        and any(k in d for k in ("JobsId", "jobId", "id")),
+    )
+    if not records:
+        raise RuntimeError("no job records captured from careers.bloomberg.com")
+    return [parse_job(raw, company.name) for raw in records]

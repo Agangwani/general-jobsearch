@@ -46,3 +46,18 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
         if len(positions) < PAGE_SIZE:
             break
     return jobs
+
+
+def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]:
+    """Fallback for Eightfold tenants that 403 plain HTTP clients (e.g.
+    Morgan Stanley): load the careers page in Chromium and capture the
+    /api/apply/v2/jobs XHR the page itself issues."""
+    from ..utils import walk_collect
+
+    base_url = company.params["base_url"].rstrip("/")
+    url = f"{base_url}/careers?location=New%20York&sort_by=new"
+    payloads = runtime.capture_json(url, r"/api/apply/v2/jobs")
+    records = walk_collect(payloads, lambda d: "name" in d and "id" in d and ("location" in d or "locations" in d))
+    if not records:
+        raise RuntimeError(f"no positions captured from {base_url} careers page")
+    return [parse_job(raw, company.name, base_url) for raw in records]

@@ -49,6 +49,10 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     headers = {"X-Apple-CSRF-Token": csrf, "Content-Type": "application/json"}
     data = post_json(session, API, json=body, headers=headers)
     results = (data.get("res") or data).get("searchResults", [])
+    if not results:
+        # Apple NYC always has open roles; an empty result means the API
+        # shape/flow changed — raise so the browser fallback takes over.
+        raise RuntimeError("Apple search API returned 0 results")
     return [parse_job(raw, company.name) for raw in results]
 
 
