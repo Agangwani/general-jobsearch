@@ -65,11 +65,17 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
     GraphQL XHR the page itself issues — sidesteps the rotating doc_id."""
     from ..utils import walk_collect
 
+    from . import _generic
+
     url = "https://www.metacareers.com/jobs?offices[0]=New%20York%2C%20NY&q=software%20engineer"
-    payloads = runtime.capture_json(url, r"metacareers\.com/graphql")
+    harvest = runtime.harvest(url, r"metacareers\.com/graphql")
     records = walk_collect(
-        payloads, lambda d: "title" in d and "id" in d and ("locations" in d or "teams" in d)
+        harvest["matched"] + harvest["embedded"],
+        lambda d: "title" in d and "id" in d and ("locations" in d or "teams" in d),
     )
-    if not records:
+    if records:
+        return [parse_job(raw, company.name) for raw in records]
+    jobs = _generic.fallback_jobs(harvest, company.name, "meta")
+    if not jobs:
         raise RuntimeError("no job records in captured metacareers.com GraphQL responses")
-    return [parse_job(raw, company.name) for raw in records]
+    return jobs

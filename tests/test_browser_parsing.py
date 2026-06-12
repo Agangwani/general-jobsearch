@@ -99,19 +99,61 @@ def test_deshaw_link_parse():
     assert jobs[0].job_id == "senior-software-developer-5135"
 
 
+class FakeRuntime:
+    def __init__(self, matched=None, extra=None, embedded=None):
+        self._harvest = {"matched": matched or [], "extra": extra or [],
+                         "embedded": embedded or []}
+
+    def harvest(self, url, pattern, settle_ms=8000, attempts=2):
+        return self._harvest
+
+    def capture_json(self, url, pattern, settle_ms=8000):
+        return self._harvest["matched"]
+
+    def extract_links(self, url, selector, wait_selector=None):
+        return []
+
+
 def test_browser_fetchers_raise_when_empty():
     import pytest
-
-    class FakeRuntime:
-        def capture_json(self, url, pattern, settle_ms=8000):
-            return []
-
-        def extract_links(self, url, selector, wait_selector=None):
-            return []
 
     company = Company(name="Goldman Sachs", ats="browser_goldman")
     with pytest.raises(RuntimeError):
         goldman.fetch(company, FakeRuntime(), {})
+
+
+def test_phenom_embedded_state_feeds_jpmorgan():
+    # careers.jpmorgan.com (Phenom) embeds page-1 results in window.phApp.ddo
+    # — no XHR needs to fire for the fetch to succeed.
+    ddo = {"eagerLoadRefineSearch": {"data": {"jobs": [{
+        "title": "Senior Software Engineer III",
+        "jobSeqNo": "210512345",
+        "cityStateCountry": "New York, NY, US",
+        "postedDate": "2026-06-09",
+        "descriptionTeaser": "Build payments infrastructure",
+        "applyUrl": "https://careers.jpmorgan.com/us/en/job/210512345",
+    }]}}}
+    company = Company(name="JPMorgan Chase", ats="browser_jpmorgan")
+    jobs = jpmorgan.fetch(company, FakeRuntime(embedded=[ddo]), {})
+    assert len(jobs) == 1
+    assert jobs[0].title == "Senior Software Engineer III"
+    assert jobs[0].url.endswith("/210512345")
+
+
+def test_generic_fallback_rescues_unknown_shape():
+    # A response shape none of the site key maps know (e.g. the board
+    # changed vendors) — the generic pass still extracts it.
+    weird = {"payload": {"openings": [{
+        "positionTitle": "Senior Software Engineer",
+        "jobPostingId": "GS-99",
+        "primaryLocation": "New York",
+        "datePosted": "2026-06-10",
+    }]}}
+    company = Company(name="Goldman Sachs", ats="browser_goldman")
+    jobs = goldman.fetch(company, FakeRuntime(extra=[weird]), {})
+    assert len(jobs) == 1
+    assert jobs[0].url == "https://higher.gs.com/roles/GS-99"
+    assert jobs[0].source == "goldman"
 
 
 def test_deshaw_clean_title():

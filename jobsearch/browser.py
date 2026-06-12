@@ -12,6 +12,7 @@ error for browser-backed companies instead of failing the run.
 
 from __future__ import annotations
 
+import json
 import re
 
 from .http import USER_AGENT
@@ -22,6 +23,49 @@ class BrowserUnavailable(RuntimeError):
 
 
 _INSTALL_HINT = "pip install playwright && playwright install chromium"
+
+# Cookie-consent walls (OneTrust/TrustArc/...) on bank career sites block the
+# jobs XHR until dismissed — try these before judging a page empty.
+_CONSENT_SELECTORS = (
+    "#onetrust-accept-btn-handler",
+    "#truste-consent-button",
+    "button[id*='accept-recommended']",
+    "button[data-testid*='accept']",
+)
+
+# JSON hiding in the final DOM: SPA state globals (Next.js, Redux, and
+# window.phApp.ddo — the Phenom platform behind careers.jpmorgan.com and
+# mlp.com embeds its first page of search results there) plus JSON script
+# tags, including schema.org JobPosting JSON-LD that career sites embed for
+# Google-for-Jobs SEO.
+_EMBEDDED_JS = """
+() => {
+  const out = [];
+  const push = v => { try { const s = JSON.stringify(v); if (s && s.length > 2) out.push(s); } catch (e) {} };
+  for (const k of ['__NEXT_DATA__', '__INITIAL_STATE__', '__APP_INITIAL_STATE__',
+                   '__PRELOADED_STATE__', '__REDUX_STATE__'])
+    if (window[k]) push(window[k]);
+  if (window.phApp && window.phApp.ddo) push(window.phApp.ddo);
+  for (const s of document.querySelectorAll(
+        'script[type="application/json"], script[type="application/ld+json"]'))
+    if (s.textContent && s.textContent.length < 2000000) out.push(s.textContent);
+  return out;
+}
+"""
+
+
+def parse_embedded(raw_blobs: list[str]) -> list:
+    """JSON-decode the strings harvested from the DOM, dropping anything that
+    isn't valid JSON. Pure — offline-tested."""
+    parsed = []
+    for blob in raw_blobs or []:
+        try:
+            value = json.loads(blob)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, (dict, list)) and value:
+            parsed.append(value)
+    return parsed
 
 
 class BrowserRuntime:
@@ -62,25 +106,79 @@ class BrowserRuntime:
     def capture_json(self, url: str, url_pattern: str, settle_ms: int = 8000) -> list:
         """Navigate `url` and return the JSON bodies of all responses whose
         request URL matches `url_pattern` (regex)."""
+        return self.harvest(url, url_pattern, settle_ms)["matched"]
+
+    def harvest(self, url: str, url_pattern: str, settle_ms: int = 8000,
+                attempts: int = 2) -> dict:
+        """Navigate `url` and bring back every place job data could hide:
+
+        - "matched":  JSON bodies of responses whose URL matches `url_pattern`
+        - "extra":    every other JSON response the page loaded (any domain —
+                      frontends often call a vendor API the pattern missed)
+        - "embedded": JSON dug out of the final DOM (SPA state globals,
+                      Phenom's phApp.ddo, JSON-LD script tags)
+
+        Dismisses cookie-consent walls, scrolls to trigger lazy lists, and
+        retries once with a longer settle when nothing job-shaped came back —
+        flaky boards (Millennium) usually land on the second pass."""
         pattern = re.compile(url_pattern)
+        result = {"matched": [], "extra": [], "embedded": []}
+        for attempt in range(attempts):
+            result = self._harvest_once(url, pattern, settle_ms * (attempt + 1))
+            if result["matched"] or result["embedded"]:
+                break
+        return result
+
+    def _harvest_once(self, url: str, pattern: re.Pattern, settle_ms: int) -> dict:
         page = self._context.new_page()
-        matched = []
-        page.on("response", lambda resp: matched.append(resp) if pattern.search(resp.url) else None)
+        responses = []
+        page.on("response", lambda resp: responses.append(resp))
         try:
             page.goto(url, wait_until="domcontentloaded")
+            self._dismiss_consent(page)
+            self._scroll(page)
             try:
                 page.wait_for_load_state("networkidle", timeout=settle_ms)
             except Exception:
                 pass  # busy pages never go idle; whatever was captured is enough
-            payloads = []
-            for resp in matched:
+
+            matched, extra = [], []
+            for resp in responses:
+                is_match = bool(pattern.search(resp.url))
+                if not is_match and "json" not in resp.headers.get("content-type", ""):
+                    continue  # only pattern hits get the benefit of the doubt
                 try:
-                    payloads.append(resp.json())
+                    payload = resp.json()
                 except Exception:
                     continue  # non-JSON or disposed body
-            return payloads
+                (matched if is_match else extra).append(payload)
+
+            try:
+                embedded = parse_embedded(page.evaluate(_EMBEDDED_JS))
+            except Exception:
+                embedded = []
+            return {"matched": matched, "extra": extra, "embedded": embedded}
         finally:
             page.close()
+
+    def _dismiss_consent(self, page) -> None:
+        for selector in _CONSENT_SELECTORS:
+            try:
+                button = page.locator(selector).first
+                if button.is_visible(timeout=400):
+                    button.click(timeout=1000)
+                    page.wait_for_timeout(300)
+                    return
+            except Exception:
+                continue
+
+    def _scroll(self, page, passes: int = 3) -> None:
+        for _ in range(passes):
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(500)
+            except Exception:
+                return
 
     def extract_links(self, url: str, selector: str, wait_selector: str | None = None) -> list[dict]:
         """Navigate `url` and return [{text, href}] for every `selector` match —

@@ -61,11 +61,17 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
     its own search XHR — sidesteps the CSRF token dance entirely."""
     from ..utils import walk_collect
 
+    from . import _generic
+
     url = f"{SEARCH_PAGE}?location=new-york-city-NYC&sort=newest&search=senior%20software%20engineer"
-    payloads = runtime.capture_json(url, r"jobs\.apple\.com/api")
+    harvest = runtime.harvest(url, r"jobs\.apple\.com/api")
     records = walk_collect(
-        payloads, lambda d: ("postingTitle" in d or "transformedPostingTitle" in d) and ("positionId" in d or "id" in d)
+        harvest["matched"] + harvest["embedded"],
+        lambda d: ("postingTitle" in d or "transformedPostingTitle" in d) and ("positionId" in d or "id" in d),
     )
-    if not records:
+    if records:
+        return [parse_job(raw, company.name) for raw in records]
+    jobs = _generic.fallback_jobs(harvest, company.name, "apple")
+    if not jobs:
         raise RuntimeError("no job records in captured jobs.apple.com responses")
-    return [parse_job(raw, company.name) for raw in records]
+    return jobs

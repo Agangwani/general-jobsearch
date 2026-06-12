@@ -15,13 +15,9 @@ code: 65 matches / 18 companies / funnel + near-miss live).
 | Defects found in run 3 | (a) corrupted-merge of seen_jobs.json silently flagged all 65 jobs 🆕 — state now TSV + salvage parser; (b) funnel counted pre-age-cutoff — now age-aware with an `Aged out` column; (c) cluster topics exposed company-name tokens + `nbsp` entity leakage — both stripped |
 | Fetch gaps confirmed | Workday tenants returned 0 NYC rows (NVIDIA 98 title-passes / 0 loc) — location term + deeper paging shipped; Amazon page-1 had only 9 NYC rows — pagination to 300 shipped; D. E. Shaw card-text titles cleaned |
 
-Open questions for Alex after the next run:
-- **Remote roles**: the best job of the day was remote-only. Flip
-  `include_remote: true`, or keep them in near-miss?
-- **Mid-level (II) roles**: Attentive SWE II scored 93.4. In or out?
-- **Unleveled titles**: should `UNLEVELED_TITLE` near-misses with 5+-years
-  descriptions be promoted to the main table (Stripe/OpenAI/Jane Street
-  would enter)?
+~~Open questions for Alex after the next run~~ — answered 2026-06-12, see
+"Decisions from Alex" at the bottom: remote roles enter only with a posted
+pay range ≥ $200k, unleveled titles are promoted, mid-level stays near-miss.
 
 This is the master document. Each workstream below links to a focused doc with
 the full analysis and design. They are written so work can resume from these
@@ -77,12 +73,23 @@ cleanup. Still open, in priority order:
    iframe embeds, redirects — Workday tenant/site pairs included) and emits
    a ready-to-paste companies.yaml stanza. Run it for Citadel, Warby
    Parker, Superhuman, Plaid.
-2. Goldman/JPMorgan XHR patterns — capture from a real session (funnel shows
-   0 records despite pages loading).
-3. Google/Apple/Bloomberg/Microsoft/Morgan Stanley browser fallbacks find no
-   job records — same treatment.
-4. Millennium browser capture is flaky (2 matches in run 2, 0 title-passes in
-   run 3) — stabilize the XHR pattern / add retry.
+2. ~~Goldman/JPMorgan XHR patterns~~ ✅ SHIPPED (pending real-run
+   validation) — `BrowserRuntime.harvest()` now also collects every JSON
+   response regardless of URL pattern *and* JSON embedded in the final DOM:
+   SPA state globals, **Phenom's `window.phApp.ddo`** (careers.jpmorgan.com
+   and mlp.com embed page-1 results there — no XHR needs to fire), and
+   schema.org JobPosting JSON-LD. Each browser fetcher parses precisely
+   first, then falls back to the generic extractor
+   (`fetchers/_generic.py`) over everything harvested.
+3. ~~Google/Apple/Bloomberg/Microsoft/Morgan Stanley browser fallbacks~~
+   ✅ same treatment — plus cookie-consent auto-dismissal and scroll
+   passes, both of which commonly block job XHRs on these sites.
+4. ~~Millennium flaky capture~~ ✅ — `harvest()` retries once with a doubled
+   settle window when nothing job-shaped came back, and the Phenom embedded
+   state works even when the jobs XHR never fires.
+
+The next scheduled Actions run is the integration test for 2–4; per-site
+residue (if any) shows in the funnel / needs-attention sections.
 
 ### P3 — Validation loop (confidence scores) — NOW THE TOP PRIORITY
 Once-daily, subscription-funded (not API), human-triggered:
@@ -130,11 +137,15 @@ queue, and (much later, opt-in) unattended submit — risks and data model in
 | 4 | Slug auto-discovery, then per-board XHR fixes | ⏭ next |
 | 5 | Application packet generator (stage 1 of automation) | after a few days of validation labels |
 
-## Decisions needed from Alex
+## Decisions from Alex (2026-06-12) — all implemented
 
-- **Remote-US roles** (`include_remote: false`): run 3's single best fit was
-  remote-only. Flip it, or keep remote in near-miss?
-- **Mid-level (II) roles**: Attentive SWE II scored 93.4 in near-miss. In or out?
-- **Unleveled titles with 5+-years descriptions**: promote to main table?
-  (Brings in Stripe, OpenAI, Jane Street, Meta.)
-- Frontend/mobile hard-excluded, ML included — keep both choices?
+- **Remote-US roles**: include in the main table **only when the posting
+  shows a pay range topping out at/above $200k/yr**
+  (`search.remote_min_pay: 200000`). Remote roles without a posted range or
+  below the floor stay in near-miss as `REMOTE_NO_PAY_RANGE` /
+  `REMOTE_PAY_BELOW_MIN`.
+- **Unleveled titles with 5+-years descriptions**: **promoted** to the main
+  table when the title looks like a software role
+  (`search.promote_unleveled: true`) — brings in Stripe, OpenAI, Jane Street.
+- **Frontend/mobile hard-excluded, ML included**: confirmed, kept as-is.
+- **Mid-level (II) roles**: stay in near-miss (not promoted).
