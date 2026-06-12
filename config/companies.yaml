@@ -11,12 +11,6 @@
 
 companies:
   # ---------------------------------------------------------------- FAANG ---
-  - name: Meta
-    tags: [faang, top50]
-    ats: meta
-    fallback: browser_meta
-    careers_url: https://www.metacareers.com/jobs?offices[0]=New%20York%2C%20NY
-
   - name: Apple
     tags: [faang, top50]
     ats: apple
@@ -174,12 +168,6 @@ companies:
     ats: ashby   # migrated from Lever; confirmed live 2026-06-12 via discover
     org: plaid
     careers_url: https://plaid.com/careers/
-
-  - name: Superhuman   # = Grammarly post-rebrand; one Ashby board covers both
-    tags: [top50]
-    ats: ashby   # detected 2026-06-12 via discover survey hop
-    org: Superhuman
-    careers_url: https://superhuman.com/company/careers
 
   - name: Brex
     tags: [top50]
@@ -393,6 +381,15 @@ companies:
 manual_check:
   - name: LinkedIn  # aggressive bot protection; scraping violates LinkedIn ToS
     careers_url: https://careers.linkedin.com/jobs?location=New%20York
+
+  - name: Meta  # GraphQL API 400s (rotating doc_id) and the browser fallback
+                # captures no jobs JSON (run 2026-06-12) — bot-protected
+    careers_url: https://www.metacareers.com/jobs?offices[0]=New%20York%2C%20NY
+
+  - name: Superhuman  # = Grammarly post-rebrand; Ashby org 'Superhuman' returns
+                      # 0 postings (run 2026-06-12) — retry discover once the
+                      # board repopulates
+    careers_url: https://superhuman.com/company/careers
 
   - name: Warby Parker  # Greenhouse board 'warbyparker' 404s; browser survey found
                         # no ATS traffic (2026-06-12) — likely a custom board now
