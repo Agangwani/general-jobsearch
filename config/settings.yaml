@@ -1,0 +1,63 @@
+# Tuning knobs for the daily search. Everything here has a sensible default
+# in code; this file just makes the defaults visible and editable.
+
+resume: data/resume.txt
+
+search:
+  # Query sent to job boards that support server-side search (Workday,
+  # Amazon, Google, Microsoft, ...). Board-dump APIs (Greenhouse, Lever,
+  # Ashby) return everything and are filtered locally with the rules below.
+  query: senior software engineer
+
+  # A title must match at least one include pattern and no exclude pattern
+  # (case-insensitive regex).
+  title_include:
+    - '\bsenior\b.*\b(software|backend|back[- ]end|platform|infrastructure|full[- ]?stack|cloud|distributed|data|payments|fraud|machine learning|ml)\b.*\b(engineer|developer)\b'
+    - '\bsenior software development engineer\b'
+    - '\bsoftware (development )?engineer\b.*\b(iii|iv|3|4|senior)\b'
+    - '\bsde\s*(iii|3)\b'
+    - '\bstaff\b.*\b(software|backend|platform|infrastructure)\b.*\bengineer\b'
+    - '\b(lead|senior) (software|backend) (engineer|developer)\b'
+  title_exclude:
+    - '\b(intern|internship|co-?op|new grad|university|campus|apprentice)\b'
+    - '\b(manager|director|vp|vice president|head of|principal|distinguished|fellow)\b'
+    - '\b(ios|android|mobile|frontend|front[- ]end|salesforce developer|test|sdet|qa|quality|hardware|firmware|embedded|security clearance)\b'
+
+  # A job location must contain one of these substrings (case-insensitive).
+  locations:
+    - new york
+    - nyc
+    - brooklyn
+    - manhattan
+  # Also accept US-remote roles from these companies.
+  include_remote: false
+
+ranking:
+  # Final ordering = fit_score * 0.5 ** (age_days / half_life_days), so a
+  # posting loses half its weight every `half_life_days` — this is what
+  # "prioritize recently added" means concretely.
+  half_life_days: 7
+  # Age assumed for postings whose board exposes no date.
+  unknown_age_days: 14
+  # Ignore postings older than this entirely (days). 0 disables the cutoff.
+  max_age_days: 45
+  # K-means cluster count; "auto" picks ~1 cluster per 15 postings, capped at 12.
+  clusters: auto
+  # How many ranked jobs to include in the report.
+  top_jobs: 100
+  # Company fit = mean fit of its top-N matching postings.
+  company_top_n: 3
+
+fetch:
+  timeout_seconds: 30
+  # Per-page timeout for browser-scraped boards (headless Chromium).
+  browser_timeout_seconds: 45
+  max_workers: 8
+  # Cap on postings pulled per company before filtering (board dumps can be huge).
+  max_per_company: 1500
+  # Cap on per-job detail requests (Workday/SmartRecruiters-style boards).
+  max_detail_requests: 40
+
+output:
+  reports_dir: reports
+  state_file: data/seen_jobs.json
