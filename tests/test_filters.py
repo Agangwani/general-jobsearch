@@ -2,11 +2,16 @@ from pathlib import Path
 
 import yaml
 
-from jobsearch.filters import MATCH, NEAR_LOCATION, NEAR_TITLE, OUT, JobFilter, build_funnel
+from jobsearch.filters import (
+    MATCH, NEAR_LOCATION, NEAR_TITLE, OUT, JobFilter, build_funnel, extract_max_pay,
+)
 from jobsearch.models import JobPosting
 
 SETTINGS = yaml.safe_load((Path(__file__).parent.parent / "config" / "settings.yaml").read_text())
 FILTER = JobFilter(SETTINGS["search"])
+# The same search config with the 2026-06-12 policy carve-outs switched off,
+# for testing the strict behavior in isolation.
+STRICT = JobFilter({**SETTINGS["search"], "remote_min_pay": 0, "promote_unleveled": False})
 
 
 def job(title, location="New York, NY", description=""):
@@ -50,13 +55,25 @@ def test_classify_match():
     assert FILTER.classify(job("Senior Software Engineer")) == (MATCH, "")
 
 
-def test_classify_unleveled_title():
+def test_classify_unleveled_title_strict():
     # Stripe-style: no level in the title, seniority only in the description.
-    status, reason = FILTER.classify(
+    status, reason = STRICT.classify(
         job("Backend Engineer, Payments", description="We require 6+ years of experience.")
     )
     assert status == NEAR_TITLE
     assert reason == "UNLEVELED_TITLE"
+
+
+def test_unleveled_title_promoted():
+    # Policy 2026-06-12: unleveled software titles with 5+ years required are
+    # promoted into the main table.
+    assert FILTER.classify(
+        job("Backend Engineer, Payments", description="We require 6+ years of experience.")
+    ) == (MATCH, "")
+    # ...but only software-looking titles; other engineering stays near-miss.
+    status, reason = FILTER.classify(
+        job("Network Engineer", description="8+ years of experience."))
+    assert status == NEAR_TITLE
 
 
 def test_classify_unleveled_unverified():
@@ -77,10 +94,44 @@ def test_classify_excluded_track():
     assert reason.startswith("EXCLUDED_TRACK:")
 
 
-def test_classify_remote_only():
-    status, reason = FILTER.classify(job("Senior Software Engineer", "Remote - US"))
+def test_classify_remote_only_strict():
+    status, reason = STRICT.classify(job("Senior Software Engineer", "Remote - US"))
     assert status == NEAR_LOCATION
     assert reason == "REMOTE_ONLY"
+
+
+def test_remote_pay_carveout():
+    # Policy 2026-06-12: remote-US enters the main table only with a posted
+    # pay range topping out at/above $200k.
+    rich = "Base salary range: $180,000 - $230,000 plus equity."
+    poor = "Base salary range: $130,000 - $170,000."
+    assert FILTER.classify(
+        job("Senior Software Engineer", "Remote - US", rich)) == (MATCH, "")
+    assert FILTER.classify(
+        job("Senior Software Engineer", "Remote - US", poor)) == (
+        NEAR_LOCATION, "REMOTE_PAY_BELOW_MIN")
+    assert FILTER.classify(
+        job("Senior Software Engineer", "Remote - US", "Great benefits!")) == (
+        NEAR_LOCATION, "REMOTE_NO_PAY_RANGE")
+    # the carve-out also lets remote near-titles into near-miss
+    status, reason = FILTER.classify(
+        job("Software Engineer II", "Remote - US", rich))
+    assert (status, reason) == (NEAR_TITLE, "MID_LEVEL")
+    # ...but unleveled + remote + pay → fully promoted
+    assert FILTER.classify(
+        job("Software Engineer, Infrastructure", "Remote - US",
+            rich + " 7+ years of experience.")) == (MATCH, "")
+
+
+def test_extract_max_pay():
+    assert extract_max_pay("range of $187,500 to $245,000 annually") == 245000
+    assert extract_max_pay("pay: $180K–$220K + equity") == 220000
+    assert extract_max_pay("$172.5K max") == 172500
+    assert extract_max_pay("about $210000 per year") == 210000
+    assert extract_max_pay("earn $45/hour") is None       # not an annual salary
+    assert extract_max_pay("save $500 on day one") is None
+    assert extract_max_pay("no numbers here") is None
+    assert extract_max_pay("") is None
 
 
 def test_classify_out():
@@ -97,13 +148,15 @@ def test_build_funnel():
         job("Senior Software Engineer", "San Francisco, CA"),              # out (title ok)
         job("Account Executive"),                                          # out
     ]
-    funnel = build_funnel(jobs, FILTER)
+    funnel = build_funnel(jobs, STRICT)
     row = funnel["X"]
     assert row["fetched"] == 4
     assert row["title_pass"] == 2
     assert row["loc_pass"] == 3
     assert row["matched"] == 1
     assert row["near_miss"] == 1
+    # under the live policy the unleveled backend role is promoted
+    assert build_funnel(jobs, FILTER)["X"]["matched"] == 2
 
 
 def test_build_funnel_aged_out():

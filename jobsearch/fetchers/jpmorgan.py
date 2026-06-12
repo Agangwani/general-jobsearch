@@ -45,8 +45,17 @@ def parse_payloads(payloads: list, company_name: str) -> list[JobPosting]:
 
 
 def fetch(company: Company, runtime, settings: dict) -> list[JobPosting]:
-    payloads = runtime.capture_json(URL, XHR_PATTERN)
-    jobs = parse_payloads(payloads, company.name)
+    from . import _generic
+
+    # careers.jpmorgan.com runs on Phenom: the first page of results is
+    # embedded in window.phApp.ddo (harvested as "embedded"), so this works
+    # even when no search XHR fires at all.
+    harvest = runtime.harvest(URL, XHR_PATTERN)
+    jobs = parse_payloads(harvest["matched"] + harvest["embedded"], company.name)
+    if not jobs:
+        jobs = _generic.fallback_jobs(
+            harvest, company.name, "jpmorgan",
+            link_fmt="https://careers.jpmorgan.com/us/en/job/{id}")
     if not jobs:
         raise RuntimeError("no job records found in captured careers.jpmorgan.com responses")
     return jobs

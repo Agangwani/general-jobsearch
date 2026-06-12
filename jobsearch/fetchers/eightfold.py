@@ -54,10 +54,16 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
     /api/apply/v2/jobs XHR the page itself issues."""
     from ..utils import walk_collect
 
+    from . import _generic
+
     base_url = company.params["base_url"].rstrip("/")
     url = f"{base_url}/careers?location=New%20York&sort_by=new"
-    payloads = runtime.capture_json(url, r"/api/apply/v2/jobs")
-    records = walk_collect(payloads, lambda d: "name" in d and "id" in d and ("location" in d or "locations" in d))
-    if not records:
+    harvest = runtime.harvest(url, r"/api/apply/v2/jobs")
+    records = walk_collect(harvest["matched"] + harvest["embedded"],
+                           lambda d: "name" in d and "id" in d and ("location" in d or "locations" in d))
+    if records:
+        return [parse_job(raw, company.name, base_url) for raw in records]
+    jobs = _generic.fallback_jobs(harvest, company.name, "eightfold")
+    if not jobs:
         raise RuntimeError(f"no positions captured from {base_url} careers page")
-    return [parse_job(raw, company.name, base_url) for raw in records]
+    return jobs

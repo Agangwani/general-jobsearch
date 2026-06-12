@@ -60,14 +60,20 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
     capture whatever jobs JSON the new frontend fetches."""
     from ..utils import walk_collect
 
+    from . import _generic
+
     url = (
         "https://www.google.com/about/careers/applications/jobs/results/"
         "?location=New%20York%2C%20NY&q=%22software%20engineer%22&sort_by=date"
     )
-    payloads = runtime.capture_json(url, r"google\.com/.*(search|jobs|careers)")
+    harvest = runtime.harvest(url, r"google\.com/.*(search|jobs|careers)")
     records = walk_collect(
-        payloads, lambda d: "title" in d and ("id" in d or "job_id" in d) and "locations" in d
+        harvest["matched"] + harvest["embedded"],
+        lambda d: "title" in d and ("id" in d or "job_id" in d) and "locations" in d,
     )
-    if not records:
+    if records:
+        return [parse_job(raw, company.name) for raw in records]
+    jobs = _generic.fallback_jobs(harvest, company.name, "google")
+    if not jobs:
         raise RuntimeError("no job records captured from Google careers page")
-    return [parse_job(raw, company.name) for raw in records]
+    return jobs

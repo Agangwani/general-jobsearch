@@ -92,7 +92,11 @@ skipped with an actionable note in the report instead of failing the run.
   `jobs.lever.co/<slug>`, for Ashby `jobs.ashbyhq.com/<slug>`.
 - **Change role/location targeting** — `search.title_include`,
   `search.title_exclude`, and `search.locations` in `config/settings.yaml`.
-  Set `include_remote: true` to also accept US-remote roles.
+  Set `include_remote: true` to accept all US-remote roles, or leave it off
+  and use `remote_min_pay` (default $200k) to admit only remote roles whose
+  posted pay range clears the floor. `promote_unleveled: true` lets
+  unleveled software titles (Stripe-style) match when the description
+  requires 5+ years.
 - **Tune recency vs. fit** — `ranking.half_life_days` (smaller = recency
   matters more) and `ranking.max_age_days` (hard cutoff).
 - **Update the resume** — replace `data/resume.txt`; the ranking adapts

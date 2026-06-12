@@ -42,8 +42,16 @@ def parse_payloads(payloads: list, company_name: str) -> list[JobPosting]:
 
 
 def fetch(company: Company, runtime, settings: dict) -> list[JobPosting]:
-    payloads = runtime.capture_json(URL, XHR_PATTERN)
-    jobs = parse_payloads(payloads, company.name)
+    from . import _generic
+
+    # mlp.com is also Phenom-powered (see jpmorgan.py): the embedded
+    # phApp.ddo state plus harvest's built-in retry covers the flakiness
+    # where the jobs XHR sometimes never fires.
+    harvest = runtime.harvest(URL, XHR_PATTERN)
+    jobs = parse_payloads(harvest["matched"] + harvest["embedded"], company.name)
+    if not jobs:
+        jobs = _generic.fallback_jobs(harvest, company.name, "millennium",
+                                      link_fmt="https://www.mlp.com/job/{id}")
     if not jobs:
         raise RuntimeError("no job records found in captured mlp.com responses")
     return jobs

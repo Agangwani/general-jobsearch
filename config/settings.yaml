@@ -31,8 +31,17 @@ search:
     - nyc
     - brooklyn
     - manhattan
-  # Also accept US-remote roles from these companies.
+  # Also accept US-remote roles from these companies (regardless of pay).
   include_remote: false
+  # Carve-out (decided 2026-06-12): a US-remote role still enters the main
+  # table when its posting shows a pay range topping out at/above this floor
+  # (USD/year). Remote roles without a posted range, or below the floor, stay
+  # in near-miss as REMOTE_NO_PAY_RANGE / REMOTE_PAY_BELOW_MIN. 0 disables.
+  remote_min_pay: 200000
+  # Decided 2026-06-12: titles with no level (Stripe, OpenAI, Jane Street…)
+  # are promoted to the main table when the description requires 5+ years
+  # and the title looks like a software role.
+  promote_unleveled: true
 
 ranking:
   # Final ordering = fit_score * 0.5 ** (age_days / half_life_days), so a
