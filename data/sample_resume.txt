@@ -1,0 +1,32 @@
+Alex Candidate
+Senior Software Engineer, New York, NY
+alex@example.com | 555-123-4567 | linkedin.com/in/alex-candidate | github.com/alexcandidate
+
+SUMMARY
+Senior software engineer with 8 years of experience designing and operating
+distributed backend systems. Led teams building payment processing, streaming
+data pipelines, and high-availability APIs serving millions of requests per
+day. Strong in Java, Python, Go, AWS, Kubernetes, and event-driven
+architecture.
+
+EXPERIENCE
+Senior Software Engineer — ExampleBank (2021–present)
+- Designed a real-time transaction processing platform on Kafka and AWS
+  handling 50M events/day with exactly-once semantics.
+- Led migration of a monolith to 14 microservices on Kubernetes, cutting
+  deploy time from hours to minutes and improving p99 latency 40%.
+- Mentored four engineers; drove adoption of contract testing and SLOs.
+
+Software Engineer — StartupCo (2017–2021)
+- Built REST and GraphQL APIs in Python/Django and Go backing a B2B SaaS
+  product with 100k users.
+- Introduced infrastructure-as-code (Terraform) and CI/CD pipelines,
+  reducing release failures by 60%.
+
+SKILLS
+Java, Python, Go, SQL, Kafka, AWS (ECS, Lambda, DynamoDB, S3), Kubernetes,
+Docker, Terraform, PostgreSQL, Redis, gRPC, microservices, distributed
+systems, observability (Datadog, Prometheus), CI/CD
+
+EDUCATION
+B.S. Computer Science, State University, 2017

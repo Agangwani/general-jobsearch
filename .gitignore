@@ -11,3 +11,11 @@ data/browser_profile/
 data/profile.yaml
 data/credentials.json
 data/token.json
+
+# Runtime artifacts and personal data — never committed. Your resume,
+# fetched reports, application history, and tokens all live here locally.
+data/*
+!data/.gitkeep
+!data/sample_resume.txt
+reports/*
+!reports/.gitkeep

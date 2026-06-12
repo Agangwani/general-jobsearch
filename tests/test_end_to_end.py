@@ -8,7 +8,7 @@ from jobsearch.report import render_markdown, write_reports
 from jobsearch.scoring import apply_recency, rank_companies, score_jobs
 from jobsearch.state import load_seen, mark_new, update_seen
 
-RESUME = (Path(__file__).parent.parent / "data" / "resume.txt").read_text()
+RESUME = (Path(__file__).parent.parent / "data" / "sample_resume.txt").read_text()
 
 DESCRIPTIONS = {
     "Datadog": "Backend distributed systems in Go and Python, observability pipelines, Kafka, high-scale metrics ingestion on AWS.",
