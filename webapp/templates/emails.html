@@ -4,9 +4,21 @@
 
 <header class="page-head">
   <h1>Email</h1>
-  {% if connected %}<span class="tag tag-green">Gmail connected</span>
-  {% else %}<span class="tag tag-amber">Not connected</span>{% endif %}
+  <div class="actions">
+    {% if connected %}
+    <span class="tag tag-green">Gmail connected{{ ' — ' + address if address }}</span>
+    <form method="post" action="/emails/sync"><button class="btn btn-primary">⟳ Sync now</button></form>
+    {% else %}
+    <span class="tag tag-amber">Not connected</span>
+    <form method="post" action="/emails/connect">
+      <button class="btn btn-primary" {{ 'disabled title="Add data/credentials.json first"' if not has_credentials }}>Connect Gmail</button>
+    </form>
+    {% endif %}
+  </div>
 </header>
+
+{% if error %}<div class="apply-state">⚠ {{ error }}</div>{% endif %}
+{% if synced %}<div class="apply-state ok">✓ Synced: {{ synced }}</div>{% endif %}
 
 {% if not connected %}
 <section class="setup-box">
@@ -14,7 +26,10 @@
   <pre>{{ setup }}</pre>
   <p class="muted">Once connected, application confirmations and company replies are ingested
   append-only, auto-linked to your applications, and searchable below. A
-  detected confirmation advances the application to <strong>confirmed</strong> automatically.</p>
+  detected confirmation advances the application to <strong>confirmed</strong> automatically.
+  Sync only asks Gmail for mail from companies you're applying to (plus the
+  ATS platforms that send on their behalf — Greenhouse, Lever, Workday, …)
+  over the last year; the rest of your inbox is never fetched or read.</p>
 </section>
 {% endif %}
 

@@ -61,6 +61,7 @@ playwright install chromium   # one-time, for browser-scraped boards + apply bro
 
 python -m jobsearch run      # full daily run → reports/latest.md
 python -m jobsearch verify   # check every configured board is reachable
+python -m jobsearch discover "Warby Parker"   # auto-detect a company's ATS board slug
 
 python -m jobsearch ingest   # pull the latest run into the application database
 python -m jobsearch ui       # application-tracking UI → http://127.0.0.1:8484

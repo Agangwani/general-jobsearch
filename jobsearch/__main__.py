@@ -22,6 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Fetch, rank, and write the daily report")
     sub.add_parser("verify", help="Check that every configured job board is reachable")
+    disc = sub.add_parser("discover", help="Auto-discover a company's ATS board slug")
+    disc.add_argument("company", help="Company name (quoted if multi-word)")
+    disc.add_argument("--url", default="", help="Careers page URL (default: from companies.yaml)")
     sub.add_parser("ingest", help="Pull reports/latest.json into the application database")
     ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
     ui.add_argument("--port", type=int, default=8484)
@@ -32,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
         return pipeline.run(args.root)
     if args.command == "verify":
         return pipeline.verify(args.root)
+    if args.command == "discover":
+        from .discover import discover
+        return discover(args.root, args.company, careers_url=args.url)
     if args.command == "ingest":
         from webapp import db as webdb
         from webapp.ingest import ingest_latest
