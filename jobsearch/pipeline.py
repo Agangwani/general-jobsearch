@@ -6,8 +6,9 @@ from pathlib import Path
 
 from .browser import BrowserRuntime, BrowserUnavailable
 from .config import load_companies, load_settings
+from .corpus import write_snapshot
 from .fetchers import BROWSER_FETCHERS, FETCHERS
-from .filters import JobFilter
+from .filters import MATCH, NEAR_LOCATION, NEAR_TITLE, JobFilter, build_funnel
 from .http import make_session
 from .models import Company, FetchError, JobPosting
 from .report import render_markdown, write_reports
@@ -98,25 +99,52 @@ def run(root: Path) -> int:
     resume_text = (root / settings["resume"]).read_text()
 
     print(f"Fetching boards for {sum(c.enabled for c in companies)} companies...", file=sys.stderr)
-    jobs, errors = fetch_all(companies, settings)
-    jobs = dedupe(jobs)
-    print(f"Fetched {len(jobs)} postings; filtering...", file=sys.stderr)
+    all_jobs, errors = fetch_all(companies, settings)
+    all_jobs = dedupe(all_jobs)
+    print(f"Fetched {len(all_jobs)} postings; filtering...", file=sys.stderr)
+
+    output = settings.get("output", {})
+    corpus_dir = root / output.get("corpus_dir", "data/corpus")
+    snapshot = write_snapshot(all_jobs, corpus_dir, output.get("corpus_retention_days", 14))
+    print(f"Corpus snapshot: {snapshot}", file=sys.stderr)
 
     job_filter = JobFilter(settings["search"])
-    jobs = job_filter.apply(jobs)
+    funnel = build_funnel(all_jobs, job_filter)
+    jobs: list[JobPosting] = []
+    near_miss: list[JobPosting] = []
+    for job in all_jobs:
+        status, reason = job_filter.classify(job)
+        if status == MATCH:
+            jobs.append(job)
+        elif status in (NEAR_TITLE, NEAR_LOCATION):
+            job.filter_reason = reason
+            near_miss.append(job)
 
     ranking = settings["ranking"]
     max_age = ranking.get("max_age_days", 45)
     if max_age:
         jobs = [j for j in jobs if (j.age_days() or 0) <= max_age]
-    print(f"{len(jobs)} NYC senior-SWE postings after filters; scoring...", file=sys.stderr)
+        near_miss = [j for j in near_miss if (j.age_days() or 0) <= max_age]
+    print(f"{len(jobs)} NYC senior-SWE postings after filters "
+          f"(+{len(near_miss)} near-miss); scoring...", file=sys.stderr)
 
-    score_jobs(resume_text, jobs, clusters=ranking.get("clusters", "auto"))
+    # Vectorizer + K-means are fit on the full fetched corpus; matched and
+    # near-miss jobs are scored inside that space (docs/analysis-scoring-skew.md).
+    _, cluster_names = score_jobs(
+        resume_text,
+        jobs + near_miss,
+        clusters=ranking.get("clusters", "auto"),
+        corpus=all_jobs,
+        cluster_weight=ranking.get("cluster_weight", 0.15),
+        return_topics=True,
+    )
     apply_recency(
         jobs,
         half_life_days=ranking.get("half_life_days", 7),
         unknown_age_days=ranking.get("unknown_age_days", 14),
     )
+    near_miss.sort(key=lambda j: -j.fit_score)
+    near_miss = near_miss[: ranking.get("near_miss_count", 20)]
     company_fit = rank_companies(jobs, top_n=ranking.get("company_top_n", 3))
 
     state_path = root / settings["output"].get("state_file", "data/seen_jobs.json")
@@ -127,9 +155,12 @@ def run(root: Path) -> int:
     markdown = render_markdown(
         jobs, company_fit, companies, manual_check, errors,
         top_jobs=ranking.get("top_jobs", 100),
+        near_miss=near_miss,
+        funnel=funnel,
+        cluster_names=cluster_names,
     )
     out_dir = root / settings["output"].get("reports_dir", "reports")
-    written = write_reports(out_dir, markdown, jobs, company_fit)
+    written = write_reports(out_dir, markdown, jobs, company_fit, near_miss=near_miss, funnel=funnel)
 
     print(f"Wrote {', '.join(str(p) for p in written)}", file=sys.stderr)
     if errors:
