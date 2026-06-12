@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Jobs — jobsearch{% endblock %}
+{% block content %}
+
+{#-- Build a sort URL for a column, toggling direction if already active --#}
+{%- macro sort_href(col) -%}
+/?sort_by={{ col }}&sort_dir={{ 'asc' if sort_by == col and sort_dir != 'asc' else 'desc' if sort_by == col else 'desc' }}&q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}
+{%- endmacro -%}
+
+{%- macro sort_icon(col) -%}
+  {%- if sort_by == col -%}
+    <span class="sort-arrow">{{ '↑' if sort_dir == 'asc' else '↓' }}</span>
+  {%- else -%}
+    <span class="sort-arrow sort-arrow-idle">↕</span>
+  {%- endif -%}
+{%- endmacro -%}
+
+<header class="page-head">
+  <h1>
+    {% if stack == "applied" %}Applied{% elif stack == "to_apply" %}To apply{% else %}All jobs{% endif %}
+    <span class="muted">({{ jobs|length }})</span>
+  </h1>
+  {% if last_run %}
+  <span class="muted">Last ingest {{ last_run.ingested_at }} — {{ last_run.jobs_inserted }} new,
+    {{ last_run.jobs_updated }} patched</span>
+  {% else %}
+  <span class="muted">No data yet — run <code>python -m jobsearch run</code>, then hit "Ingest latest run".</span>
+  {% endif %}
+</header>
+
+<form class="filters" method="get" action="/">
+  <input type="hidden" name="sort_by" value="{{ sort_by }}">
+  <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search title, description, company, location…">
+  <select name="company">
+    <option value="">All companies</option>
+    {% for c in companies %}<option value="{{ c }}" {{ 'selected' if c == company }}>{{ c }}</option>{% endfor %}
+  </select>
+  <select name="stack">
+    <option value="">Both stacks</option>
+    <option value="to_apply" {{ 'selected' if stack == 'to_apply' }}>To apply</option>
+    <option value="applied" {{ 'selected' if stack == 'applied' }}>Applied</option>
+  </select>
+  <label class="check"><input type="checkbox" name="near_miss" value="1" {{ 'checked' if near_miss == '1' }}> near-miss</label>
+  <input class="filter-num" type="number" name="min_fit" value="{{ min_fit }}" placeholder="Min fit ≥" min="0" max="100" step="1">
+  <select name="status_filter">
+    <option value="">Any status</option>
+    {% for s in all_statuses %}<option value="{{ s }}" {{ 'selected' if s == status_filter }}>{{ s.replace('_',' ') }}</option>{% endfor %}
+  </select>
+  <button class="btn">Filter</button>
+  {% if sort_by or min_fit or status_filter %}
+  <a class="btn btn-ghost" href="/?q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}">Reset sort</a>
+  {% endif %}
+</form>
+
+<table class="jobs">
+  <thead>
+    <tr>
+      <th><a class="sh{{ ' sa' if sort_by == 'fit' }}" href="{{ sort_href('fit') }}">Fit{{ sort_icon('fit') }}</a></th>
+      <th><a class="sh{{ ' sa' if sort_by == 'company' }}" href="{{ sort_href('company') }}">Company{{ sort_icon('company') }}</a></th>
+      <th><a class="sh{{ ' sa' if sort_by == 'title' }}" href="{{ sort_href('title') }}">Title{{ sort_icon('title') }}</a></th>
+      <th><a class="sh{{ ' sa' if sort_by == 'location' }}" href="{{ sort_href('location') }}">Location{{ sort_icon('location') }}</a></th>
+      <th><a class="sh{{ ' sa' if sort_by == 'posted' }}" href="{{ sort_href('posted') }}">Posted{{ sort_icon('posted') }}</a></th>
+      <th><a class="sh{{ ' sa' if sort_by == 'first_seen' }}" href="{{ sort_href('first_seen') }}">First seen{{ sort_icon('first_seen') }}</a></th>
+      <th>Flags</th>
+      <th><a class="sh{{ ' sa' if sort_by == 'status' }}" href="{{ sort_href('status') }}">Status{{ sort_icon('status') }}</a></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr class="{{ 'row-applied' if j.status in ('applied','confirmed','interviewing','offer') }}{{ ' row-dead' if j.status in ('rejected','withdrawn') }}">
+      <td class="num">{{ '%.0f'|format(j.fit_score) if j.fit_score is not none else '—' }}</td>
+      <td>{{ j.company }}</td>
+      <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
+      <td class="muted">{{ j.location[:42] }}</td>
+      <td class="muted">{{ j.posted_at or '—' }}</td>
+      <td class="muted" title="exact insertion time {{ j.first_seen_at }}">{{ j.first_seen_at[:10] }}</td>
+      <td>
+        {% if j.filter_reason %}<span class="tag tag-amber" title="near-miss">{{ j.filter_reason }}</span>{% endif %}
+        {% if j.validation == 'verified' %}<span class="tag tag-green">✓ verified</span>
+        {% elif j.validation == 'mismatch' %}<span class="tag tag-amber">⚠</span>
+        {% elif j.validation == 'stale' %}<span class="tag tag-red">✗ stale</span>{% endif %}
+      </td>
+      <td><span class="status status-{{ j.status }}">{{ j.status.replace('_',' ') }}</span></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="empty">Nothing here. Run the pipeline, then "Ingest latest run".</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}

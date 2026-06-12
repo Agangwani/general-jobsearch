@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Search config — jobsearch{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <h1>Search configuration</h1>
+  <span class="muted">Read-only view of config/settings.yaml and companies.yaml — edit the files to change.</span>
+</header>
+
+<div class="columns">
+  <section class="col-main">
+    <h2>Title keywords (include)</h2>
+    <ul class="keyword-list">
+      {% for p in search.title_include %}<li><code>{{ p }}</code></li>{% endfor %}
+    </ul>
+    <h2>Title keywords (exclude)</h2>
+    <ul class="keyword-list">
+      {% for p in search.title_exclude %}<li><code>{{ p }}</code></li>{% endfor %}
+    </ul>
+    <h2>Locations</h2>
+    <p>{% for l in search.locations %}<span class="tag">{{ l }}</span> {% endfor %}
+       · remote included: <strong>{{ search.include_remote }}</strong></p>
+    <h2>Ranking</h2>
+    <p class="muted">half-life {{ ranking.half_life_days }}d · max age {{ ranking.max_age_days }}d ·
+       cluster weight {{ ranking.cluster_weight }} · query “{{ search.query }}”</p>
+  </section>
+  <aside class="col-side">
+    <h2>Companies ({{ companies|length }})</h2>
+    <ul class="company-list">
+      {% for c in companies %}<li>{{ c.name }} <span class="muted">({{ c.ats }})</span></li>{% endfor %}
+    </ul>
+    <h2>Manual check</h2>
+    <ul class="company-list">
+      {% for c in manual %}<li><a href="{{ c.careers_url }}" target="_blank">{{ c.name }} ↗</a></li>{% endfor %}
+    </ul>
+  </aside>
+</div>
+
+{% endblock %}

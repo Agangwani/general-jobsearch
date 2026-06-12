@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}jobsearch{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<nav class="topnav">
+  <a class="brand" href="/">jobsearch</a>
+  <a href="/?stack=to_apply">To apply <span class="pill">{{ counts.to_apply }}</span></a>
+  <a href="/?stack=applied">Applied <span class="pill pill-green">{{ counts.applied }}</span></a>
+  <a href="/resume">Resume</a>
+  <a href="/profile">Profile</a>
+  <a href="/settings">Search config</a>
+  <a href="/emails">Email</a>
+  <form method="post" action="/ingest" class="nav-ingest">
+    <button class="btn btn-ghost" title="Pull the latest pipeline report into the database">⟳ Ingest latest run</button>
+  </form>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

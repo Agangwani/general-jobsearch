@@ -1,0 +1,96 @@
+# Frontend: Application-Tracking UI
+
+> **Status (2026-06-12): v1 shipped.** `python -m jobsearch ui` →
+> http://127.0.0.1:8484. Local-only FastAPI + SQLite + a Playwright-driven
+> integrated browser for applying.
+
+## What it is
+
+A local web app for the person *applying* to the jobs the pipeline finds:
+
+- **Two stacks** — "To apply" and "Applied" — backed by an application
+  lifecycle (`not_applied → in_progress → applied → confirmed →
+  interviewing → offer/rejected/withdrawn`), filterable and searchable
+  (title, description, company, location).
+- **Job detail** — full description (joined from the local corpus snapshot),
+  fit score, validation verdict, filter reason for near-misses, complete
+  change history, and linked emails.
+- **Integrated apply browser** — "Apply" opens the posting in a headed
+  Chromium window (Playwright, persistent profile in `data/browser_profile/`
+  so ATS logins survive). Every navigation is watched; a page that looks like
+  a submission confirmation automatically flips the application to `applied`
+  with the confirming URL recorded. Closing the window without a detection
+  leaves it `in_progress` for one-click manual resolution.
+- **Copy-paste panel** — profile fields (name, email, links, work auth,
+  salary expectation, …) seeded from `data/profile.yaml` + resume parsing,
+  editable at `/profile`, click-to-copy on every job page.
+- **Resume view** — `/resume` renders `data/resume.txt` block-by-block with
+  per-block copy buttons + the PDF inline.
+- **Search config view** — `/settings` shows the live title
+  include/exclude patterns, locations, and company registry.
+- **Email module (scaffold)** — `/emails` ships the schema, the
+  message→application matcher, and the classifier; the Gmail OAuth connect
+  flow is stubbed with setup instructions (no credentials in the repo, ever).
+
+## Database design (`data/jobsearch.db`, gitignored — holds PII)
+
+```
+jobs                 one row per unique posting (pipeline key). first_seen_at =
+                     exact UTC insertion time of the discovering run;
+                     last_seen_at bumped on re-runs; changed fields patched.
+job_events           append-only: inserted / updated{field: [old,new]} / …
+applications         1:1 with jobs; the lifecycle + applied_at + submitted_via
+application_events   append-only status history (incl. confirmation URLs)
+profile_fields       the preloaded copy-paste data
+runs                 ingest ledger (inserted/patched counts per run)
+email_accounts       gmail connection state
+email_messages       append-only, auto-linked to applications, classified
+                     (confirmation/interview/rejection/offer/other)
+```
+
+Key semantics, per requirements:
+- **Insertion date**: `jobs.first_seen_at` is the exact timestamp of the
+  ingest that discovered the posting. Multiple runs per day **never
+  duplicate** — re-seen jobs only bump `last_seen_at`, and changed values
+  (fit score, validation, description…) are patched with the diff recorded
+  in `job_events`. Nothing is ever overwritten silently.
+- **Append-only history**: every state change of every row is queryable —
+  search by company, then read its jobs' and applications' full timelines.
+- A detected email confirmation advances `applied → confirmed`
+  automatically.
+
+## Data flow
+
+```
+python -m jobsearch run          (pipeline: fetch → score → reports/ + corpus snapshot)
+python -m jobsearch ingest       (or the ⟳ button in the UI)
+        └─ latest.json (matched + near-miss) ⋈ corpus snapshot (descriptions)
+           → upsert into jobs / applications, events appended
+python -m jobsearch ui           (FastAPI on 127.0.0.1:8484)
+        └─ Apply → headed Chromium (Playwright) → confirmation detection
+           → application_events / status
+```
+
+## Future connections (designed-for, not yet built)
+
+- **Gmail**: OAuth desktop flow (user-created credentials in `data/`,
+  gitignored) → poll inbox → `store_message()` (already implemented +
+  tested) links and classifies. UI page and tables already exist.
+- **Form prefill** (automation Stage 2): the integrated browser session +
+  `profile_fields` are exactly the inputs the prefill engine needs — it adds
+  field-mapping per ATS family on top of this PR.
+- Additional providers (calendar for interview scheduling, etc.) follow the
+  email pattern: own table(s), append-only, linked to applications.
+
+## Stack & decisions
+
+- **FastAPI + Jinja2 server-rendered + ~80 lines of vanilla JS** — no node
+  toolchain in a Python repo; the user is one engineer on localhost.
+- **SQLite WAL** — zero-config, perfect for single-user local writes.
+- **Playwright headed window** rather than an iframe "browser": job sites
+  block framing (X-Frame-Options), and Playwright gives navigation/network
+  introspection — which is also the foundation the application-automation
+  roadmap (Stage 2/3) builds on, so one browser stack serves both.
+- Submission detection is **deliberately conservative** (URL/title/body
+  phrases like "application received"); a false `applied` is worse than
+  asking the user to confirm manually.

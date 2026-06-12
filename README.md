@@ -57,11 +57,20 @@ To run locally instead, `crontab -e`:
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium   # one-time, for browser-scraped boards
+playwright install chromium   # one-time, for browser-scraped boards + apply browser
 
 python -m jobsearch run      # full daily run → reports/latest.md
 python -m jobsearch verify   # check every configured board is reachable
+
+python -m jobsearch ingest   # pull the latest run into the application database
+python -m jobsearch ui       # application-tracking UI → http://127.0.0.1:8484
 ```
+
+The UI (docs/design-frontend.md) tracks your to-apply / applied stacks in a
+local SQLite database (`data/jobsearch.db`, gitignored), shows full job
+descriptions with a copy-paste profile panel and your resume, and opens
+postings in an integrated Chromium window that detects application
+submissions automatically.
 
 If Chromium isn't installed the run still works — browser-scraped boards are
 skipped with an actionable note in the report instead of failing the run.

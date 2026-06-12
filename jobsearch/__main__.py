@@ -22,12 +22,29 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Fetch, rank, and write the daily report")
     sub.add_parser("verify", help="Check that every configured job board is reachable")
+    sub.add_parser("ingest", help="Pull reports/latest.json into the application database")
+    ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
+    ui.add_argument("--port", type=int, default=8484)
+    ui.add_argument("--host", default="127.0.0.1")
 
     args = parser.parse_args(argv)
     if args.command == "run":
         return pipeline.run(args.root)
     if args.command == "verify":
         return pipeline.verify(args.root)
+    if args.command == "ingest":
+        from webapp import db as webdb
+        from webapp.ingest import ingest_latest
+        conn = webdb.connect(args.root / "data" / "jobsearch.db")
+        ingest_latest(args.root, conn)
+        return 0
+    if args.command == "ui":
+        import uvicorn
+        from webapp.app import create_app
+        app = create_app(args.root)
+        print(f"jobsearch UI → http://{args.host}:{args.port}")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        return 0
     return 2
 
 
