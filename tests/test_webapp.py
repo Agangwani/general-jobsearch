@@ -92,6 +92,43 @@ def test_search(conn):
     assert len(db.search_jobs(conn, stack="applied")) == 0
 
 
+def test_sort_by_fit(conn):
+    db.upsert_job(conn, record("k1", fit_score=80.0))
+    db.upsert_job(conn, record("k2", company="Beta", fit_score=60.0))
+    desc = db.search_jobs(conn, sort_by="fit", sort_dir="desc")
+    assert desc[0]["fit_score"] == 80.0 and desc[1]["fit_score"] == 60.0
+    asc = db.search_jobs(conn, sort_by="fit", sort_dir="asc")
+    assert asc[0]["fit_score"] == 60.0 and asc[1]["fit_score"] == 80.0
+
+
+def test_sort_by_company(conn):
+    db.upsert_job(conn, record("k1", company="Zebra"))
+    db.upsert_job(conn, record("k2", company="Alpha"))
+    asc = db.search_jobs(conn, sort_by="company", sort_dir="asc")
+    assert asc[0]["company"] == "Alpha"
+    desc = db.search_jobs(conn, sort_by="company", sort_dir="desc")
+    assert desc[0]["company"] == "Zebra"
+
+
+def test_min_fit_filter(conn):
+    db.upsert_job(conn, record("k1", fit_score=80.0))
+    db.upsert_job(conn, record("k2", company="Beta", fit_score=60.0))
+    assert len(db.search_jobs(conn, min_fit=70.0)) == 1
+    assert db.search_jobs(conn, min_fit=70.0)[0]["fit_score"] == 80.0
+    assert len(db.search_jobs(conn, min_fit=50.0)) == 2
+
+
+def test_status_filter(conn):
+    db.upsert_job(conn, record("k1"))
+    db.upsert_job(conn, record("k2", company="Beta"))
+    app_id = conn.execute("SELECT id FROM applications WHERE job_id = "
+                          "(SELECT id FROM jobs WHERE key = 'k1')").fetchone()["id"]
+    db.set_application_status(conn, app_id, "applied")
+    assert len(db.search_jobs(conn, status_filter="applied")) == 1
+    assert len(db.search_jobs(conn, status_filter="not_applied")) == 1
+    assert len(db.search_jobs(conn, status_filter="interviewing")) == 0
+
+
 # -------------------------------------------------------------------- ingest
 def test_ingest_latest(tmp_path, conn):
     root = tmp_path

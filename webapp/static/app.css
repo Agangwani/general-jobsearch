@@ -51,13 +51,22 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 table.jobs { width: 100%; border-collapse: collapse; }
 table.jobs th { text-align: left; color: var(--muted); font-size: 12px;
   text-transform: uppercase; letter-spacing: .05em; padding: 8px 10px;
-  border-bottom: 1px solid var(--line); }
+  border-bottom: 1px solid var(--line); white-space: nowrap; }
 table.jobs td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.jobs tr:hover td { background: var(--bg-soft); }
 td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
 .row-applied td { opacity: .75; }
 .row-dead td { opacity: .45; }
 .empty { text-align: center; color: var(--muted); padding: 40px !important; }
+/* sortable column headers */
+th a.sh { color: var(--muted); text-decoration: none; display: flex; align-items: center;
+  gap: 4px; cursor: pointer; }
+th a.sh:hover { color: var(--text); }
+th a.sa { color: var(--accent); }
+.sort-arrow { font-size: 10px; opacity: .9; }
+.sort-arrow-idle { opacity: .3; }
+/* extra filter inputs */
+.filter-num { width: 94px; }
 
 /* tags & statuses */
 .tag { display: inline-block; background: var(--bg-card); border: 1px solid var(--line);

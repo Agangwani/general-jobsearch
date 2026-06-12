@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import yaml
 from fastapi import FastAPI, Form, Request
@@ -29,6 +30,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile")
 
     templates = Jinja2Templates(directory=HERE / "templates")
+    templates.env.filters["qp"] = quote_plus
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
@@ -38,16 +40,22 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     # ------------------------------------------------------------ dashboard
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, q: str = "", company: str = "", stack: str = "",
-                  near_miss: str = "1"):
+                  near_miss: str = "1", sort_by: str = "", sort_dir: str = "",
+                  min_fit: str = "", status_filter: str = ""):
+        min_fit_val = float(min_fit) if min_fit else None
         jobs = db.search_jobs(conn, q=q, company=company, stack=stack,
-                              include_near_miss=near_miss == "1")
+                              include_near_miss=near_miss == "1",
+                              sort_by=sort_by, sort_dir=sort_dir,
+                              min_fit=min_fit_val, status_filter=status_filter)
         companies = [r["company"] for r in conn.execute(
             "SELECT DISTINCT company FROM jobs ORDER BY company").fetchall()]
         last_run = conn.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         return render(request, "dashboard.html", jobs=jobs, q=q, company=company,
                       stack=stack, near_miss=near_miss, companies=companies,
-                      last_run=last_run)
+                      last_run=last_run, sort_by=sort_by, sort_dir=sort_dir,
+                      min_fit=min_fit, status_filter=status_filter,
+                      all_statuses=db.APP_STATUSES)
 
     # ------------------------------------------------------------ job detail
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)

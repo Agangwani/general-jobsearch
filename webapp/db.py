@@ -254,12 +254,28 @@ def job_with_application(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row |
     ).fetchone()
 
 
+# Columns the user can sort by. Values are safe SQL column references.
+SORTABLE = {
+    "fit":        "j.fit_score",
+    "company":    "j.company",
+    "title":      "j.title",
+    "location":   "j.location",
+    "posted":     "j.posted_at",
+    "first_seen": "j.first_seen_at",
+    "status":     "a.status",
+}
+
+
 def search_jobs(
     conn: sqlite3.Connection,
     q: str = "",
     company: str = "",
-    stack: str = "",           # "" | "to_apply" | "applied"
+    stack: str = "",            # "" | "to_apply" | "applied"
     include_near_miss: bool = True,
+    sort_by: str = "",          # key from SORTABLE; empty → default rank_score order
+    sort_dir: str = "",         # "asc" | "desc"; empty → desc
+    min_fit: float | None = None,
+    status_filter: str = "",    # exact application status value
     limit: int = 500,
 ) -> list[sqlite3.Row]:
     sql = [
@@ -281,7 +297,19 @@ def search_jobs(
         args += sorted(APPLIED_SET)
     if not include_near_miss:
         sql.append("AND j.filter_reason = ''")
-    sql.append("ORDER BY a.status != 'in_progress', j.rank_score DESC NULLS LAST, j.first_seen_at DESC")
+    if min_fit is not None:
+        sql.append("AND j.fit_score >= ?")
+        args.append(min_fit)
+    if status_filter and status_filter in APP_STATUSES:
+        sql.append("AND a.status = ?")
+        args.append(status_filter)
+    if sort_by in SORTABLE:
+        col = SORTABLE[sort_by]
+        direction = "ASC" if sort_dir == "asc" else "DESC"
+        nulls = "NULLS LAST" if direction == "DESC" else "NULLS FIRST"
+        sql.append(f"ORDER BY {col} {direction} {nulls}")
+    else:
+        sql.append("ORDER BY a.status != 'in_progress', j.rank_score DESC NULLS LAST, j.first_seen_at DESC")
     sql.append("LIMIT ?")
     args.append(limit)
     return conn.execute(" ".join(sql), args).fetchall()
