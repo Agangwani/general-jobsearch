@@ -94,6 +94,14 @@ Promoted above the remaining P2 work after run 3, for two reasons:
 - Validation requests now include top near-misses, which doubles as the
   decision input for the three filter-policy questions above.
 
+### P3.5 — Application-tracking UI ✅ SHIPPED (see [design-frontend.md](design-frontend.md))
+Local FastAPI + SQLite app (`python -m jobsearch ui`): two stacks
+(to-apply/applied), searchable job DB with exact insertion timestamps and
+append-only history, integrated Playwright apply-browser with submission
+detection, copy-paste profile panel, resume viewer, search-config viewer,
+and the Gmail module scaffold (schema + matcher + classifier; OAuth connect
+pending user-created credentials).
+
 ### P4 — Application automation (prep only for now)
 Staged: application packets → form prefill assist → approval queue →
 (optionally, much later) unattended submit for allowlisted ATSes. Risks and

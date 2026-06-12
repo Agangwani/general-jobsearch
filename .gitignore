@@ -6,3 +6,8 @@ venv/
 *.egg-info/
 .DS_Store
 data/corpus/
+data/jobsearch.db*
+data/browser_profile/
+data/profile.yaml
+data/credentials.json
+data/token.json

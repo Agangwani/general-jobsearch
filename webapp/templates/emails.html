@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Email — jobsearch{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <h1>Email</h1>
+  {% if connected %}<span class="tag tag-green">Gmail connected</span>
+  {% else %}<span class="tag tag-amber">Not connected</span>{% endif %}
+</header>
+
+{% if not connected %}
+<section class="setup-box">
+  <h2>Connect Gmail (read-only)</h2>
+  <pre>{{ setup }}</pre>
+  <p class="muted">Once connected, application confirmations and company replies are ingested
+  append-only, auto-linked to your applications, and searchable below. A
+  detected confirmation advances the application to <strong>confirmed</strong> automatically.</p>
+</section>
+{% endif %}
+
+<form class="filters" method="get" action="/emails">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search subject, sender, body…">
+  <button class="btn">Search</button>
+</form>
+
+<table class="jobs">
+  <thead><tr><th>Sent</th><th>From</th><th>Subject</th><th>Class</th><th>Linked job</th></tr></thead>
+  <tbody>
+  {% for m in messages %}
+    <tr>
+      <td class="muted">{{ m.sent_at or m.ingested_at }}</td>
+      <td>{{ m.from_addr }}</td>
+      <td>{{ m.subject }}</td>
+      <td><span class="tag">{{ m.classification }}</span></td>
+      <td class="muted">{% if m.job_id %}<a href="/jobs/{{ m.job_id }}">{{ m.job_company }} — {{ m.job_title[:40] }}</a>{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">No messages yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}

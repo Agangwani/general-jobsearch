@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Jobs — jobsearch{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <h1>
+    {% if stack == "applied" %}Applied{% elif stack == "to_apply" %}To apply{% else %}All jobs{% endif %}
+    <span class="muted">({{ jobs|length }})</span>
+  </h1>
+  {% if last_run %}
+  <span class="muted">Last ingest {{ last_run.ingested_at }} — {{ last_run.jobs_inserted }} new,
+    {{ last_run.jobs_updated }} patched</span>
+  {% else %}
+  <span class="muted">No data yet — run <code>python -m jobsearch run</code>, then hit “Ingest latest run”.</span>
+  {% endif %}
+</header>
+
+<form class="filters" method="get" action="/">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search title, description, company, location…">
+  <select name="company">
+    <option value="">All companies</option>
+    {% for c in companies %}<option value="{{ c }}" {{ 'selected' if c == company }}>{{ c }}</option>{% endfor %}
+  </select>
+  <select name="stack">
+    <option value="">Both stacks</option>
+    <option value="to_apply" {{ 'selected' if stack == 'to_apply' }}>To apply</option>
+    <option value="applied" {{ 'selected' if stack == 'applied' }}>Applied</option>
+  </select>
+  <label class="check"><input type="checkbox" name="near_miss" value="1" {{ 'checked' if near_miss == '1' }}> near-miss</label>
+  <button class="btn">Filter</button>
+</form>
+
+<table class="jobs">
+  <thead>
+    <tr><th>Fit</th><th>Company</th><th>Title</th><th>Location</th><th>Posted</th>
+        <th>First seen</th><th>Flags</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr class="{{ 'row-applied' if j.status in ('applied','confirmed','interviewing','offer') }}{{ ' row-dead' if j.status in ('rejected','withdrawn') }}">
+      <td class="num">{{ '%.0f'|format(j.fit_score) if j.fit_score is not none else '—' }}</td>
+      <td>{{ j.company }}</td>
+      <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
+      <td class="muted">{{ j.location[:42] }}</td>
+      <td class="muted">{{ j.posted_at or '—' }}</td>
+      <td class="muted" title="exact insertion time {{ j.first_seen_at }}">{{ j.first_seen_at[:10] }}</td>
+      <td>
+        {% if j.filter_reason %}<span class="tag tag-amber" title="near-miss">{{ j.filter_reason }}</span>{% endif %}
+        {% if j.validation == 'verified' %}<span class="tag tag-green">✓ verified</span>
+        {% elif j.validation == 'mismatch' %}<span class="tag tag-amber">⚠</span>
+        {% elif j.validation == 'stale' %}<span class="tag tag-red">✗ stale</span>{% endif %}
+      </td>
+      <td><span class="status status-{{ j.status }}">{{ j.status.replace('_',' ') }}</span></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="empty">Nothing here. Run the pipeline, then “Ingest latest run”.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}
