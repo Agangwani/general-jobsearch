@@ -107,9 +107,9 @@ data model documented in
 | 1 | Corpus snapshot + full-corpus scoring + boilerplate strip | ✅ shipped, validated run 3 |
 | 2 | Funnel counters + near-miss report + title-filter fixes | ✅ shipped, validated run 3 |
 | 2.5 | Run-3 follow-ups: state TSV, age-aware funnel, company-token strip, Workday/Amazon/DEShaw fetch fixes | ✅ shipped |
-| 3 | Validation request/response loop (+ `/validate-jobs` command) | ⏭ next — generates the precision labels everything else needs |
-| 4 | Slug auto-discovery, then per-board XHR fixes | after 3 |
-| 5 | Application packet generator (stage 1 of automation) | after 3 (draws from the validated shortlist) |
+| 3 | Validation request/response loop (+ `/validate-jobs` command) | ✅ shipped — run `/validate-jobs` daily in Claude Code; verdicts appear as a Conf column next run |
+| 4 | Slug auto-discovery, then per-board XHR fixes | ⏭ next |
+| 5 | Application packet generator (stage 1 of automation) | after a few days of validation labels |
 
 ## Decisions needed from Alex
 

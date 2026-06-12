@@ -78,18 +78,24 @@ def render_markdown(
     if warning:
         lines += ["", warning]
 
-    lines += [
-        "",
-        f"## Top {min(top_jobs, len(jobs))} jobs (recency-weighted fit)",
-        "",
-        "| # | Posted | New | Fit | Company | Title | Location |",
-        "|---|--------|-----|-----|---------|-------|----------|",
-    ]
+    checked = any(job.validation for job in jobs)
+    conf_header = "| # | Posted | New | Conf | Fit | Company | Title | Location |" if checked else \
+                  "| # | Posted | New | Fit | Company | Title | Location |"
+    conf_rule = "|---|--------|-----|------|-----|---------|-------|----------|" if checked else \
+                "|---|--------|-----|-----|---------|-------|----------|"
+    lines += ["", f"## Top {min(top_jobs, len(jobs))} jobs (recency-weighted fit)", ""]
+    if checked:
+        lines.append("Conf: ✓ Claude-verified live/senior/NYC · ⚠ mismatch found · "
+                     "✗ posting closed · blank = unchecked (see reports/validation-request.md).")
+        lines.append("")
+    lines += [conf_header, conf_rule]
+    from .validation import MARKS  # local import to avoid a cycle at module load
     for idx, job in enumerate(jobs[:top_jobs], 1):
         new = "🆕" if job.is_new else ""
         title = f"[{_md_escape(job.title)}]({job.url})" if job.url else _md_escape(job.title)
+        conf = f" {MARKS.get(job.validation, '')} |" if checked else ""
         lines.append(
-            f"| {idx} | {_fmt_date(job)} | {new} | {job.fit_score} | {job.company} "
+            f"| {idx} | {_fmt_date(job)} | {new} |{conf} {job.fit_score} | {job.company} "
             f"| {title} | {_md_escape(job.location)[:60]} |"
         )
 
@@ -173,6 +179,8 @@ def _job_json(job: JobPosting) -> dict:
         "cluster": job.cluster,
         "key": job.key,
         "filter_reason": job.filter_reason,
+        "validation": job.validation,
+        "validation_note": job.validation_note,
     }
 
 

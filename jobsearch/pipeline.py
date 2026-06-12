@@ -14,6 +14,12 @@ from .models import Company, FetchError, JobPosting
 from .report import render_markdown, write_reports
 from .scoring import apply_recency, rank_companies, score_jobs
 from .state import load_seen, mark_new, update_seen
+from .validation import (
+    apply_verdicts,
+    archive_validation,
+    load_verdicts,
+    write_validation_request,
+)
 
 
 def fetch_all(
@@ -152,6 +158,15 @@ def run(root: Path) -> int:
     mark_new(jobs, seen)
     update_seen(jobs, seen, state_path)
 
+    # Merge any fresh Claude verdicts (data/validation.json, written by the
+    # /validate-jobs command) and archive them for the precision time series.
+    validation_path = root / output.get("validation_file", "data/validation.json")
+    verdicts = load_verdicts(validation_path)
+    tally = apply_verdicts(jobs + near_miss, verdicts)
+    archive_validation(validation_path, root / output.get("validation_history_dir", "data/validation-history"))
+    if verdicts:
+        print(f"Validation: {tally}", file=sys.stderr)
+
     markdown = render_markdown(
         jobs, company_fit, companies, manual_check, errors,
         top_jobs=ranking.get("top_jobs", 100),
@@ -161,6 +176,9 @@ def run(root: Path) -> int:
     )
     out_dir = root / settings["output"].get("reports_dir", "reports")
     written = write_reports(out_dir, markdown, jobs, company_fit, near_miss=near_miss, funnel=funnel)
+
+    request_path = write_validation_request(jobs, near_miss, out_dir / "validation-request.md")
+    written.append(request_path)
 
     print(f"Wrote {', '.join(str(p) for p in written)}", file=sys.stderr)
     if errors:

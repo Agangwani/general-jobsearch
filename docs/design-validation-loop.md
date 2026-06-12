@@ -1,5 +1,15 @@
 # Validation Loop: Confidence Scores Without the Claude API
 
+> **Status (2026-06-12): shipped.** Every `python -m jobsearch run` writes
+> `reports/validation-request.md` (top 15 jobs + top 5 near-misses with
+> claims). The repo ships `.claude/commands/validate-jobs.md` — run
+> `/validate-jobs` in Claude Code once a day; it web-verifies each posting
+> and writes `data/validation.json`. The next run merges verdicts into the
+> report as a **Conf** column (✓/⚠/✗), drops verdicts older than 3 days, and
+> archives each day's verdicts to `data/validation-history/` for the
+> precision time series. Tier-1 automated checks (URL liveness etc.) remain
+> TODO and can be added incrementally.
+
 Questions: *"What's the confidence level in the jobs we're creating? Should we
 add a validation step that cross-checks results via a Claude prompt and an
 input file? I don't want to use the Claude API since I have the monthly
