@@ -11,10 +11,12 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 import yaml
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+from jobsearch.resume import extract_keywords, pdf_to_text
 
 from . import db, emailmod, gmail, ingest, profile
 from .apply_browser import SessionRegistry
@@ -121,14 +123,40 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     # ------------------------------------------------------- resume & profile
     @app.get("/resume", response_class=HTMLResponse)
-    def resume(request: Request):
+    def resume(request: Request, uploaded: int = 0, error: str = ""):
         text_path = root / "data" / "resume.txt"
+        using_sample = not text_path.exists()
+        if using_sample:
+            text_path = root / "data" / "sample_resume.txt"
         resume_text = text_path.read_text() if text_path.exists() else ""
         pdfs = sorted((root / "data").glob("*.pdf"))
         # Sections split on blank lines for per-block copy buttons.
         sections = [s.strip() for s in resume_text.split("\n\n") if s.strip()]
         return render(request, "resume.html", resume_text=resume_text,
-                      sections=sections, pdf_name=pdfs[-1].name if pdfs else "")
+                      sections=sections, pdf_name=pdfs[-1].name if pdfs else "",
+                      using_sample=using_sample, uploaded=uploaded, error=error,
+                      keywords=extract_keywords(resume_text) if resume_text else [])
+
+    @app.post("/resume/upload")
+    async def upload_resume(file: UploadFile = File(...)):
+        data = await file.read()
+        name = (file.filename or "").lower()
+        try:
+            if name.endswith(".pdf"):
+                text = pdf_to_text(data)
+                (root / "data" / "resume.pdf").write_bytes(data)
+            elif name.endswith((".txt", ".md")):
+                text = data.decode("utf-8", errors="replace").strip()
+                if len(text) < 100:
+                    raise ValueError("that file looks too short to be a resume")
+            else:
+                raise ValueError("upload a .pdf or .txt resume")
+        except ValueError as exc:
+            return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
+                                    status_code=303)
+        (root / "data" / "resume.txt").write_text(text + "\n")
+        profile.reseed_from_resume(conn, text)
+        return RedirectResponse("/resume?uploaded=1", status_code=303)
 
     @app.get("/resume.pdf")
     def resume_pdf():

@@ -133,3 +133,12 @@ th a.sa { color: var(--accent); }
   .columns { grid-template-columns: 1fr; }
   .col-side { border-left: none; padding-left: 0; }
 }
+
+/* resume upload + keywords */
+.upload-row { display: flex; gap: .5rem; align-items: center; margin: .75rem 0; }
+.banner { padding: .5rem .75rem; border-radius: 6px; margin: .5rem 0; }
+.banner.ok { background: #e6f7ea; color: #1a7f37; }
+.banner.err { background: #fdecea; color: #b42318; }
+.banner.warn { background: #fff8e1; color: #8a6d00; }
+.keyword-chips { display: flex; flex-wrap: wrap; gap: .35rem; margin: .25rem 0 .75rem; }
+.chip { background: var(--chip-bg, #eef2f7); border-radius: 999px; padding: .15rem .6rem; font-size: .85rem; }

@@ -1,9 +1,31 @@
-# jobsearch — daily NYC senior-SWE job finder
+# jobsearch — resume-driven job finder + application tracker
 
-Every morning this pipeline pulls postings **directly from company job
-boards** (no aggregators), keeps the ones that look like senior software
-engineer roles in NYC, ranks everything against `data/resume.txt`, and writes
-a report that prioritizes **recently posted** jobs.
+Point it at **your resume** and it pulls postings **directly from company job
+boards** (no aggregators), filters to the roles you target, ranks everything
+against your resume with TF-IDF + K-means, and gives you a local web UI to
+track applications, auto-fill forms, and sync confirmation emails.
+
+## Quickstart (one command)
+
+```bash
+git clone https://github.com/Agangwani/general-jobsearch
+cd general-jobsearch
+./setup.sh            # installs everything, opens the UI at http://127.0.0.1:8484
+```
+
+Then open **http://127.0.0.1:8484/resume** and upload your resume (`.pdf` or
+`.txt`). That's it — the next pipeline run (`./setup.sh run`, or the ⟳ button
+in the UI) fetches boards, scores every posting against *your* resume, and
+fills the dashboard. Until you upload one, everything runs against the
+bundled `data/sample_resume.txt` so you can explore the app immediately.
+
+Everything personal stays on your machine: `data/` (resume, profile, OAuth
+tokens, SQLite DB) and `reports/` are gitignored. The repo only ships code,
+config, and the sample resume.
+
+The default search targets senior software engineering roles in NYC — edit
+`config/settings.yaml` (title/location filters, remote-pay policy) and
+`config/companies.yaml` (which boards to pull) to retarget it.
 
 ## How it works
 

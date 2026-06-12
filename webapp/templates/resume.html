@@ -10,6 +10,25 @@
   </div>
 </header>
 
+{% if uploaded %}<p class="banner ok">Resume uploaded — profile fields re-extracted, next pipeline run scores against it.</p>{% endif %}
+{% if error %}<p class="banner err">{{ error }}</p>{% endif %}
+{% if using_sample %}
+<p class="banner warn">Showing the bundled <strong>sample resume</strong> — upload yours below and every fit
+score, keyword, and profile field switches to it.</p>
+{% endif %}
+
+<form class="upload-row" action="/resume/upload" method="post" enctype="multipart/form-data">
+  <input type="file" name="file" accept=".pdf,.txt,.md" required>
+  <button class="btn" type="submit">Upload resume (.pdf or .txt)</button>
+</form>
+
+{% if keywords %}
+<p class="muted">Extracted keywords (what the matcher sees):</p>
+<div class="keyword-chips">
+  {% for kw in keywords %}<span class="chip">{{ kw }}</span>{% endfor %}
+</div>
+{% endif %}
+
 <p class="muted">Each block has its own copy button — built for pasting into application forms.</p>
 
 <div class="resume-sections" id="full-resume" data-copy="{{ resume_text }}">

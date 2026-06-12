@@ -83,3 +83,11 @@ def set_field(conn, field: str, value: str) -> None:
         (field, value, db.utcnow()),
     )
     conn.commit()
+
+
+def reseed_from_resume(conn, resume_text: str) -> None:
+    """Refresh the resume-derived fields after a new upload. Only fields the
+    parser actually extracted are overwritten; everything else (work auth,
+    salary expectation, manual edits to untouched fields) is preserved."""
+    for field, value in seed_from_resume(resume_text).items():
+        set_field(conn, field, value)

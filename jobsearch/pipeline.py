@@ -102,7 +102,12 @@ def dedupe(jobs: list[JobPosting]) -> list[JobPosting]:
 def run(root: Path) -> int:
     settings = load_settings(root / "config" / "settings.yaml")
     companies, manual_check = load_companies(root / "config" / "companies.yaml")
-    resume_text = (root / settings["resume"]).read_text()
+    from .resume import load_resume_text
+    resume_text, is_sample = load_resume_text(root, settings)
+    if is_sample:
+        print("NOTE: no resume found at data/resume.txt — scoring against the "
+              "bundled sample resume. Upload yours on the /resume page of the "
+              "UI (python -m jobsearch ui) for personalized results.", file=sys.stderr)
 
     print(f"Fetching boards for {sum(c.enabled for c in companies)} companies...", file=sys.stderr)
     all_jobs, errors = fetch_all(companies, settings)
