@@ -6,7 +6,9 @@ from ..models import Company, JobPosting
 from ..utils import first, parse_when, walk_collect
 
 URL = "https://higher.gs.com/results?LOCATION=New%20York&sort=POSTED_DATE&page=1"
-XHR_PATTERN = r"higher\.gs\.com/(api|graphql|search)"
+# The real search API lives on the api- subdomain: run diagnostics showed
+# api-higher.gs.com/gateway/api/v1/graphql (matches "higher.gs.com/gateway").
+XHR_PATTERN = r"higher\.gs\.com/(gateway|api|graphql|search)"
 
 TITLE_KEYS = ("jobTitle", "title", "roleTitle", "name")
 ID_KEYS = ("jobId", "id", "roleId", "requisitionId")
@@ -44,6 +46,10 @@ def fetch(company: Company, runtime, settings: dict) -> list[JobPosting]:
 
     harvest = runtime.harvest(URL, XHR_PATTERN)
     jobs = parse_payloads(harvest["matched"] + harvest["embedded"], company.name)
+    if not jobs:
+        # Goldman keys (roleTitle/division) aren't all in the generic alias
+        # list — run the precise parse over the unmatched responses too.
+        jobs = parse_payloads(harvest["extra"], company.name)
     if not jobs:
         jobs = _generic.fallback_jobs(harvest, company.name, "goldman",
                                       link_fmt="https://higher.gs.com/roles/{id}")

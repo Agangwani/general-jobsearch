@@ -78,9 +78,12 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
     jobs = _generic.fallback_jobs(harvest, company.name, "google")
     if not jobs:
         # Google renders results server-side (AF_initDataCallback, not plain
-        # JSON) — scrape the result cards as the last resort. The search URL
-        # already pins location to New York, so card titles are enough.
-        links = runtime.extract_links(url, "a[href*='jobs/results/']")
+        # JSON) — scrape the result links as the last resort. The search URL
+        # already pins location to New York, so link + slug are enough. Sweep
+        # every anchor and let parse_cards filter: the card markup churns,
+        # the /jobs/results/<id>-<slug> URL shape doesn't.
+        links = runtime.extract_links(url, "a[href]",
+                                      wait_selector="a[href*='jobs/results/']")
         jobs = parse_cards(links, company.name)
     if not jobs:
         raise RuntimeError("no job records captured from Google careers page "
@@ -88,13 +91,14 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
     return jobs
 
 
-_CARD_ID = re.compile(r"jobs/results/(\d+)")
+_CARD_ID = re.compile(r"jobs/results/(\d+)(?:-([a-z0-9-]+))?", re.I)
 
 
 def parse_cards(links: list[dict], company_name: str) -> list[JobPosting]:
     """[{text, href}] from the results page → postings. Pure — offline-tested.
     Location comes from the search URL's filter; dates are not on the cards
-    (unknown-age handling covers that)."""
+    (unknown-age handling covers that). When the anchor text is unhelpful
+    ("Apply", icons) the title is rebuilt from the URL slug."""
     jobs, seen = [], set()
     for link in links:
         m = _CARD_ID.search(link.get("href") or "")
@@ -102,6 +106,9 @@ def parse_cards(links: list[dict], company_name: str) -> list[JobPosting]:
             continue
         title = (link.get("text") or "").strip().split("\n")[0]
         title = re.sub(r"^learn more about\s+", "", title, flags=re.I).strip()
+        if (len(title) < 8 or title.lower() in ("apply", "apply now", "share")) \
+                and m.group(2):
+            title = m.group(2).replace("-", " ").strip().title()
         if not title:
             continue
         seen.add(m.group(1))

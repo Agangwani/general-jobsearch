@@ -20,7 +20,7 @@ from ..models import JobPosting
 from ..utils import first, parse_when, strip_html, walk_collect
 
 TITLE_KEYS = ("title", "jobTitle", "JobTitle", "job_title", "postingTitle",
-              "positionTitle", "name")
+              "positionTitle", "roleTitle", "name")
 ID_KEYS = ("jobId", "JobsId", "job_id", "jobSeqNo", "reqId", "requisitionId",
            "positionId", "jobPostingId", "id")
 LOCATION_KEYS = ("location", "locations", "cityStateCountry", "cityState",

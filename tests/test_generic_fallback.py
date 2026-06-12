@@ -25,6 +25,35 @@ def test_debug_summary_describes_harvest():
     assert "https://x.com/api/a" in s
 
 
+def test_goldman_pattern_matches_api_subdomain():
+    # Run diagnostics showed the real endpoint on the api- subdomain.
+    import re
+    from jobsearch.fetchers.goldman import XHR_PATTERN
+    assert re.search(XHR_PATTERN, "https://api-higher.gs.com/gateway/api/v1/graphql")
+    assert re.search(XHR_PATTERN, "https://higher.gs.com/api/roles")
+    assert not re.search(XHR_PATTERN, "https://higher.gs.com/results?page=1")
+
+
+def test_jpmorgan_targets_oracle_site():
+    from jobsearch.fetchers.jpmorgan import URL, XHR_PATTERN
+    import re
+    assert "jpmc.fa.oraclecloud.com" in URL
+    assert re.search(XHR_PATTERN, "https://jpmc.fa.oraclecloud.com/hcmRestApi/scrs/"
+                                  "sites/CX_1001/recruitingCEJobRequisitions?onlyData=true")
+
+
+def test_google_card_title_from_slug():
+    from jobsearch.fetchers.google import parse_cards
+    links = [
+        {"text": "Apply", "href": "/about/careers/applications/jobs/results/"
+                                  "987654-senior-software-engineer-infrastructure"},
+        {"text": "", "href": "https://fonts.googleapis.com/css2"},
+    ]
+    jobs = parse_cards(links, "Google")
+    assert len(jobs) == 1
+    assert jobs[0].title == "Senior Software Engineer Infrastructure"
+
+
 def test_google_card_scrape():
     from jobsearch.fetchers.google import parse_cards
     links = [

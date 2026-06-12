@@ -131,9 +131,15 @@ def probe_slugs(company_name: str, session) -> list[dict]:
     return detections
 
 
-def browser_survey(careers_url: str, runtime) -> list[dict]:
+_SURVEY_ASSET_RE = re.compile(
+    r"\.(js|css|png|jpe?g|gif|svg|woff2?|ttf|ico|mp4|webp)(\?|$)", re.I)
+
+
+def browser_survey(careers_url: str, runtime) -> tuple[list[dict], list[str]]:
     """Load the careers page and classify every URL its frontend touches:
-    the XHRs it fires, the iframes it embeds, and where it redirects to."""
+    the XHRs it fires, the iframes it embeds, and where it redirects to.
+    Also returns the deduped non-asset URLs seen, so a 'no ATS detected'
+    outcome still leaves something to classify by hand."""
     page = runtime._context.new_page()  # noqa: SLF001 — shared runtime owns lifecycle
     urls: list[str] = []
     page.on("request", lambda req: urls.append(req.url))
@@ -147,7 +153,13 @@ def browser_survey(careers_url: str, runtime) -> list[dict]:
         urls += [frame.url for frame in page.frames]
     finally:
         page.close()
-    return survey_urls(urls)
+    interesting, seen = [], set()
+    for url in urls:
+        if url in seen or _SURVEY_ASSET_RE.search(url):
+            continue
+        seen.add(url)
+        interesting.append(url)
+    return survey_urls(urls), interesting
 
 
 def emit_stanza(name: str, detection: dict, careers_url: str = "") -> str:
@@ -195,18 +207,26 @@ def discover(root: Path, company_name: str, careers_url: str = "") -> int:
         session = requests.Session()
         detections = probe_slugs(company_name, session)
 
+    surveyed_urls: list[str] = []
     if not detections and careers_url:
         print("· no API probe hit — surveying the careers page in headless Chromium…")
         from .browser import BrowserRuntime, BrowserUnavailable
         try:
             with BrowserRuntime() as runtime:
-                detections = browser_survey(careers_url, runtime)
+                detections, surveyed_urls = browser_survey(careers_url, runtime)
         except BrowserUnavailable as exc:
             print(f"  browser unavailable: {exc}", file=sys.stderr)
 
     if not detections:
         print(f"\nNo ATS detected for {company_name}. The board may be custom "
               "or behind bot protection — keep it in manual_check.")
+        if surveyed_urls:
+            print("URLs the page touched (for manual classification — the jobs "
+                  "API is often recognizable here):")
+            for url in surveyed_urls[:15]:
+                print(f"  - {url[:160]}")
+        elif not careers_url:
+            print("Tip: pass --url <careers page> to enable the browser survey.")
         return 1
 
     print(f"\nDetected {len(detections)} board(s). Paste into config/companies.yaml:\n")
