@@ -104,3 +104,14 @@ def test_build_funnel():
     assert row["loc_pass"] == 3
     assert row["matched"] == 1
     assert row["near_miss"] == 1
+
+
+def test_build_funnel_aged_out():
+    from datetime import datetime, timedelta, timezone
+    old = job("Senior Software Engineer")
+    old.posted_at = datetime.now(timezone.utc) - timedelta(days=90)
+    fresh = job("Senior Software Engineer")
+    funnel = build_funnel([old, fresh], FILTER, max_age_days=45)
+    row = funnel["X"]
+    assert row["matched"] == 1
+    assert row["aged_out"] == 1

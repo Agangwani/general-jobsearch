@@ -1,5 +1,29 @@
 # Zero-Match Companies: What's Actually Happening
 
+> **Status (2026-06-12, after run 3):** the funnel + near-miss sections
+> shipped, and the first funnel table confirmed or corrected every hypothesis
+> below. Measured results:
+>
+> | Company | Hypothesis | Funnel verdict (fetched / title✓ / loc✓ / matched / near-miss) |
+> |---------|------------|----------------------------------------------------------------|
+> | Stripe | unleveled titles | **Confirmed**: 501 / 4 / 91 / 1 / 11 |
+> | Pinterest | "Sr." abbreviation | **Confirmed & fixed**: 173 / **31** / 25 / 1 / 19 (title passes recovered by the Sr. fix) |
+> | OpenAI | mostly SF + unleveled | **Confirmed**: 733 / 6 / 79 / 0 / **41 near-misses** |
+> | Palantir | unleveled | **Confirmed**: 228 / 12 / 75 / 5 / 36 |
+> | NVIDIA / Adobe / Salesforce | Workday location facet missing | **Confirmed**: NVIDIA 100 / **98** / **0** — senior-SWE titles galore, zero NYC. Fixed: location term added to Workday searchText + pages 5→10 |
+> | Amazon | pagination too shallow | **Confirmed**: 100 fetched, only 9 NYC. Fixed: paginate to 300 |
+> | Jane Street | (new finding) | Titles are **unleveled** ("Software Engineer") — 213 / 0 / 84 / 0 / 32; near-miss covers them |
+> | D. E. Shaw | (new finding) | Card text concatenates icon+category+title+blurb — title cleanup shipped |
+> | Roblox | real zero | **Confirmed real**: 228 / 43 / **0** — no NYC locations at all |
+> | Airbnb | real zero | Mostly: 221 / 32 / 2 / 0 / 10 |
+> | Affirm | remote-first | 159 / 35 / 0 / 0 / **0 near-miss** — their remote strings missed our REMOTE_HINTS; hints list expanded, re-verify next run |
+> | Meta | (browser now works) | 24 fetched, all unleveled → 17 near-misses |
+>
+> Also fixed from run 3: funnel matched/near-miss now respect the 45-day age
+> cutoff (an `Aged out` column shows the difference), and the seen-state file
+> moved to a merge-resilient TSV with salvage parsing after a corrupted git
+> merge of `seen_jobs.json` silently flagged all 65 jobs as 🆕.
+
 Question: *"For all the companies where there were no senior SWE jobs, what
 are the reasons? Are there actually no jobs, or can you not fetch the jobs?
 What's the breakdown?"*

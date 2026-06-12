@@ -109,7 +109,9 @@ def run(root: Path) -> int:
     print(f"Corpus snapshot: {snapshot}", file=sys.stderr)
 
     job_filter = JobFilter(settings["search"])
-    funnel = build_funnel(all_jobs, job_filter)
+    ranking = settings["ranking"]
+    max_age = ranking.get("max_age_days", 45)
+    funnel = build_funnel(all_jobs, job_filter, max_age_days=max_age)
     jobs: list[JobPosting] = []
     near_miss: list[JobPosting] = []
     for job in all_jobs:
@@ -120,8 +122,6 @@ def run(root: Path) -> int:
             job.filter_reason = reason
             near_miss.append(job)
 
-    ranking = settings["ranking"]
-    max_age = ranking.get("max_age_days", 45)
     if max_age:
         jobs = [j for j in jobs if (j.age_days() or 0) <= max_age]
         near_miss = [j for j in near_miss if (j.age_days() or 0) <= max_age]
@@ -147,7 +147,7 @@ def run(root: Path) -> int:
     near_miss = near_miss[: ranking.get("near_miss_count", 20)]
     company_fit = rank_companies(jobs, top_n=ranking.get("company_top_n", 3))
 
-    state_path = root / settings["output"].get("state_file", "data/seen_jobs.json")
+    state_path = root / settings["output"].get("state_file", "data/seen_jobs.tsv")
     seen = load_seen(state_path)
     mark_new(jobs, seen)
     update_seen(jobs, seen, state_path)

@@ -120,13 +120,13 @@ def render_markdown(
             "Why companies show zero matches: no fetch (see errors below), or "
             "fetched-but-filtered (this table).",
             "",
-            "| Company | Fetched | Title ✓ | Location ✓ | Matched | Near-miss |",
-            "|---------|---------|---------|------------|---------|-----------|",
+            "| Company | Fetched | Title ✓ | Location ✓ | Matched | Near-miss | Aged out |",
+            "|---------|---------|---------|------------|---------|-----------|----------|",
         ]
         for name, row in sorted(funnel.items(), key=lambda kv: -kv[1]["fetched"]):
             lines.append(
                 f"| {name} | {row['fetched']} | {row['title_pass']} | {row['loc_pass']} "
-                f"| {row['matched']} | {row['near_miss']} |"
+                f"| {row['matched']} | {row['near_miss']} | {row.get('aged_out', 0)} |"
             )
 
     if cluster_names:

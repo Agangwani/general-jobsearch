@@ -14,7 +14,13 @@ DEFAULT_TITLE_EXCLUDE = [
     r"\b(manager|director|vp|vice president|head of|principal)\b",
 ]
 DEFAULT_LOCATIONS = ["new york", "nyc", "brooklyn", "manhattan"]
-REMOTE_HINTS = ["remote - us", "remote, us", "us remote", "remote (us", "remote in us", "united states - remote", "remote - united states"]
+REMOTE_HINTS = [
+    "remote - us", "remote, us", "us remote", "remote (us", "remote in us",
+    "united states - remote", "remote - united states", "remote us",
+    "remote, united states", "united states remote", "us - remote",
+    "us-remote", "remote-us", "remote within the us", "remote (within the us",
+    "remote-first", "fully remote",
+]
 
 # Hard exclusions: never a near-miss, a different career stage entirely.
 HARD_EXCLUDE = re.compile(
@@ -101,14 +107,19 @@ class JobFilter:
         return [job for job in jobs if self.matches(job)]
 
 
-def build_funnel(jobs: list[JobPosting], job_filter: JobFilter) -> dict[str, dict[str, int]]:
+def build_funnel(
+    jobs: list[JobPosting], job_filter: JobFilter, max_age_days: float = 0
+) -> dict[str, dict[str, int]]:
     """Per-company counts: fetched → title_pass → loc_pass → matched / near_miss.
-    One look at this table settles 'no jobs vs. can't see them'."""
+    One look at this table settles 'no jobs vs. can't see them'.
+
+    matched/near_miss respect `max_age_days` (when nonzero) so they agree with
+    what the report can actually show; fetched/title/loc stay raw."""
     funnel: dict[str, dict[str, int]] = {}
     for job in jobs:
         row = funnel.setdefault(
             job.company,
-            {"fetched": 0, "title_pass": 0, "loc_pass": 0, "matched": 0, "near_miss": 0},
+            {"fetched": 0, "title_pass": 0, "loc_pass": 0, "matched": 0, "near_miss": 0, "aged_out": 0},
         )
         row["fetched"] += 1
         title_ok = job_filter.title_ok(job.title)
@@ -116,8 +127,12 @@ def build_funnel(jobs: list[JobPosting], job_filter: JobFilter) -> dict[str, dic
         row["title_pass"] += title_ok
         row["loc_pass"] += loc_ok
         status, _ = job_filter.classify(job)
-        if status == MATCH:
+        if status == OUT:
+            continue
+        if max_age_days and (job.age_days() or 0) > max_age_days:
+            row["aged_out"] += 1
+        elif status == MATCH:
             row["matched"] += 1
-        elif status in (NEAR_TITLE, NEAR_LOCATION):
+        else:
             row["near_miss"] += 1
     return funnel

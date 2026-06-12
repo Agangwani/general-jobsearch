@@ -1,5 +1,23 @@
 # Why Datadog Dominates: Scoring-Skew Analysis
 
+> **Status (2026-06-12, after run 3):** fixes shipped and validated. Datadog
+> company fit dropped 88.5 → 63.1 (rank #2 → #7) while its genuinely strong
+> roles (eBPF, Code Gen, Infrastructure R&D) stayed in the top table — exactly
+> the predicted shape: position earned by role text, not marketing text.
+> Residual issues found in run 3 and fixed the same day:
+>
+> - Cluster topics exposed leftover company-authorship clustering ("datadog,
+>   benefits growth, nbsp datadog", "mongodb, mongodb base", "justworks,
+>   mercury, diversity, salary ranges"). Three causes, three fixes: each
+>   company's own name tokens are now stripped from its postings before
+>   vectorizing; a compensation/EEO stoplist (benefits, salary, diversity,
+>   stock, …) was added; and `strip_html` now unescapes double-encoded
+>   entities (`&amp;nbsp;` was leaking literal "nbsp" tokens).
+> - Scale-to-100 now spans matched ∪ near-miss jobs; on 6-12 the single best
+>   fit of the day (100.0) was a near-miss (Coinbase remote). This is honest
+>   but means main-table fits can look deflated vs. earlier reports — fit
+>   values are comparable within a run, not across code changes.
+
 Question: *"Why are there so many Datadog results that I match heavily with —
 is there skewing happening in the K-means clustering model?"*
 

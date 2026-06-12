@@ -68,7 +68,7 @@ fetch:
 
 output:
   reports_dir: reports
-  state_file: data/seen_jobs.json
+  state_file: data/seen_jobs.tsv
   # Full fetched corpus snapshots (gitignored) for offline scoring experiments.
   corpus_dir: data/corpus
   corpus_retention_days: 14

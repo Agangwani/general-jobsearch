@@ -1,8 +1,27 @@
 # Improvement Plan — v2 of the Daily Job Finder
 
-Status: requirements captured 2026-06-12, based on the first two real runs
-(2026-06-11: 54 matches / 15 companies / 20 board failures;
-2026-06-12: 64 matches / 19 companies / 11 board failures).
+Status: requirements captured 2026-06-12 (runs 1–2); **P0 and P1 shipped and
+validated against run 3** (2026-06-12 14:50 UTC, the first run on the new
+code: 65 matches / 18 companies / funnel + near-miss live).
+
+## Run-3 scoreboard (what the fixes did)
+
+| Check | Result |
+|-------|--------|
+| Datadog skew | Fit 88.5 → 63.1, rank #2 → #7; its genuinely-matching roles stayed in the top table ✅ |
+| "Sr." recall | Pinterest title passes 0 → 31 ✅ |
+| Funnel answers "why zero" | Every zero-match company now explained by one table row ✅ |
+| Near-miss value | Day's best fit (100.0) was a near-miss — Coinbase Senior SWE Data Platform, hidden by `REMOTE_ONLY`; OpenAI has 41 near-misses, Palantir 36, Jane Street 32 ✅ |
+| Defects found in run 3 | (a) corrupted-merge of seen_jobs.json silently flagged all 65 jobs 🆕 — state now TSV + salvage parser; (b) funnel counted pre-age-cutoff — now age-aware with an `Aged out` column; (c) cluster topics exposed company-name tokens + `nbsp` entity leakage — both stripped |
+| Fetch gaps confirmed | Workday tenants returned 0 NYC rows (NVIDIA 98 title-passes / 0 loc) — location term + deeper paging shipped; Amazon page-1 had only 9 NYC rows — pagination to 300 shipped; D. E. Shaw card-text titles cleaned |
+
+Open questions for Alex after the next run:
+- **Remote roles**: the best job of the day was remote-only. Flip
+  `include_remote: true`, or keep them in near-miss?
+- **Mid-level (II) roles**: Attentive SWE II scored 93.4. In or out?
+- **Unleveled titles**: should `UNLEVELED_TITLE` near-misses with 5+-years
+  descriptions be promoted to the main table (Stripe/OpenAI/Jane Street
+  would enter)?
 
 This is the master document. Each workstream below links to a focused doc with
 the full analysis and design. They are written so work can resume from these
@@ -32,43 +51,48 @@ docs alone if the session is lost.
 
 ## Workstreams, prioritized
 
-### P0 — Scoring integrity (fixes the Datadog skew)
-The fit scores currently drive every decision, and they have measurable bias.
-- Score against the **full fetched corpus** (~7,200 postings), not the ~60
-  post-filter survivors. Fixes unstable IDF and degenerate clusters.
-- **Strip per-company boilerplate** before vectorizing (Datadog's shared
-  marketing text inflates all its postings at once).
-- **Persist a daily corpus snapshot** (`data/corpus/YYYY-MM-DD.jsonl.gz`) so
-  scoring changes can be replayed/A-B tested offline.
-- Details + experiments: [analysis-scoring-skew.md](analysis-scoring-skew.md).
+### P0 — Scoring integrity ✅ SHIPPED (PR #3 + run-3 follow-ups)
+Full-corpus scoring, boilerplate stripping, corpus snapshots, cluster topics,
+skew warning — plus run-3 follow-ups: company-name token stripping,
+compensation/EEO stoplist, HTML-entity fix.
+Remaining: rerun the A/B experiments on corpus snapshots once a few days
+accumulate. Details: [analysis-scoring-skew.md](analysis-scoring-skew.md).
 
-### P1 — Visibility into the filter funnel (answers "why zero?")
-- Per-company funnel counters logged and embedded in the report:
-  `fetched → title_pass → location_pass → matched`.
-- **Near-miss section** in the report: jobs that passed one gate but failed
-  the other, scored and tagged with the reason
-  (`SR_ABBREVIATION`, `UNLEVELED_TITLE`, `NO_NYC_LOCATION`, …).
-- Fix the known title-filter gaps (e.g. Pinterest's "Sr.", Stripe's unleveled
-  titles). Details: [analysis-zero-match-companies.md](analysis-zero-match-companies.md).
+### P1 — Filter funnel + near-miss ✅ SHIPPED (PR #3 + run-3 follow-ups)
+Funnel table (now age-aware), near-miss section with reason codes, "Sr." fix,
+expanded REMOTE_HINTS, merge-resilient seen-state.
+Remaining: the three filter-policy questions for Alex above (remote,
+mid-level, unleveled promotion).
+Details: [analysis-zero-match-companies.md](analysis-zero-match-companies.md).
 
-### P2 — Fetch reliability (the 11 still-failing boards)
-Current failures and next actions are catalogued in
-[analysis-zero-match-companies.md](analysis-zero-match-companies.md#fetch-failures).
-Highlights: Goldman/JPMorgan XHR patterns need adjusting from a real captured
-session; Google/Apple/Bloomberg browser fallbacks capture pages but find no
-job records (selector/pattern fixes); Citadel/Warby Parker/Superhuman
-Greenhouse tokens changed (need slug discovery from their careers pages);
-Plaid's Lever board is empty (likely migrated).
-- Build **ATS slug auto-discovery**: when a board 404s, browser-load the
-  company's `careers_url`, capture XHR, and detect the real ATS + token
-  automatically instead of hand-researching slugs.
+### P2 — Fetch reliability (re-prioritized by funnel evidence)
+Quick wins shipped with the run-3 follow-ups: Workday location term + deeper
+paging (NVIDIA/Adobe/Salesforce/Etsy), Amazon pagination, D. E. Shaw title
+cleanup. Still open, in priority order:
+1. **ATS slug auto-discovery** (`python -m jobsearch discover <company>`):
+   browser-load the careers_url, capture XHR to known ATS domains, emit the
+   companies.yaml stanza. Unblocks Citadel, Warby Parker, Superhuman, Plaid —
+   the slug-rot class keeps recurring, so tooling beats hand-research.
+2. Goldman/JPMorgan XHR patterns — capture from a real session (funnel shows
+   0 records despite pages loading).
+3. Google/Apple/Bloomberg/Microsoft/Morgan Stanley browser fallbacks find no
+   job records — same treatment.
+4. Millennium browser capture is flaky (2 matches in run 2, 0 title-passes in
+   run 3) — stabilize the XHR pattern / add retry.
 
-### P3 — Validation loop (confidence scores)
+### P3 — Validation loop (confidence scores) — NOW THE TOP PRIORITY
 Once-daily, subscription-funded (not API), human-triggered:
 `python -m jobsearch validate-request` emits a compact file → you ask Claude
 (Claude Code or claude.ai) to verify it via web search → Claude writes
 `data/validation.json` → next run merges verdicts into the report as a
 confidence column. Full design: [design-validation-loop.md](design-validation-loop.md).
+
+Promoted above the remaining P2 work after run 3, for two reasons:
+- It's the only path to **labeled precision** — the one metric that can say
+  whether the fit scores themselves are good (see the metrics framework in
+  the validation doc). Scoring changes without it are unfalsifiable.
+- Validation requests now include top near-misses, which doubles as the
+  decision input for the three filter-policy questions above.
 
 ### P4 — Application automation (prep only for now)
 Staged: application packets → form prefill assist → approval queue →
@@ -76,20 +100,22 @@ Staged: application packets → form prefill assist → approval queue →
 data model documented in
 [design-application-automation.md](design-application-automation.md).
 
-## Suggested order of implementation
+## Suggested order of implementation (updated after run 3)
 
-| Step | What | Effort | Why first |
-|------|------|--------|-----------|
-| 1 | Corpus snapshot + full-corpus scoring + boilerplate strip | ~half day | Every other decision keys off fit scores |
-| 2 | Funnel counters + near-miss report + title-filter fixes | ~half day | Recovers real jobs being dropped today (Pinterest, Stripe, …) |
-| 3 | Validation request/response loop | ~half day | Adds confidence before any automation trusts the data |
-| 4 | Slug auto-discovery + per-board XHR fixes | 1-2 days, incremental | Long tail of fetch reliability |
-| 5 | Application packet generator (stage 1 of automation) | ~1 day | First concrete step toward auto-apply |
+| Step | What | Status |
+|------|------|--------|
+| 1 | Corpus snapshot + full-corpus scoring + boilerplate strip | ✅ shipped, validated run 3 |
+| 2 | Funnel counters + near-miss report + title-filter fixes | ✅ shipped, validated run 3 |
+| 2.5 | Run-3 follow-ups: state TSV, age-aware funnel, company-token strip, Workday/Amazon/DEShaw fetch fixes | ✅ shipped |
+| 3 | Validation request/response loop (+ `/validate-jobs` command) | ⏭ next — generates the precision labels everything else needs |
+| 4 | Slug auto-discovery, then per-board XHR fixes | after 3 |
+| 5 | Application packet generator (stage 1 of automation) | after 3 (draws from the validated shortlist) |
 
 ## Decisions needed from Alex
 
-- Frontend/mobile roles are currently hard-excluded; ML roles are included.
-  Keep both choices? (See title-filter notes in the zero-match doc.)
-- Remote-US roles are excluded (`include_remote: false`). The near-miss
-  section will show what that's hiding; revisit after one run.
-- Max acceptable report size (currently top 100; near-miss adds ~20).
+- **Remote-US roles** (`include_remote: false`): run 3's single best fit was
+  remote-only. Flip it, or keep remote in near-miss?
+- **Mid-level (II) roles**: Attentive SWE II scored 93.4 in near-miss. In or out?
+- **Unleveled titles with 5+-years descriptions**: promote to main table?
+  (Brings in Stripe, OpenAI, Jane Street, Meta.)
+- Frontend/mobile hard-excluded, ML included — keep both choices?

@@ -24,13 +24,26 @@ from collections import Counter, defaultdict
 
 import numpy as np
 from sklearn.cluster import KMeans
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 from sklearn.preprocessing import normalize
 
 from .models import JobPosting
 
 COSINE_WEIGHT = 0.85
 CLUSTER_WEIGHT = 0.15
+
+# Posting-boilerplate vocabulary (compensation, EEO, benefits) — says nothing
+# about the role, but survives sentence-level boilerplate stripping because the
+# wording varies, and it was dominating cluster topics.
+EXTRA_STOP_WORDS = frozenset({
+    "benefits", "salary", "salaries", "compensation", "equity", "stock", "bonus",
+    "insurance", "diversity", "inclusion", "equal", "opportunity", "gender",
+    "race", "religion", "veteran", "disability", "accommodation", "accommodations",
+    "applicant", "applicants", "candidate", "candidates", "hiring", "apply",
+    "click", "employment", "employer", "eeo", "401k", "pto", "parental",
+    "medical", "dental", "vision", "annual", "range", "ranges", "pay", "paid",
+    "perks", "wellness",
+})
 
 # Sentences appearing in more than this share of a company's postings are
 # treated as boilerplate (companies with >= MIN_POSTINGS postings only).
@@ -75,9 +88,18 @@ def strip_company_boilerplate(jobs: list[JobPosting]) -> dict[str, str]:
     return cleaned
 
 
-def _doc(job: JobPosting, descriptions: dict[str, str]) -> str:
+def _company_name_re(company: str) -> re.Pattern | None:
+    """Pattern matching the company's own name tokens (>= 3 chars), so its
+    name can't act as a clustering feature for its own postings."""
+    tokens = [re.escape(t) for t in re.findall(r"[A-Za-z0-9]+", company) if len(t) >= 3]
+    return re.compile(r"\b(" + "|".join(tokens) + r")\b", re.I) if tokens else None
+
+
+def _doc(job: JobPosting, descriptions: dict[str, str], name_res: dict[str, re.Pattern | None]) -> str:
     desc = descriptions.get(job.key, job.description)
-    return f"{job.title}\n{job.location}\n{desc}"[:20000]
+    text = f"{job.title}\n{job.location}\n{desc}"[:20000]
+    name_re = name_res.get(job.company)
+    return name_re.sub(" ", text) if name_re else text
 
 
 def pick_cluster_count(n_jobs: int, configured) -> int:
@@ -119,14 +141,15 @@ def score_jobs(
     corpus = corpus if corpus else jobs
 
     descriptions = strip_company_boilerplate(corpus)
+    name_res = {c: _company_name_re(c) for c in {j.company for j in corpus}}
     vectorizer = TfidfVectorizer(
-        stop_words="english",
+        stop_words=list(ENGLISH_STOP_WORDS | EXTRA_STOP_WORDS),
         ngram_range=(1, 2),
         max_features=30000,
         sublinear_tf=True,
         min_df=3 if len(corpus) >= 200 else 1,
     )
-    X_corpus = normalize(vectorizer.fit_transform([_doc(j, descriptions) for j in corpus]))
+    X_corpus = normalize(vectorizer.fit_transform([_doc(j, descriptions, name_res) for j in corpus]))
     resume_vec = normalize(vectorizer.transform([resume_text])).toarray().ravel()
 
     n_clusters = pick_cluster_count(len(corpus), clusters)
@@ -148,7 +171,7 @@ def score_jobs(
     index_of = {id(job): i for i, job in enumerate(corpus)}
     rows = [index_of.get(id(job)) for job in jobs]
     if any(r is None for r in rows):  # jobs not drawn from corpus: embed separately
-        X_jobs = normalize(vectorizer.transform([_doc(j, descriptions) for j in jobs]))
+        X_jobs = normalize(vectorizer.transform([_doc(j, descriptions, name_res) for j in jobs]))
         labels = km.predict(X_jobs) if n_clusters > 1 else np.zeros(len(jobs), dtype=int)
     else:
         X_jobs = X_corpus[rows]

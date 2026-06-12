@@ -6,6 +6,31 @@ input file? I don't want to use the Claude API since I have the monthly
 subscription, but I can, once a day, ask Claude to take a file and search the
 web. Is that the best solution?"*
 
+## How we define "objectively good or bad"
+
+There is no ground truth for "fit" until a human (or web-checking Claude)
+labels matches — so evaluation uses four proxy metrics now, and labels later:
+
+1. **Verified recall** — count of demonstrably-real senior-NYC postings
+   visible in the report (main + near-miss). Measurable today: run 3
+   recovered Pinterest title-passes (0 → 31), surfaced 41 OpenAI and 36
+   Palantir near-misses, and added Amazon "Sr SDE" matches. Strictly more
+   real jobs visible with nothing lost ⇒ objectively better.
+2. **Concentration / skew** — share of top-10 rows held by one company, and
+   whether company-fit ranking survives boilerplate removal. Datadog
+   88.5 → 63.1 while its strong roles stayed ranked ⇒ objectively better.
+3. **Rank stability** — day-over-day churn of the top-20 under *unchanged*
+   code. Only measurable across consecutive runs on fixed code; not yet.
+4. **Labeled precision** — the share of top-10 jobs a reviewer confirms as
+   live + senior + NYC + good fit. **This is what the validation loop below
+   produces**, and it's the only metric that can call the *fit scores
+   themselves* good or bad. Until it exists, treat fit as a sorting
+   heuristic, not a truth claim.
+
+Each daily validation response gets appended to `data/validation-history/`,
+so precision becomes a tracked time series — improvements to scoring must
+move that number, or they're churn.
+
 ## Short answer
 
 Yes — with one refinement. A once-daily "Claude reads a file and searches the
@@ -55,8 +80,11 @@ What only a web-searching reviewer can verify: is the role *really* senior,
 
 ### `reports/validation-request.md` (generated)
 
-Top ~15 jobs by rank score (the ones you'd actually apply to), each with the
-claims to verify:
+Top ~15 jobs by rank score (the ones you'd actually apply to), **plus the top
+~5 near-misses** — run 3 showed the single best-fitting job of the day was a
+near-miss (Coinbase, REMOTE_ONLY, fit 100.0), and `UNLEVELED_TITLE` roles
+(OpenAI, Stripe, Jane Street) need exactly the level-verification a
+web-checking reviewer can do. Each entry carries the claims to verify:
 
 ```markdown
 ## 1. Datadog — Senior Software Engineer, Code Gen
