@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db, emailmod, ingest, profile
+from . import db, emailmod, gmail, ingest, profile
 from .apply_browser import SessionRegistry
 from .textfmt import description_html
 
@@ -160,8 +160,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     # ----------------------------------------------------------- email module
     @app.get("/emails", response_class=HTMLResponse)
-    def emails_page(request: Request, q: str = ""):
+    def emails_page(request: Request, q: str = "", error: str = "",
+                    connected_as: str = "", synced: str = ""):
         connected = emailmod.is_connected(conn)
+        account = conn.execute(
+            "SELECT address FROM email_accounts WHERE status = 'connected' LIMIT 1").fetchone()
         sql = """SELECT m.*, j.company AS job_company, j.title AS job_title
                  FROM email_messages m LEFT JOIN jobs j ON j.id = m.job_id"""
         args: list = []
@@ -171,7 +174,52 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         sql += " ORDER BY m.sent_at DESC LIMIT 200"
         messages = conn.execute(sql, args).fetchall()
         return render(request, "emails.html", connected=connected, messages=messages,
-                      q=q, setup=emailmod.SETUP_INSTRUCTIONS)
+                      q=q, setup=emailmod.SETUP_INSTRUCTIONS, error=error,
+                      address=account["address"] if account else "", synced=synced,
+                      has_credentials=gmail.load_client(root / "data") is not None)
+
+    def _redirect_uri(request: Request) -> str:
+        return str(request.base_url).rstrip("/") + "/emails/oauth/callback"
+
+    @app.post("/emails/connect")
+    def emails_connect(request: Request):
+        client = gmail.load_client(root / "data")
+        if client is None:
+            return RedirectResponse(
+                "/emails?error=No+data%2Fcredentials.json+—+follow+the+setup+steps",
+                status_code=303)
+        state = gmail.new_state()
+        app.state.oauth_states.add(state)
+        return RedirectResponse(
+            gmail.build_auth_url(client, _redirect_uri(request), state), status_code=303)
+
+    @app.get("/emails/oauth/callback")
+    def emails_oauth_callback(request: Request, code: str = "", state: str = "",
+                              error: str = ""):
+        if error or not code or state not in app.state.oauth_states:
+            return RedirectResponse("/emails?error=OAuth+flow+failed+—+try+again",
+                                    status_code=303)
+        app.state.oauth_states.discard(state)
+        try:
+            gmail.exchange_code(gmail.load_client(root / "data"), code,
+                                _redirect_uri(request), root / "data")
+            address = gmail.connect_account(conn, root / "data")
+        except Exception as exc:  # noqa: BLE001 — surface, don't 500
+            return RedirectResponse(f"/emails?error={quote_plus(str(exc)[:200])}",
+                                    status_code=303)
+        return RedirectResponse(f"/emails?connected_as={quote_plus(address)}",
+                                status_code=303)
+
+    @app.post("/emails/sync")
+    def emails_sync():
+        try:
+            counts = gmail.sync(conn, root / "data")
+        except Exception as exc:  # noqa: BLE001
+            return RedirectResponse(f"/emails?error={quote_plus(str(exc)[:200])}",
+                                    status_code=303)
+        return RedirectResponse(
+            f"/emails?synced={counts['stored']}+stored+of+{counts['checked']}+checked",
+            status_code=303)
 
     # --------------------------------------------------------------- JSON API
     @app.get("/api/jobs")
@@ -190,4 +238,5 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         ])
 
     app.state.conn = conn  # for tests
+    app.state.oauth_states = set()
     return app

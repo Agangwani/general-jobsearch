@@ -21,12 +21,12 @@ from . import db
 
 SETUP_INSTRUCTIONS = """\
 To connect Gmail (read-only):
-1. Create a Google Cloud project and enable the Gmail API.
-2. Create an OAuth client ID (Desktop app) and download credentials.json
-   into data/ (gitignored — never commit it).
-3. pip install google-api-python-client google-auth-oauthlib
-4. Restart the app and click Connect — the OAuth consent flow will open in
-   your browser; the token is stored locally in data/.
+1. Create a Google Cloud project and enable the Gmail API
+   (console.cloud.google.com → APIs & Services).
+2. Create an OAuth client ID of type "Desktop app" and download the JSON as
+   data/credentials.json (gitignored — never commit it).
+3. Click Connect Gmail below — the Google consent screen opens; the token is
+   stored locally in data/token.json (also gitignored). No extra packages.
 Scope used: gmail.readonly. The app never sends mail or modifies your inbox.\
 """
 

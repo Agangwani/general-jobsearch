@@ -69,10 +69,14 @@ Details: [analysis-zero-match-companies.md](analysis-zero-match-companies.md).
 Quick wins shipped with the run-3 follow-ups: Workday location term + deeper
 paging (NVIDIA/Adobe/Salesforce/Etsy), Amazon pagination, D. E. Shaw title
 cleanup. Still open, in priority order:
-1. **ATS slug auto-discovery** (`python -m jobsearch discover <company>`):
-   browser-load the careers_url, capture XHR to known ATS domains, emit the
-   companies.yaml stanza. Unblocks Citadel, Warby Parker, Superhuman, Plaid —
-   the slug-rot class keeps recurring, so tooling beats hand-research.
+1. ~~**ATS slug auto-discovery**~~ ✅ SHIPPED — `python -m jobsearch
+   discover "<company>" [--url careers-page]`: probes name-derived slugs
+   against the Greenhouse/Lever/Ashby/SmartRecruiters public APIs first (no
+   browser needed), then falls back to a headless-Chromium survey of the
+   careers page that classifies every URL the frontend touches (XHRs,
+   iframe embeds, redirects — Workday tenant/site pairs included) and emits
+   a ready-to-paste companies.yaml stanza. Run it for Citadel, Warby
+   Parker, Superhuman, Plaid.
 2. Goldman/JPMorgan XHR patterns — capture from a real session (funnel shows
    0 records despite pages loading).
 3. Google/Apple/Bloomberg/Microsoft/Morgan Stanley browser fallbacks find no
@@ -98,9 +102,12 @@ Promoted above the remaining P2 work after run 3, for two reasons:
 Local FastAPI + SQLite app (`python -m jobsearch ui`): two stacks
 (to-apply/applied), searchable job DB with exact insertion timestamps and
 append-only history, integrated Playwright apply-browser with submission
-detection, copy-paste profile panel, resume viewer, search-config viewer,
-and the Gmail module scaffold (schema + matcher + classifier; OAuth connect
-pending user-created credentials).
+detection, copy-paste profile panel, resume viewer, search-config viewer.
+**Gmail connect is now fully implemented** (raw OAuth loopback flow + REST
+sync, zero new dependencies): drop a Google OAuth Desktop-app client JSON at
+`data/credentials.json`, click Connect on /emails, then "⟳ Sync now" pulls
+recent inbox mail, stores only job-relevant messages, links them to
+applications, and auto-advances applied → confirmed on confirmations.
 
 ### P4 — Application automation — Stage 2 (auto-fill) ✅ SHIPPED
 **Auto-fill apply is live** ([design-autofill.md](design-autofill.md)): every

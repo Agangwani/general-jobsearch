@@ -73,9 +73,10 @@ python -m jobsearch ui           (FastAPI on 127.0.0.1:8484)
 
 ## Future connections (designed-for, not yet built)
 
-- **Gmail**: OAuth desktop flow (user-created credentials in `data/`,
-  gitignored) → poll inbox → `store_message()` (already implemented +
-  tested) links and classifies. UI page and tables already exist.
+- ~~**Gmail**~~ — **shipped**: raw OAuth loopback flow (no Google SDK) in
+  `webapp/gmail.py`. `data/credentials.json` (user-created, gitignored) →
+  Connect button → token in `data/token.json` → "⟳ Sync now" ingests
+  job-relevant inbox mail through `store_message()`.
 - ~~**Form prefill** (automation Stage 2)~~ — **shipped**: see
   [design-autofill.md](design-autofill.md). The integrated browser is now
   multi-tab and every "⚡ Auto-fill apply" fills the form (never submits).
