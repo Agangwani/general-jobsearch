@@ -68,6 +68,29 @@ def parse_embedded(raw_blobs: list[str]) -> list:
     return parsed
 
 
+# XSSI guards some APIs prefix to JSON bodies (Google uses )]}' ) — these
+# make Response.json() fail, silently dropping the payload.
+_XSSI_GUARDS = (")]}'", "&&&START&&&", "while(1);", "for(;;);")
+_ASSET_RE = re.compile(r"\.(js|css|png|jpe?g|gif|svg|woff2?|ttf|ico|mp4|webp)(\?|$)", re.I)
+
+
+def parse_json_text(text: str):
+    """JSON-decode a response body, tolerating XSSI guard prefixes. Returns
+    None when the body isn't JSON. Pure — offline-tested."""
+    if not text:
+        return None
+    stripped = text.lstrip()
+    for guard in _XSSI_GUARDS:
+        if stripped.startswith(guard):
+            stripped = stripped[len(guard):].lstrip()
+            break
+    try:
+        value = json.loads(stripped)
+    except ValueError:
+        return None
+    return value if isinstance(value, (dict, list)) else None
+
+
 class BrowserRuntime:
     """Context manager owning one headless Chromium for the whole run."""
 
@@ -79,7 +102,8 @@ class BrowserRuntime:
             raise BrowserUnavailable(f"playwright not installed — {_INSTALL_HINT}") from exc
         self._pw = sync_playwright().start()
         try:
-            self._browser = self._pw.chromium.launch(headless=True)
+            self._browser = self._pw.chromium.launch(
+                headless=True, args=["--disable-blink-features=AutomationControlled"])
         except Exception as exc:
             self._pw.stop()
             raise BrowserUnavailable(f"chromium launch failed ({exc}) — {_INSTALL_HINT}") from exc
@@ -88,6 +112,10 @@ class BrowserRuntime:
             viewport={"width": 1440, "height": 900},
             locale="en-US",
         )
+        # Plain headless Chromium advertises itself via navigator.webdriver,
+        # which several career sites use to serve an empty shell.
+        self._context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         self._context.set_default_timeout(self.timeout_ms)
 
     def __enter__(self) -> "BrowserRuntime":
@@ -142,22 +170,30 @@ class BrowserRuntime:
             except Exception:
                 pass  # busy pages never go idle; whatever was captured is enough
 
-            matched, extra = [], []
+            matched, extra, seen_urls = [], [], []
             for resp in responses:
+                if not _ASSET_RE.search(resp.url):
+                    seen_urls.append(resp.url)
                 is_match = bool(pattern.search(resp.url))
                 if not is_match and "json" not in resp.headers.get("content-type", ""):
                     continue  # only pattern hits get the benefit of the doubt
                 try:
                     payload = resp.json()
                 except Exception:
-                    continue  # non-JSON or disposed body
+                    try:
+                        payload = parse_json_text(resp.text())  # XSSI-guarded body?
+                    except Exception:
+                        payload = None  # disposed body
+                if payload is None:
+                    continue
                 (matched if is_match else extra).append(payload)
 
             try:
                 embedded = parse_embedded(page.evaluate(_EMBEDDED_JS))
             except Exception:
                 embedded = []
-            return {"matched": matched, "extra": extra, "embedded": embedded}
+            return {"matched": matched, "extra": extra, "embedded": embedded,
+                    "debug": {"final_url": page.url, "response_urls": seen_urls[:40]}}
         finally:
             page.close()
 

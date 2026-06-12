@@ -73,5 +73,6 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
         return [parse_job(raw, company.name) for raw in records]
     jobs = _generic.fallback_jobs(harvest, company.name, "apple")
     if not jobs:
-        raise RuntimeError("no job records in captured jobs.apple.com responses")
+        raise RuntimeError("no job records in captured jobs.apple.com responses "
+                           f"({_generic.debug_summary(harvest)})")
     return jobs

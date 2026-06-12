@@ -1,8 +1,45 @@
 """Generic browser-harvest fallback: duck-typed records, JSON-LD JobPosting,
 and DOM-embedded JSON parsing — all offline."""
 
-from jobsearch.browser import parse_embedded
+from jobsearch.browser import parse_embedded, parse_json_text
 from jobsearch.fetchers import _generic
+
+
+def test_parse_json_text_strips_xssi_guards():
+    # Google prefixes JSON bodies with )]}' which breaks Response.json()
+    assert parse_json_text(")]}'\n{\"jobs\": [1]}") == {"jobs": [1]}
+    assert parse_json_text("while(1);[{\"a\": 1}]") == [{"a": 1}]
+    assert parse_json_text('{"plain": true}') == {"plain": True}
+    assert parse_json_text("<html>nope</html>") is None
+    assert parse_json_text('"just a string"') is None
+    assert parse_json_text("") is None
+
+
+def test_debug_summary_describes_harvest():
+    harvest = {"matched": [1], "extra": [2, 3], "embedded": [],
+               "debug": {"final_url": "https://x.com/careers",
+                         "response_urls": ["https://x.com/api/a", "https://x.com/api/b"]}}
+    s = _generic.debug_summary(harvest)
+    assert "final URL: https://x.com/careers" in s
+    assert "1 matched + 2 other JSON responses" in s
+    assert "https://x.com/api/a" in s
+
+
+def test_google_card_scrape():
+    from jobsearch.fetchers.google import parse_cards
+    links = [
+        {"text": "Learn more about Senior Software Engineer, Core",
+         "href": "https://www.google.com/about/careers/applications/jobs/results/123456-senior"},
+        {"text": "Senior Staff Software Engineer\nNew York, NY", "href": "/jobs/results/789"},
+        {"text": "Learn more about Senior Software Engineer, Core",
+         "href": "https://www.google.com/about/careers/applications/jobs/results/123456-senior"},  # dup
+        {"text": "About Google", "href": "https://about.google/"},
+    ]
+    jobs = parse_cards(links, "Google")
+    assert [j.title for j in jobs] == [
+        "Senior Software Engineer, Core", "Senior Staff Software Engineer"]
+    assert jobs[0].job_id == "123456"
+    assert jobs[0].url.endswith("/jobs/results/123456")
 
 
 def test_parse_embedded_drops_non_json():

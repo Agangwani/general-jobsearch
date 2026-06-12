@@ -85,6 +85,20 @@ def _to_posting(record: dict, company_name: str, source: str, link_fmt: str) -> 
     )
 
 
+def debug_summary(harvest: dict) -> str:
+    """One line describing what the harvest actually saw — embedded in the
+    'no records' error so the daily report's needs-attention section carries
+    enough signal to fix the board without a debugging session."""
+    debug = harvest.get("debug") or {}
+    urls = debug.get("response_urls") or []
+    sample = ", ".join(urls[:8])
+    return (f"final URL: {debug.get('final_url', '?')}; "
+            f"{len(harvest.get('matched', []))} matched + "
+            f"{len(harvest.get('extra', []))} other JSON responses, "
+            f"{len(harvest.get('embedded', []))} embedded blobs; "
+            f"URLs seen: {sample or 'none'}")
+
+
 def fallback_jobs(harvest: dict, company_name: str, source: str,
                   link_fmt: str = "") -> list[JobPosting]:
     """Extract postings from a BrowserRuntime.harvest() result. `link_fmt`
