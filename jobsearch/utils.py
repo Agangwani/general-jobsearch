@@ -13,9 +13,16 @@ def strip_html(text: str) -> str:
     """Collapse (possibly entity-escaped) HTML into plain text."""
     if not text:
         return ""
-    text = html.unescape(text)
+    # Greenhouse double-escapes (&amp;nbsp;), so unescape until stable —
+    # otherwise "nbsp" leaks into the text and shows up as a TF-IDF token.
+    for _ in range(3):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
     text = re.sub(r"<(br|/p|/li|/div|/h[1-6])[^>]*>", "\n", text, flags=re.I)
     text = _TAG_RE.sub(" ", text)
+    text = text.replace("\xa0", " ")
     return _WS_RE.sub(" ", text).strip()
 
 

@@ -14,7 +14,7 @@ from ..models import Company, JobPosting
 from ..utils import parse_workday_posted_on, strip_html
 
 PAGE_SIZE = 20
-MAX_PAGES = 5
+MAX_PAGES = 10
 
 
 def parse_job(raw: dict, company: Company) -> JobPosting:
@@ -37,15 +37,21 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     host = company.params["host"]
     site = company.params["site"]
     query = settings.get("search", {}).get("query", "senior software engineer")
+    # Without a location term, popular tenants (NVIDIA, Adobe, Salesforce)
+    # exhaust the page budget on non-NYC results: the 2026-06-12 funnel showed
+    # NVIDIA at 98/100 title passes and 0/100 location passes. Tenant-specific
+    # location facet GUIDs can be supplied via a `facets:` param when known.
+    location_term = company.params.get("location_term", "New York")
+    facets = company.params.get("facets") or {}
     base = f"https://{host}/wday/cxs/{tenant}/{site}"
 
     jobs: list[JobPosting] = []
     for page in range(MAX_PAGES):
         body = {
-            "appliedFacets": {},
+            "appliedFacets": facets,
             "limit": PAGE_SIZE,
             "offset": page * PAGE_SIZE,
-            "searchText": query,
+            "searchText": f"{query} {location_term}".strip(),
         }
         data = post_json(session, f"{base}/jobs", json=body)
         postings = data.get("jobPostings", [])

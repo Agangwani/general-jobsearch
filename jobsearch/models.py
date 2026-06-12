@@ -29,6 +29,12 @@ class JobPosting:
     rank_score: float = 0.0
     cluster: int = -1
     is_new: bool = False
+    # Why this job missed the strict filter (near-miss jobs only), e.g.
+    # "UNLEVELED_TITLE" or "EXCLUDED_TRACK:frontend". Empty for full matches.
+    filter_reason: str = ""
+    # Claude-validation verdict: "verified" / "mismatch" / "stale" / "" (unchecked).
+    validation: str = ""
+    validation_note: str = ""
 
     @property
     def key(self) -> str:

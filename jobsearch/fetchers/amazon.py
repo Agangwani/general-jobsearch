@@ -26,17 +26,27 @@ def parse_job(raw: dict, company_name: str) -> JobPosting:
     )
 
 
+PAGE_SIZE = 100
+MAX_PAGES = 3  # the 2026-06-12 funnel showed only 9/100 page-1 results were NYC
+
+
 def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
     query = settings.get("search", {}).get("query", "senior software engineer")
-    params = {
-        "base_query": query,
-        "loc_query": "New York, NY, United States",
-        "city[]": "New York",
-        "country[]": "USA",
-        "sort": "recent",
-        "result_limit": 100,
-        "offset": 0,
-        "normalized_country_code[]": "USA",
-    }
-    data = get_json(session, f"{BASE}/en/search.json", params=params)
-    return [parse_job(raw, company.name) for raw in data.get("jobs", [])]
+    jobs: list[JobPosting] = []
+    for page in range(MAX_PAGES):
+        params = {
+            "base_query": query,
+            "loc_query": "New York, NY, United States",
+            "city[]": "New York",
+            "country[]": "USA",
+            "sort": "recent",
+            "result_limit": PAGE_SIZE,
+            "offset": page * PAGE_SIZE,
+            "normalized_country_code[]": "USA",
+        }
+        data = get_json(session, f"{BASE}/en/search.json", params=params)
+        batch = data.get("jobs", [])
+        jobs.extend(parse_job(raw, company.name) for raw in batch)
+        if len(batch) < PAGE_SIZE:
+            break
+    return jobs

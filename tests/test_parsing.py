@@ -104,3 +104,9 @@ def test_workday_parse():
     assert job.job_id == "Senior-Software-Engineer_JR123"
     assert "nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite/job/" in job.url
     assert job.posted_at is not None
+
+
+def test_strip_html_double_escaped_entities():
+    # Greenhouse double-escapes: &amp;nbsp; must not leak "nbsp" into tokens.
+    assert strip_html("Great&amp;nbsp;benefits &amp;amp; pay") == "Great benefits & pay"
+    assert "nbsp" not in strip_html("a&amp;nbsp;b")

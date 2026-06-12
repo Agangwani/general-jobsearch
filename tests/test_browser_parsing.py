@@ -112,3 +112,21 @@ def test_browser_fetchers_raise_when_empty():
     company = Company(name="Goldman Sachs", ats="browser_goldman")
     with pytest.raises(RuntimeError):
         goldman.fetch(company, FakeRuntime(), {})
+
+
+def test_deshaw_clean_title():
+    from jobsearch.fetchers.deshaw import clean_title
+
+    title, blurb = clean_title(
+        "iconStart-up Ventures: Senior Software Engineer at Wisable: Wisable, a "
+        "tech-enabled business brokerage that spun out from D. E. Shaw's venture "
+        "studio, seeks a senior software engineer..."
+    )
+    assert title == "Senior Software Engineer at Wisable"
+    assert "brokerage" in blurb
+
+    title, _ = clean_title("iconSystems: Senior Linux Infrastructure Engineer (London): The D. E. Shaw group seeks...")
+    assert title == "Senior Linux Infrastructure Engineer (London)"
+
+    title, blurb = clean_title("Plain Title")
+    assert title == "Plain Title" and blurb == ""

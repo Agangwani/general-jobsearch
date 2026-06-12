@@ -60,17 +60,38 @@ def test_pipeline_end_to_end(tmp_path):
     mark_new(jobs, seen2)
     assert not any(job.is_new for job in jobs)
 
+    near = JobPosting(
+        company="Stripe", title="Backend Engineer, Payments", location="New York, NY",
+        url="https://example.com/stripe/1", job_id="s1",
+        description="6+ years building payment APIs.", source="test",
+    )
+    near.fit_score = 55.0
+    near.filter_reason = "UNLEVELED_TITLE"
+    funnel = {"Stripe": {"fetched": 498, "title_pass": 0, "loc_pass": 132, "matched": 0, "near_miss": 41}}
+
     companies = [Company(name=n, ats="test", tags=["top50"], careers_url="https://example.com") for n in DESCRIPTIONS]
     markdown = render_markdown(
         jobs, company_fit, companies,
         manual_check=[{"name": "Jane Street", "careers_url": "https://example.com"}],
         errors=[FetchError("BrokenCo", "HTTPError: 404")],
         top_jobs=50,
+        near_miss=[near],
+        funnel=funnel,
+        cluster_names={0: "backend, aws", 1: "frontend, css"},
     )
     assert "Companies ranked by resume fit" in markdown
     assert "Jane Street" in markdown
     assert "BrokenCo" in markdown
+    assert "Near-miss roles" in markdown and "UNLEVELED_TITLE" in markdown
+    assert "Fetch & filter funnel" in markdown and "| Stripe | 498 |" in markdown
+    assert "Cluster topics" in markdown
 
-    written = write_reports(tmp_path / "reports", markdown, jobs, company_fit)
+    written = write_reports(tmp_path / "reports", markdown, jobs, company_fit,
+                            near_miss=[near], funnel=funnel)
     names = {p.name for p in written}
     assert "latest.md" in names and "latest.csv" in names and "latest.json" in names
+
+    import json
+    payload = json.loads((tmp_path / "reports" / "latest.json").read_text())
+    assert payload["near_miss"][0]["filter_reason"] == "UNLEVELED_TITLE"
+    assert payload["funnel"]["Stripe"]["fetched"] == 498
