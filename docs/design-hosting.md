@@ -18,11 +18,23 @@ browser sessions. Three of those translate directly; one does not:
 | Auto-fill apply browser | **Stays local-only.** It drives a Chromium with the user's own cookies/sessions on their machine; running it server-side would mean holding users' credentials. Hosted UI links out to postings; power users keep running the local app. |
 | Gmail sync | Defer from hosted v1. Holding Google OAuth tokens for other people raises the security bar (encryption at rest, Google verification review) far above the rest of the app. |
 
-**The key architectural win:** job postings are global, not per-user. The
-expensive part (fetching ~60 boards, Playwright scraping) runs **once a day
-for everyone** and writes to a shared `postings` table. Per-user work is just
-scoring — TF-IDF projection of one resume against the day's corpus takes
-seconds. Cost therefore barely grows with users.
+**The key architectural win:** job postings are global, not per-user, so
+fetch cost scales with **distinct search profiles, not users**:
+
+- Most boards (Greenhouse/Lever/Ashby/SmartRecruiters) return the *full*
+  board in one call — every role, HR included; filtering is local. One
+  daily fetch serves every user regardless of what they're looking for.
+- Search-parameterized sources (Google, Amazon, Workday tenants, the
+  browser-scraped boards) bake keyword+location into the request. These run
+  once per distinct (board, role keywords, location) profile, deduped
+  across users — 1,000 SWE-in-NYC users still cost one pass; an HR-in-Austin
+  user adds one more pass over only these boards. Rare niche profiles can
+  be batched on-signup/on-demand instead of daily.
+- The company registry becomes global: users subscribe to companies, the
+  worker fetches the union, each company once regardless of follower count.
+
+Per-user work is just scoring — TF-IDF projection of one resume against the
+day's corpus takes seconds. Cost is therefore sublinear in users.
 
 ## Recommended stack (cheapest credible path)
 
