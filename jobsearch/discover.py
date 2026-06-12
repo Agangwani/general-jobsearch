@@ -135,22 +135,72 @@ _SURVEY_ASSET_RE = re.compile(
     r"\.(js|css|png|jpe?g|gif|svg|woff2?|ttf|ico|mp4|webp)(\?|$)", re.I)
 
 
-def browser_survey(careers_url: str, runtime) -> tuple[list[dict], list[str]]:
+_HOP_HINT_RE = re.compile(
+    r"(open[-_ ]?(roles?|positions?)|/jobs\b|/job-?listings?|careers?/"
+    r"|join[-_ ]?us|vacanc|openings)", re.I)
+
+
+def _site(netloc: str) -> str:
+    return netloc.lower().split(":")[0].removeprefix("www.")
+
+
+def hop_candidates(hrefs: list[str], current_url: str) -> list[str]:
+    """Anchor targets worth one more survey hop: job-listing-ish links,
+    deduped, same-site first. Marketing careers pages routinely keep the
+    actual listings (and their ATS traffic) one click away — Grammarly's
+    superhuman.com/company/careers landing is the motivating case."""
+    def norm(url: str) -> str:
+        return url.split("#", 1)[0].rstrip("/").replace("://www.", "://", 1)
+
+    current_site = _site(urlparse(current_url).netloc)
+    same, other, seen = [], [], {norm(current_url)}
+    for href in hrefs:
+        if not href or not href.startswith("http"):
+            continue
+        clean = href.split("#", 1)[0].rstrip("/")
+        if not clean or norm(clean) in seen or _SURVEY_ASSET_RE.search(clean):
+            continue
+        if not _HOP_HINT_RE.search(clean):
+            continue
+        seen.add(norm(clean))
+        bucket = same if _site(urlparse(clean).netloc) == current_site else other
+        bucket.append(clean)
+    return same + other
+
+
+def browser_survey(careers_url: str, runtime, max_hops: int = 2) -> tuple[list[dict], list[str]]:
     """Load the careers page and classify every URL its frontend touches:
-    the XHRs it fires, the iframes it embeds, and where it redirects to.
-    Also returns the deduped non-asset URLs seen, so a 'no ATS detected'
-    outcome still leaves something to classify by hand."""
+    the XHRs it fires, the iframes it embeds, where it redirects to, and the
+    anchor links in its DOM (hosted boards are often plain links). When the
+    landing page yields nothing, follows up to `max_hops` job-listing-ish
+    links one level deeper. Also returns the deduped non-asset URLs seen, so
+    a 'no ATS detected' outcome still leaves something to classify by hand."""
     page = runtime._context.new_page()  # noqa: SLF001 — shared runtime owns lifecycle
     urls: list[str] = []
     page.on("request", lambda req: urls.append(req.url))
-    try:
-        page.goto(careers_url, wait_until="domcontentloaded")
+
+    def visit(target: str) -> list[str]:
+        page.goto(target, wait_until="domcontentloaded")
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:  # noqa: BLE001 — busy pages never go idle
             pass
         urls.append(page.url)  # redirect target often IS the hosted board
-        urls += [frame.url for frame in page.frames]
+        urls.extend(frame.url for frame in page.frames)
+        try:
+            return page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+        except Exception:  # noqa: BLE001
+            return []
+
+    try:
+        hrefs = visit(careers_url)
+        urls.extend(hrefs)
+        detections = survey_urls(urls)
+        for hop in hop_candidates(hrefs, page.url)[:max_hops]:
+            if detections:
+                break
+            urls.extend(visit(hop))
+            detections = survey_urls(urls)
     finally:
         page.close()
     interesting, seen = [], set()
@@ -159,7 +209,7 @@ def browser_survey(careers_url: str, runtime) -> tuple[list[dict], list[str]]:
             continue
         seen.add(url)
         interesting.append(url)
-    return survey_urls(urls), interesting
+    return detections, interesting
 
 
 def emit_stanza(name: str, detection: dict, careers_url: str = "") -> str:

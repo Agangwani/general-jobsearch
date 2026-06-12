@@ -2,8 +2,30 @@
 stanza emission — all offline."""
 
 from jobsearch.discover import (
-    classify_ats_url, emit_stanza, slug_candidates, survey_urls,
+    classify_ats_url, emit_stanza, hop_candidates, slug_candidates, survey_urls,
 )
+
+
+def test_hop_candidates_prefers_same_site_job_links():
+    hrefs = [
+        "https://superhuman.com/company/careers",          # current page — skipped
+        "https://superhuman.com/company/careers#values",   # fragment of current — skipped
+        "https://superhuman.com/company/careers/open-roles",
+        "https://superhuman.com/blog/post",                # not job-ish
+        "https://twitter.com/superhuman",                  # not job-ish
+        "mailto:jobs@superhuman.com",                      # not http
+    ]
+    hops = hop_candidates(hrefs, "https://superhuman.com/company/careers")
+    assert hops == ["https://superhuman.com/company/careers/open-roles"]
+    # hosted-board links in the DOM are direct detections, not hops
+    assert survey_urls(["https://job-boards.greenhouse.io/superhuman"]) == [
+        {"ats": "greenhouse", "board": "superhuman"}]
+
+
+def test_hop_candidates_dedupes():
+    hrefs = ["https://x.com/jobs", "https://x.com/jobs/", "https://www.x.com/jobs#a"]
+    hops = hop_candidates(hrefs, "https://x.com/careers")
+    assert hops == ["https://x.com/jobs"]
 
 
 def test_greenhouse_urls():
