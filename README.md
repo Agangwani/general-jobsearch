@@ -29,11 +29,18 @@ The default search targets senior software engineering roles in NYC — edit
 
 ## How it works
 
-1. **Company registry** — `config/companies.yaml` holds ~60 companies:
-   FAANG (tagged `faang`) and the top NYC software employers (tagged
-   `top50`) are always included. Each entry points at the company's own ATS:
-   Greenhouse, Lever, Ashby, Workday, Eightfold, or a company-specific API
-   (Amazon, Google, Apple, Meta, Microsoft, Bloomberg, Uber, Spotify).
+1. **Company registry** — `config/companies.yaml` holds ~60 curated
+   companies: FAANG (tagged `faang`) and the top NYC software employers
+   (tagged `top50`) are always included. Each entry points at the company's
+   own ATS: Greenhouse, Lever, Ashby, Workday, Eightfold, or a
+   company-specific API (Amazon, Google, Apple, Meta, Microsoft, Bloomberg,
+   Uber, Spotify). On top of that, `python -m jobsearch discover-companies`
+   builds a **resume-tailored registry dynamically**: it mines generalized
+   boards (The Muse, the HN "Who is hiring?" thread, optionally Adzuna) for
+   companies hiring people like you in your target location, ranks them by
+   resume fit, auto-resolves each to its own ATS board, and writes
+   `data/companies.discovered.yaml`, which every run merges under the
+   curated file (docs/design-company-discovery.md).
 2. **Fetch** — every enabled board is queried in parallel for senior
    software engineer roles. A broken board never sinks the run; it lands in
    the report's "needs attention" section instead.
@@ -84,6 +91,8 @@ playwright install chromium   # one-time, for browser-scraped boards + apply bro
 python -m jobsearch run      # full daily run → reports/latest.md
 python -m jobsearch verify   # check every configured board is reachable
 python -m jobsearch discover "Warby Parker"   # auto-detect a company's ATS board slug
+python -m jobsearch discover-companies        # mine generalized boards for companies
+                                              # matching YOUR resume; --dry-run to preview
 
 python -m jobsearch ingest   # pull the latest run into the application database
 python -m jobsearch ui       # application-tracking UI → http://127.0.0.1:8484
@@ -112,6 +121,16 @@ skipped with an actionable note in the report instead of failing the run.
 - **Add/remove companies** — edit `config/companies.yaml`. For Greenhouse
   use the slug from `boards.greenhouse.io/<slug>`, for Lever
   `jobs.lever.co/<slug>`, for Ashby `jobs.ashbyhq.com/<slug>`.
+- **Discover companies for your resume** — `python -m jobsearch
+  discover-companies` regenerates `data/companies.discovered.yaml` from
+  generalized job boards. Tune it under `discovery:` in
+  `config/settings.yaml`: `location` (what aggregator APIs are asked for),
+  `max_companies`, `categories` (Muse categories, default inferred from your
+  resume), `exclude_companies` (never auto-add — put your current employer
+  here), and `sources`. Adzuna is included when `ADZUNA_APP_ID` /
+  `ADZUNA_APP_KEY` are set (free key at developer.adzuna.com). Curated
+  entries in `companies.yaml` always win conflicts; delete the generated
+  file to fall back to the curated registry alone.
 - **Change role/location targeting** — `search.title_include`,
   `search.title_exclude`, and `search.locations` in `config/settings.yaml`.
   Set `include_remote: true` to accept all US-remote roles, or leave it off
@@ -124,16 +143,20 @@ skipped with an actionable note in the report instead of failing the run.
 - **Update the resume** — replace `data/resume.txt`; the ranking adapts
   automatically on the next run.
 
-Capital One is deliberately not in the registry (current employer).
+Capital One is deliberately not in the registry (current employer) and sits
+in `discovery.exclude_companies` so dynamic discovery can never add it back.
 
 ## Layout
 
 ```
-config/companies.yaml    company registry (FAANG + NYC top 50, ATS pointers)
-config/settings.yaml     filters, ranking knobs, fetch limits
+config/companies.yaml    curated company registry (FAANG + NYC top 50, ATS pointers)
+config/settings.yaml     filters, ranking knobs, fetch limits, discovery knobs
 data/resume.txt          resume text used for fit scoring
+data/companies.discovered.yaml  generated registry (discover-companies), gitignored
 data/seen_jobs.json      state: job IDs seen on previous runs
 jobsearch/fetchers/      one adapter per ATS / company API
+jobsearch/sources/       company-lead sources: generalized boards (Muse, HN, Adzuna)
+jobsearch/company_discovery.py  resume-tailored registry generation
 jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting
 jobsearch/pipeline.py    orchestration
 reports/                 daily output (markdown, CSV, JSON)
