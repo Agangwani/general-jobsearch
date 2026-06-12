@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import db, emailmod, ingest, profile
 from .apply_browser import SessionRegistry
+from .textfmt import description_html
 
 HERE = Path(__file__).parent
 
@@ -27,10 +28,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
-    sessions = SessionRegistry(db_path, root / "data" / "browser_profile")
+    sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
+                               data_dir=root / "data")
 
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["qp"] = quote_plus
+    templates.env.filters["description_html"] = description_html
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
@@ -89,7 +92,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/apply-status/{application_id}")
     def apply_status(application_id: int):
-        status = sessions.status(application_id)
+        status = sessions.status(application_id)  # includes the fill summary
         row = conn.execute("SELECT status FROM applications WHERE id = ?",
                            (application_id,)).fetchone()
         status["application_status"] = row["status"] if row else "unknown"

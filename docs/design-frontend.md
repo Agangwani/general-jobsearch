@@ -76,9 +76,9 @@ python -m jobsearch ui           (FastAPI on 127.0.0.1:8484)
 - **Gmail**: OAuth desktop flow (user-created credentials in `data/`,
   gitignored) → poll inbox → `store_message()` (already implemented +
   tested) links and classifies. UI page and tables already exist.
-- **Form prefill** (automation Stage 2): the integrated browser session +
-  `profile_fields` are exactly the inputs the prefill engine needs — it adds
-  field-mapping per ATS family on top of this PR.
+- ~~**Form prefill** (automation Stage 2)~~ — **shipped**: see
+  [design-autofill.md](design-autofill.md). The integrated browser is now
+  multi-tab and every "⚡ Auto-fill apply" fills the form (never submits).
 - Additional providers (calendar for interview scheduling, etc.) follow the
   email pattern: own table(s), append-only, linked to applications.
 

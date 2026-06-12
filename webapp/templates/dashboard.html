@@ -64,6 +64,7 @@
       <th><a class="sh{{ ' sa' if sort_by == 'first_seen' }}" href="{{ sort_href('first_seen') }}">First seen{{ sort_icon('first_seen') }}</a></th>
       <th>Flags</th>
       <th><a class="sh{{ ' sa' if sort_by == 'status' }}" href="{{ sort_href('status') }}">Status{{ sort_icon('status') }}</a></th>
+      <th title="Open in the integrated browser and auto-fill — you review &amp; submit">Apply</th>
     </tr>
   </thead>
   <tbody>
@@ -82,9 +83,16 @@
         {% elif j.validation == 'stale' %}<span class="tag tag-red">✗ stale</span>{% endif %}
       </td>
       <td><span class="status status-{{ j.status }}">{{ j.status.replace('_',' ') }}</span></td>
+      <td class="apply-cell">
+        {% if j.url and j.status not in ('applied','confirmed','interviewing','offer') %}
+        <button class="btn btn-row" data-apply-btn data-compact="1"
+                data-job-id="{{ j.id }}" data-application-id="{{ j.application_id }}"
+                title="Open in the integrated browser and auto-fill — you review & submit">⚡ Auto-fill</button>
+        {% endif %}
+      </td>
     </tr>
   {% else %}
-    <tr><td colspan="8" class="empty">Nothing here. Run the pipeline, then "Ingest latest run".</td></tr>
+    <tr><td colspan="9" class="empty">Nothing here. Run the pipeline, then "Ingest latest run".</td></tr>
   {% endfor %}
   </tbody>
 </table>

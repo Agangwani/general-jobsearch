@@ -67,10 +67,13 @@ python -m jobsearch ui       # application-tracking UI → http://127.0.0.1:8484
 ```
 
 The UI (docs/design-frontend.md) tracks your to-apply / applied stacks in a
-local SQLite database (`data/jobsearch.db`, gitignored), shows full job
-descriptions with a copy-paste profile panel and your resume, and opens
-postings in an integrated Chromium window that detects application
-submissions automatically.
+local SQLite database (`data/jobsearch.db`, gitignored), shows formatted job
+descriptions with a copy-paste profile panel and your resume, and — via the
+"⚡ Auto-fill apply" button on every job row — opens each posting in its own
+tab of an integrated Chromium window, **auto-fills the application form from
+your profile** (docs/design-autofill.md), and detects submissions
+automatically. It never clicks submit: you review every field and submit
+yourself.
 
 If Chromium isn't installed the run still works — browser-scraped boards are
 skipped with an actionable note in the report instead of failing the run.

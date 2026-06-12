@@ -6,11 +6,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
+_HSPACE_RE = re.compile(r"[ \t]+")
 
 
 def strip_html(text: str) -> str:
-    """Collapse (possibly entity-escaped) HTML into plain text."""
+    """Convert (possibly entity-escaped) HTML into plain text, one line per
+    block element and a `• ` marker per list item, so descriptions keep their
+    paragraph/bullet structure for display and sentence-level boilerplate
+    stripping."""
     if not text:
         return ""
     # Greenhouse double-escapes (&amp;nbsp;), so unescape until stable —
@@ -20,10 +23,15 @@ def strip_html(text: str) -> str:
         if unescaped == text:
             break
         text = unescaped
-    text = re.sub(r"<(br|/p|/li|/div|/h[1-6])[^>]*>", "\n", text, flags=re.I)
+    text = re.sub(r"<li\b[^>]*>", "\n• ", text, flags=re.I)
+    text = re.sub(
+        r"</?(br|p|li|div|ul|ol|h[1-6]|tr|section|article)\b[^>]*>",
+        "\n", text, flags=re.I,
+    )
     text = _TAG_RE.sub(" ", text)
     text = text.replace("\xa0", " ")
-    return _WS_RE.sub(" ", text).strip()
+    lines = (_HSPACE_RE.sub(" ", line).strip() for line in text.split("\n"))
+    return "\n".join(line for line in lines if line)
 
 
 def parse_when(value) -> Optional[datetime]:

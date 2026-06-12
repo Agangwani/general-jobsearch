@@ -7,7 +7,8 @@ from jobsearch.utils import parse_when, parse_workday_posted_on, strip_html
 
 def test_strip_html():
     raw = "&lt;p&gt;Build &lt;b&gt;APIs&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Python&lt;/li&gt;&lt;/ul&gt;"
-    assert strip_html(raw) == "Build APIs Python"
+    # Block structure is preserved: one line per block, bullets marked.
+    assert strip_html(raw) == "Build APIs\n• Python"
 
 
 def test_parse_when_formats():
