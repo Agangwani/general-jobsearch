@@ -119,12 +119,6 @@ companies:
     board: roblox
     careers_url: https://careers.roblox.com/jobs
 
-  - name: Bloomberg
-    tags: [top50]
-    ats: bloomberg
-    fallback: browser_bloomberg
-    careers_url: https://careers.bloomberg.com/job/search?ftsearch=software+engineer
-
   - name: Spotify
     tags: [top50]
     ats: spotify
@@ -177,9 +171,15 @@ companies:
 
   - name: Plaid
     tags: [top50]
-    ats: lever
+    ats: ashby   # migrated from Lever; confirmed live 2026-06-12 via discover
     org: plaid
     careers_url: https://plaid.com/careers/
+
+  - name: Superhuman   # = Grammarly post-rebrand; one Ashby board covers both
+    tags: [top50]
+    ats: ashby   # detected 2026-06-12 via discover survey hop
+    org: Superhuman
+    careers_url: https://superhuman.com/company/careers
 
   - name: Brex
     tags: [top50]
@@ -204,12 +204,6 @@ companies:
     ats: greenhouse
     board: figma
     careers_url: https://www.figma.com/careers/
-
-  - name: Superhuman
-    tags: [top50]
-    ats: greenhouse
-    board: grammarly
-    careers_url: https://superhuman.com/careers
 
   - name: Oscar Health
     tags: [top50]
@@ -252,12 +246,6 @@ companies:
     ats: greenhouse
     board: yext
     careers_url: https://www.yext.com/careers
-
-  - name: Warby Parker
-    tags: [top50]
-    ats: greenhouse
-    board: warbyparker
-    careers_url: https://www.warbyparker.com/jobs
 
   - name: Compass
     tags: [top50]
@@ -334,12 +322,6 @@ companies:
     board: wehrtyou
     careers_url: https://www.hudsonrivertrading.com/careers/
 
-  - name: Citadel
-    tags: [top50]
-    ats: greenhouse
-    board: citadel
-    careers_url: https://www.citadel.com/careers/
-
   - name: Point72
     tags: [top50]
     ats: greenhouse
@@ -411,6 +393,18 @@ companies:
 manual_check:
   - name: LinkedIn  # aggressive bot protection; scraping violates LinkedIn ToS
     careers_url: https://careers.linkedin.com/jobs?location=New%20York
+
+  - name: Warby Parker  # Greenhouse board 'warbyparker' 404s; browser survey found
+                        # no ATS traffic (2026-06-12) — likely a custom board now
+    careers_url: https://www.warbyparker.com/jobs
+
+  - name: Citadel  # custom careers site; browser survey found no ATS traffic (2026-06-12)
+    careers_url: https://www.citadel.com/careers/open-opportunities?location=New%20York
+
+  - name: Bloomberg  # PerimeterX bot defense bounces both plain HTTP and the
+                     # headless browser off careers.bloomberg.com (run
+                     # diagnostics 2026-06-12) — check by hand instead
+    careers_url: https://careers.bloomberg.com/job/search?ftsearch=software+engineer&location=New+York
 
   - name: Vimeo  # Greenhouse board closed; no stable public API currently
     careers_url: https://vimeo.com/careers

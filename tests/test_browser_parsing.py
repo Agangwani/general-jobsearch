@@ -40,7 +40,8 @@ def test_jpmorgan_parse_oracle_shape():
     }]}]}]
     jobs = jpmorgan.parse_payloads(payloads, "JPMorgan Chase")
     assert len(jobs) == 1
-    assert jobs[0].url == "https://careers.jpmorgan.com/us/en/job/210512345"
+    assert jobs[0].url == ("https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience"
+                           "/en/sites/CX_1001/job/210512345")
     assert jobs[0].posted_at is not None
 
 
