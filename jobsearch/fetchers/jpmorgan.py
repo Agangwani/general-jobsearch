@@ -57,5 +57,6 @@ def fetch(company: Company, runtime, settings: dict) -> list[JobPosting]:
             harvest, company.name, "jpmorgan",
             link_fmt="https://careers.jpmorgan.com/us/en/job/{id}")
     if not jobs:
-        raise RuntimeError("no job records found in captured careers.jpmorgan.com responses")
+        raise RuntimeError("no job records found in captured careers.jpmorgan.com responses "
+                           f"({_generic.debug_summary(harvest)})")
     return jobs

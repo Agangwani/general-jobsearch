@@ -53,5 +53,6 @@ def fetch(company: Company, runtime, settings: dict) -> list[JobPosting]:
         jobs = _generic.fallback_jobs(harvest, company.name, "millennium",
                                       link_fmt="https://www.mlp.com/job/{id}")
     if not jobs:
-        raise RuntimeError("no job records found in captured mlp.com responses")
+        raise RuntimeError("no job records found in captured mlp.com responses "
+                           f"({_generic.debug_summary(harvest)})")
     return jobs

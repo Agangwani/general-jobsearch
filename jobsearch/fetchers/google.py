@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ..http import get_json
 from ..models import Company, JobPosting
 from ..utils import parse_when, strip_html
@@ -75,5 +77,40 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
         return [parse_job(raw, company.name) for raw in records]
     jobs = _generic.fallback_jobs(harvest, company.name, "google")
     if not jobs:
-        raise RuntimeError("no job records captured from Google careers page")
+        # Google renders results server-side (AF_initDataCallback, not plain
+        # JSON) — scrape the result cards as the last resort. The search URL
+        # already pins location to New York, so card titles are enough.
+        links = runtime.extract_links(url, "a[href*='jobs/results/']")
+        jobs = parse_cards(links, company.name)
+    if not jobs:
+        raise RuntimeError("no job records captured from Google careers page "
+                           f"({_generic.debug_summary(harvest)})")
+    return jobs
+
+
+_CARD_ID = re.compile(r"jobs/results/(\d+)")
+
+
+def parse_cards(links: list[dict], company_name: str) -> list[JobPosting]:
+    """[{text, href}] from the results page → postings. Pure — offline-tested.
+    Location comes from the search URL's filter; dates are not on the cards
+    (unknown-age handling covers that)."""
+    jobs, seen = [], set()
+    for link in links:
+        m = _CARD_ID.search(link.get("href") or "")
+        if not m or m.group(1) in seen:
+            continue
+        title = (link.get("text") or "").strip().split("\n")[0]
+        title = re.sub(r"^learn more about\s+", "", title, flags=re.I).strip()
+        if not title:
+            continue
+        seen.add(m.group(1))
+        jobs.append(JobPosting(
+            company=company_name,
+            title=title,
+            location="New York, NY",
+            url=f"https://www.google.com/about/careers/applications/jobs/results/{m.group(1)}",
+            job_id=m.group(1),
+            source="google",
+        ))
     return jobs

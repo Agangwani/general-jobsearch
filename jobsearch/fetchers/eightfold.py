@@ -65,5 +65,6 @@ def fetch_browser(company: Company, runtime, settings: dict) -> list[JobPosting]
         return [parse_job(raw, company.name, base_url) for raw in records]
     jobs = _generic.fallback_jobs(harvest, company.name, "eightfold")
     if not jobs:
-        raise RuntimeError(f"no positions captured from {base_url} careers page")
+        raise RuntimeError(f"no positions captured from {base_url} careers page "
+                           f"({_generic.debug_summary(harvest)})")
     return jobs
