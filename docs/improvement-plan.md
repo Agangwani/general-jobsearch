@@ -102,10 +102,14 @@ detection, copy-paste profile panel, resume viewer, search-config viewer,
 and the Gmail module scaffold (schema + matcher + classifier; OAuth connect
 pending user-created credentials).
 
-### P4 — Application automation (prep only for now)
-Staged: application packets → form prefill assist → approval queue →
-(optionally, much later) unattended submit for allowlisted ATSes. Risks and
-data model documented in
+### P4 — Application automation — Stage 2 (auto-fill) ✅ SHIPPED
+**Auto-fill apply is live** ([design-autofill.md](design-autofill.md)): every
+"⚡ Auto-fill apply" click (job page or per-row in the table) opens its own
+tab in the shared integrated browser, fills the form from the profile
+(formatted values, parallel field matching, EEO/cover-letter questions
+deliberately skipped and reported), and leaves submit to the user.
+Remaining stages: per-ATS field maps learned from user corrections, approval
+queue, and (much later, opt-in) unattended submit — risks and data model in
 [design-application-automation.md](design-application-automation.md).
 
 ## Suggested order of implementation (updated after run 3)

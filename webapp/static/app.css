@@ -67,6 +67,9 @@ th a.sa { color: var(--accent); }
 .sort-arrow-idle { opacity: .3; }
 /* extra filter inputs */
 .filter-num { width: 94px; }
+/* per-row auto-fill apply button */
+.apply-cell { white-space: nowrap; }
+.btn-row { font-size: 12px; padding: 3px 9px; }
 
 /* tags & statuses */
 .tag { display: inline-block; background: var(--bg-card); border: 1px solid var(--line);
@@ -83,8 +86,13 @@ th a.sa { color: var(--accent); }
 
 /* job detail */
 .description { background: var(--bg-soft); border: 1px solid var(--line);
-  border-radius: 10px; padding: 18px 20px; white-space: pre-wrap; max-height: 560px;
-  overflow: auto; }
+  border-radius: 10px; padding: 18px 22px; max-height: 560px; overflow: auto; }
+.description p { margin: 0 0 10px; }
+.description h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--accent); margin: 18px 0 8px; }
+.description h3:first-child { margin-top: 0; }
+.description ul { margin: 0 0 12px; padding-left: 22px; }
+.description li { margin-bottom: 4px; }
 .timeline { list-style: none; padding: 0; }
 .timeline li { padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 14px; }
 .stack-form { display: flex; flex-direction: column; gap: 10px; }
