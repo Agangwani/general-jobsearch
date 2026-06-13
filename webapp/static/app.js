@@ -66,3 +66,42 @@ document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-apply-btn]");
   if (btn) { e.preventDefault(); startApply(btn); }
 });
+
+
+// Run-pipeline button: kick off a run and stream its log into the panel.
+// The log is the pipeline's own stderr — per-company fetch counts included.
+const runBtn = document.getElementById("run-pipeline");
+if (runBtn) {
+  const panel = document.getElementById("run-panel");
+  const logEl = document.getElementById("run-log");
+  const status = document.getElementById("run-status");
+  let cursor = 0;
+  document.getElementById("run-hide").addEventListener("click", () => panel.hidden = true);
+
+  async function poll() {
+    const snap = await (await fetch(`/run/log?since=${cursor}`)).json();
+    if (snap.lines.length) {
+      logEl.textContent += snap.lines.join("\n") + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    cursor = snap.next;
+    if (snap.running) {
+      setTimeout(poll, 1000);
+    } else if (snap.exit_code !== null) {
+      const ok = snap.exit_code === 0;
+      status.textContent = ok ? "✓ Run finished — results ingested" : `✗ Run failed (exit ${snap.exit_code})`;
+      runBtn.disabled = false;
+      runBtn.textContent = "▶ Run pipeline";
+    }
+  }
+
+  runBtn.addEventListener("click", async () => {
+    const resp = await fetch("/run", { method: "POST" });
+    panel.hidden = false;
+    status.textContent = resp.status === 409 ? "A run is already in progress — attaching to its log…" : "Running pipeline…";
+    if (resp.status !== 409) { logEl.textContent = ""; cursor = 0; }
+    runBtn.disabled = true;
+    runBtn.textContent = "Running…";
+    poll();
+  });
+}

@@ -20,6 +20,7 @@ from jobsearch.resume import extract_keywords, pdf_to_text
 
 from . import db, emailmod, gmail, ingest, profile
 from .apply_browser import SessionRegistry
+from .runner import PipelineRunner
 from .textfmt import description_html
 
 HERE = Path(__file__).parent
@@ -32,6 +33,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     profile.ensure_seeded(conn, root)
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
                                data_dir=root / "data")
+    runner = PipelineRunner(root)
+    app.state.runner = runner
 
     # Guards against launching overlapping background pipeline runs.
     _pipeline_state = {"running": False}
@@ -115,6 +118,27 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         job = conn.execute("SELECT job_id FROM applications WHERE id = ?",
                            (application_id,)).fetchone()
         return RedirectResponse(f"/jobs/{job['job_id']}" if job else "/", status_code=303)
+
+    @app.post("/run")
+    def start_pipeline():
+        started = runner.start()
+        return JSONResponse({"started": started},
+                            status_code=200 if started else 409)
+
+    @app.get("/run/log")
+    def pipeline_log(since: int = 0):
+        # Seamless finish: first poll after a successful run ingests the
+        # fresh report so the dashboard fills without a separate click.
+        if runner.exit_code == 0 and not runner.running and not runner.ingested:
+            runner.ingested = True
+            try:
+                counts = ingest.ingest_latest(root, conn)
+                runner.lines.append(
+                    f"Ingested into UI: {counts['inserted']} new, "
+                    f"{counts['updated']} updated jobs. Refresh the dashboard.")
+            except Exception as exc:  # noqa: BLE001 — surface in the log panel
+                runner.lines.append(f"Ingest failed: {exc}")
+        return JSONResponse(runner.snapshot(since))
 
     @app.post("/ingest")
     def do_ingest():
