@@ -276,6 +276,7 @@ def search_jobs(
     sort_dir: str = "",         # "asc" | "desc"; empty → desc
     min_fit: float | None = None,
     status_filter: str = "",    # exact application status value
+    since: str = "",            # show not-applied jobs only if last_seen_at >= this
     limit: int = 500,
 ) -> list[sqlite3.Row]:
     sql = [
@@ -289,6 +290,12 @@ def search_jobs(
     if company:
         sql.append("AND j.company = ?")
         args.append(company)
+    # Run scope: limit the to-apply pile to jobs the most recent run surfaced,
+    # but never hide a job you've already engaged with (in_progress/applied/…)
+    # just because a later run targeted different roles.
+    if since:
+        sql.append("AND (j.last_seen_at >= ? OR a.status != 'not_applied')")
+        args.append(since)
     if stack == "applied":
         sql.append(f"AND a.status IN ({','.join('?' * len(APPLIED_SET))})")
         args += sorted(APPLIED_SET)
@@ -313,6 +320,14 @@ def search_jobs(
     sql.append("LIMIT ?")
     args.append(limit)
     return conn.execute(" ".join(sql), args).fetchall()
+
+
+def latest_run_ingested_at(conn: sqlite3.Connection) -> str:
+    """Ingest timestamp of the most recent run, or '' if none. Jobs that run
+    surfaced all carry this exact value in last_seen_at (upsert stamps every
+    report job, changed or not), so it's the boundary for 'this run only'."""
+    row = conn.execute("SELECT MAX(ingested_at) AS t FROM runs").fetchone()
+    return row["t"] if row and row["t"] else ""
 
 
 def stack_counts(conn: sqlite3.Connection) -> dict[str, int]:

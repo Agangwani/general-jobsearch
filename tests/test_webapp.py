@@ -166,6 +166,34 @@ def test_ingest_latest(tmp_path, conn):
     assert len(conn.execute("SELECT * FROM runs").fetchall()) == 2
 
 
+def test_search_jobs_since_scopes_to_apply_but_keeps_engaged(conn):
+    """`since` (the latest-run boundary) hides stale not-applied jobs but keeps
+    any job the user has already started/applied to, regardless of run."""
+    db.upsert_job(conn, record(key="greenhouse:Old:1", company="Old",
+                               title="Senior Software Engineer"),
+                  now="2026-06-10T10:00:00+00:00")
+    db.upsert_job(conn, record(key="greenhouse:OldApplied:2", company="Old",
+                               title="Staff Software Engineer"),
+                  now="2026-06-10T10:00:00+00:00")
+    db.upsert_job(conn, record(key="greenhouse:Fresh:3", company="Gainsight",
+                               title="Senior Customer Success Manager"),
+                  now="2026-06-13T10:00:00+00:00")
+    # Mark the second old job as applied.
+    app2 = conn.execute(
+        "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id "
+        "WHERE j.key = 'greenhouse:OldApplied:2'").fetchone()["id"]
+    db.set_application_status(conn, app2, "applied", detail="x", via="test")
+
+    boundary = "2026-06-13T10:00:00+00:00"
+    scoped = {r["key"] for r in db.search_jobs(conn, since=boundary)}
+    assert "greenhouse:Fresh:3" in scoped         # this run's to-apply job
+    assert "greenhouse:OldApplied:2" in scoped     # engaged job kept across runs
+    assert "greenhouse:Old:1" not in scoped        # stale not-applied: hidden
+
+    everything = {r["key"] for r in db.search_jobs(conn, since="")}
+    assert "greenhouse:Old:1" in everything        # all-runs view shows it
+
+
 def test_ingest_flags_stale_to_apply_jobs(tmp_path, conn):
     """A later run targeting different roles leaves the earlier run's unapplied
     jobs in the DB; ingest reports them as stale so the dashboard's leftovers

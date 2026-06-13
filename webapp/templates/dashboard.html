@@ -4,7 +4,7 @@
 
 {#-- Build a sort URL for a column, toggling direction if already active --#}
 {%- macro sort_href(col) -%}
-/?sort_by={{ col }}&sort_dir={{ 'asc' if sort_by == col and sort_dir != 'asc' else 'desc' if sort_by == col else 'desc' }}&q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}
+/?sort_by={{ col }}&sort_dir={{ 'asc' if sort_by == col and sort_dir != 'asc' else 'desc' if sort_by == col else 'desc' }}&q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&run_scope={{ run_scope }}
 {%- endmacro -%}
 
 {%- macro sort_icon(col) -%}
@@ -28,9 +28,22 @@
   {% endif %}
 </header>
 
+{% if has_runs %}
+<p class="muted run-scope">
+  {% if run_scope == 'all' %}
+    Showing <strong>all runs</strong> — includes jobs from earlier runs that may have targeted different roles.
+    <a href="/?stack={{ stack }}&near_miss={{ near_miss }}&run_scope=latest">Show this run only →</a>
+  {% else %}
+    Showing <strong>this run only</strong> — to-apply jobs from the latest run (jobs you've already started/applied to always show).
+    <a href="/?stack={{ stack }}&near_miss={{ near_miss }}&run_scope=all">Show all runs →</a>
+  {% endif %}
+</p>
+{% endif %}
+
 <form class="filters" method="get" action="/">
   <input type="hidden" name="sort_by" value="{{ sort_by }}">
   <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+  <input type="hidden" name="run_scope" value="{{ run_scope }}">
   <input type="search" name="q" value="{{ q }}" placeholder="Search title, description, company, location…">
   <select name="company">
     <option value="">All companies</option>
@@ -49,7 +62,7 @@
   </select>
   <button class="btn">Filter</button>
   {% if sort_by or min_fit or status_filter %}
-  <a class="btn btn-ghost" href="/?q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}">Reset sort</a>
+  <a class="btn btn-ghost" href="/?q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&run_scope={{ run_scope }}">Reset sort</a>
   {% endif %}
 </form>
 
