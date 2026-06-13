@@ -42,16 +42,50 @@ def render_markdown(
     near_miss: list[JobPosting] = (),
     funnel: dict[str, dict] | None = None,
     cluster_names: dict[int, str] | None = None,
+    targeting: dict | None = None,
 ) -> str:
     now = datetime.now(timezone.utc)
+    if targeting and targeting.get("occupations"):
+        headline = " / ".join(targeting["occupations"])
+    else:
+        headline = "Job"
     lines = [
-        f"# NYC Senior Software Engineer Job Report — {now.date().isoformat()}",
+        f"# {headline} Report — {now.date().isoformat()}",
         "",
         f"Generated {now.strftime('%Y-%m-%d %H:%M UTC')}. "
         f"{len(jobs)} matching postings across {len(company_fit)} companies. "
         "Fit scores are relative (best match of the day = 100); job order is "
         "fit weighted by recency, so newly posted roles rise to the top.",
         "",
+    ]
+    if targeting:
+        if targeting.get("occupations"):
+            lines += [
+                "## What this run targeted",
+                "",
+                f"- **Roles** ({targeting.get('matched_via', '?')} match, "
+                f"{targeting.get('seniority', '?')} seniority): "
+                f"{', '.join(targeting['occupations'])}",
+                f"- **Search query**: `{targeting.get('query', '')}`",
+                f"- **Relevant skills**: {', '.join(targeting.get('skills', [])[:12])}",
+                "",
+                "If these roles look wrong for the resume, edit "
+                "`config/occupations.yaml` or set `search.role_targeting: manual` "
+                "in `config/settings.yaml`. The jobs below are filtered to these "
+                "roles; older jobs already in the tracker dashboard are not.",
+                "",
+            ]
+        else:
+            lines += [
+                "## What this run targeted",
+                "",
+                f"- Role targeting **off** ({targeting.get('mode', 'manual')}); "
+                f"using the title filters in `config/settings.yaml`. "
+                f"Query: `{targeting.get('query', '')}`.",
+                "",
+            ]
+
+    lines += [
         "## Companies ranked by resume fit",
         "",
         "| # | Company | Fit | Tags | Matching roles | Job board |",
@@ -182,6 +216,63 @@ def _job_json(job: JobPosting) -> dict:
         "validation": job.validation,
         "validation_note": job.validation_note,
     }
+
+
+def write_run_log(out_dir: Path, runlog: dict) -> Path:
+    """Persist a structured record of one run — what was targeted, which boards
+    were queried and what they returned, the funnel totals, and the matched
+    titles — so a surprising result can be diagnosed after the fact.
+
+    Writes reports/run-log.json (the structured record, append-friendly to read
+    programmatically) and reports/run-log.md (a human-readable summary)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = out_dir / "run-log.json"
+    json_path.write_text(json.dumps(runlog, indent=2) + "\n")
+
+    t = runlog.get("targeting") or {}
+    comp = runlog.get("companies") or {}
+    totals = runlog.get("totals") or {}
+    md = [
+        f"# Run log — {runlog.get('generated', '')}",
+        "",
+        "## Targeting",
+        f"- Resume: {runlog.get('resume', {}).get('source', '?')} "
+        f"({runlog.get('resume', {}).get('chars', 0)} chars)",
+    ]
+    if t.get("occupations"):
+        md += [
+            f"- Matched roles ({t.get('matched_via', '?')}, {t.get('seniority', '?')}): "
+            f"{', '.join(t['occupations'])}",
+            f"- Query: `{t.get('query', '')}`",
+            f"- Title patterns: {t.get('title_include', 0)} include / "
+            f"{t.get('title_exclude', 0)} exclude",
+            f"- Skills: {', '.join(t.get('skills', [])[:12])}",
+        ]
+    else:
+        md.append(f"- Role targeting off ({t.get('mode', 'manual')}); "
+                  f"query `{t.get('query', '')}`")
+    md += [
+        "",
+        "## Boards",
+        f"- Enabled companies: {comp.get('enabled', 0)}",
+        f"- Returned postings: {len(comp.get('with_postings', []))}",
+        f"- Zero postings: {', '.join(comp.get('zero_fetch', [])) or '—'}",
+        f"- Errored: {', '.join(e['company'] for e in comp.get('errored', [])) or '—'}",
+        "",
+        "## Funnel",
+        f"- Fetched (deduped): {totals.get('fetched', 0)}",
+        f"- Matched: {totals.get('matched', 0)} · near-miss: {totals.get('near_miss', 0)}",
+        "",
+        "## Top matched (this run)",
+    ]
+    for job in runlog.get("top_jobs", [])[:25]:
+        md.append(f"- {job['fit']} — {job['company']} · {job['title']} ({job['location']})")
+    if not runlog.get("top_jobs"):
+        md.append("- (none matched)")
+    md.append("")
+    md_path = out_dir / "run-log.md"
+    md_path.write_text("\n".join(md))
+    return json_path
 
 
 def write_reports(

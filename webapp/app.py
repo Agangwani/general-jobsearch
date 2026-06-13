@@ -136,6 +136,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 runner.lines.append(
                     f"Ingested into UI: {counts['inserted']} new, "
                     f"{counts['updated']} updated jobs. Refresh the dashboard.")
+                stale = counts.get("stale_unapplied", 0)
+                if stale:
+                    runner.lines.append(
+                        f"Heads up: {stale} unapplied job(s) on the dashboard are "
+                        "from earlier runs (not in this report) — likely a previous "
+                        "role target. Filter or clear them to see only this run.")
             except Exception as exc:  # noqa: BLE001 — surface in the log panel
                 runner.lines.append(f"Ingest failed: {exc}")
         return JSONResponse(runner.snapshot(since))
