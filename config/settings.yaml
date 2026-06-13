@@ -65,6 +65,33 @@ ranking:
   # Company fit = mean fit of its top-N matching postings.
   company_top_n: 3
 
+# Dynamic company discovery (`python -m jobsearch discover-companies`):
+# mine generalized job boards for companies hiring people like you, rank them
+# by resume fit, resolve their ATS boards, and write a generated registry that
+# is merged on top of config/companies.yaml on every run.
+discovery:
+  # Lead sources (jobsearch/sources/). themuse and hn_hiring are keyless;
+  # adzuna needs ADZUNA_APP_ID / ADZUNA_APP_KEY (free at developer.adzuna.com)
+  # and is skipped cleanly without them.
+  sources: [themuse, hn_hiring, adzuna]
+  # Canonical location string sent to aggregator APIs (Muse `location`,
+  # Adzuna `where`). Postings are still filtered against search.locations.
+  location: New York, NY
+  # How many new companies one discovery run may add to the registry.
+  max_companies: 25
+  # Aggregator pages fetched per source (and per Muse category).
+  max_pages: 8
+  # Muse job categories. Empty = inferred from the resume + search.query
+  # (e.g. a data-science resume yields [Data Science, Software Engineering]).
+  categories: []
+  # Companies never auto-added — your current employer belongs here. This
+  # also blocks stale generated files from re-adding them at load time.
+  exclude_companies:
+    - Capital One   # repo owner's current employer (see README)
+  # Where the generated registry lands (gitignored: it derives from your
+  # resume). Delete the file to fall back to the curated registry alone.
+  output_file: data/companies.discovered.yaml
+
 fetch:
   timeout_seconds: 30
   # Per-page timeout for browser-scraped boards (headless Chromium).

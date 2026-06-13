@@ -25,6 +25,15 @@ def main(argv: list[str] | None = None) -> int:
     disc = sub.add_parser("discover", help="Auto-discover a company's ATS board slug")
     disc.add_argument("company", help="Company name (quoted if multi-word)")
     disc.add_argument("--url", default="", help="Careers page URL (default: from companies.yaml)")
+    dcomp = sub.add_parser(
+        "discover-companies",
+        help="Mine generalized job boards for companies matching your resume "
+        "and generate a registry of their ATS boards",
+    )
+    dcomp.add_argument("--limit", type=int, default=0,
+                       help="Max companies to add (default: discovery.max_companies)")
+    dcomp.add_argument("--dry-run", action="store_true",
+                       help="Print the generated registry instead of writing it")
     sub.add_parser("ingest", help="Pull reports/latest.json into the application database")
     ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
     ui.add_argument("--port", type=int, default=8484)
@@ -38,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "discover":
         from .discover import discover
         return discover(args.root, args.company, careers_url=args.url)
+    if args.command == "discover-companies":
+        from .company_discovery import discover_companies
+        return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run)
     if args.command == "ingest":
         from webapp import db as webdb
         from webapp.ingest import ingest_latest

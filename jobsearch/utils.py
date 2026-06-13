@@ -8,6 +8,25 @@ from typing import Optional
 _TAG_RE = re.compile(r"<[^>]+>")
 _HSPACE_RE = re.compile(r"[ \t]+")
 
+# Legal/decorative suffixes that make the same employer look like two
+# companies across boards ("Datadog" vs "Datadog, Inc.").
+_NAME_SUFFIXES = frozenset({
+    "inc", "incorporated", "llc", "llp", "ltd", "limited", "corp",
+    "corporation", "co", "company", "plc", "gmbh", "holdings",
+})
+
+
+def normalize_company_name(name: str) -> str:
+    """Canonical form for cross-source company identity: lowercase tokens,
+    legal suffixes and a leading 'the' dropped. 'Datadog, Inc.' → 'datadog',
+    'The Trade Desk' → 'trade desk', 'D.E. Shaw & Co' → 'd e shaw'."""
+    words = re.findall(r"[a-z0-9]+", (name or "").lower())
+    while words and words[-1] in _NAME_SUFFIXES:
+        words.pop()
+    if words and words[0] == "the":
+        words.pop(0)
+    return " ".join(words)
+
 
 def strip_html(text: str) -> str:
     """Convert (possibly entity-escaped) HTML into plain text, one line per

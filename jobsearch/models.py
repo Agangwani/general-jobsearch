@@ -54,3 +54,20 @@ class JobPosting:
 class FetchError:
     company: str
     error: str
+
+
+@dataclass
+class CompanyLead:
+    """A company spotted on a generalized job board (jobsearch/sources/),
+    before it has a resolved ATS entry. Evidence (titles, snippets) is what
+    relevance ranking scores against the resume; urls are ATS/careers links
+    seen alongside the company, which make resolution free when present."""
+
+    name: str
+    sources: list[str] = field(default_factory=list)
+    titles: list[str] = field(default_factory=list)
+    locations: list[str] = field(default_factory=list)
+    urls: list[str] = field(default_factory=list)
+    snippets: list[str] = field(default_factory=list)
+    mentions: int = 1
+    relevance: float = 0.0

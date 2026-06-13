@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .browser import BrowserRuntime, BrowserUnavailable
-from .config import load_companies, load_settings
+from .config import load_registry, load_settings
 from .corpus import write_snapshot
 from .fetchers import BROWSER_FETCHERS, FETCHERS
 from .filters import MATCH, NEAR_LOCATION, NEAR_TITLE, JobFilter, build_funnel
@@ -101,7 +101,9 @@ def dedupe(jobs: list[JobPosting]) -> list[JobPosting]:
 
 def run(root: Path) -> int:
     settings = load_settings(root / "config" / "settings.yaml")
-    companies, manual_check = load_companies(root / "config" / "companies.yaml")
+    # Curated companies.yaml + the resume-tailored generated registry, if a
+    # `discover-companies` run has produced one.
+    companies, manual_check = load_registry(root, settings)
     from .resume import load_resume_text
     resume_text, is_sample = load_resume_text(root, settings)
     if is_sample:
@@ -195,7 +197,7 @@ def verify(root: Path) -> int:
     """Hit every enabled board once and report reachability — run this after
     editing companies.yaml to catch wrong board slugs."""
     settings = load_settings(root / "config" / "settings.yaml")
-    companies, _ = load_companies(root / "config" / "companies.yaml")
+    companies, _ = load_registry(root, settings)
     jobs, errors = fetch_all(companies, settings)
     ok = {c.name for c in companies if c.enabled} - {e.company for e in errors}
     print(f"\nOK ({len(ok)}): {', '.join(sorted(ok))}")
