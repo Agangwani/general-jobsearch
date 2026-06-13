@@ -10,7 +10,9 @@
   </div>
 </header>
 
-{% if uploaded %}<p class="banner ok">Resume uploaded — profile fields re-extracted, next pipeline run scores against it.</p>{% endif %}
+{% if uploaded %}<p class="banner ok">Resume uploaded — profile fields re-extracted and target roles updated below. Run the pipeline to search for them.</p>{% endif %}
+{% if started == 1 %}<p class="banner ok">Pipeline started in the background — it’s discovering companies and fetching the roles below. When it finishes, hit “⟳ Ingest latest run” to load results into the dashboard.</p>{% endif %}
+{% if started == 2 %}<p class="banner warn">A pipeline run is already in progress.</p>{% endif %}
 {% if error %}<p class="banner err">{{ error }}</p>{% endif %}
 {% if using_sample %}
 <p class="banner warn">Showing the bundled <strong>sample resume</strong> — upload yours below and every fit
@@ -21,6 +23,28 @@ score, keyword, and profile field switches to it.</p>
   <input type="file" name="file" accept=".pdf,.txt,.md" required>
   <button class="btn" type="submit">Upload resume (.pdf or .txt)</button>
 </form>
+
+{% if role_profile %}
+<div class="role-profile">
+  <h2>Target roles for this resume</h2>
+  <p class="muted">Matched via {{ role_profile.matched_via }} · seniority: {{ role_profile.seniority }}.
+    The pipeline searches for these roles and ranks companies for them — change
+    them by editing <code>config/occupations.yaml</code> or
+    <code>search.role_targeting</code> in <code>config/settings.yaml</code>.</p>
+  <div class="keyword-chips">
+    {% for occ in role_profile.occupations %}<span class="chip chip-role">{{ occ }}</span>{% endfor %}
+  </div>
+  <p class="muted">Relevant skills:</p>
+  <div class="keyword-chips">
+    {% for skill in role_profile.skills %}<span class="chip">{{ skill }}</span>{% endfor %}
+  </div>
+  <form class="upload-row" action="/resume/run" method="post">
+    <button class="btn" type="submit" {% if pipeline_running %}disabled{% endif %}>
+      {% if pipeline_running %}Pipeline running…{% else %}▶ Run pipeline for these roles{% endif %}
+    </button>
+  </form>
+</div>
+{% endif %}
 
 {% if keywords %}
 <p class="muted">Extracted keywords (what the matcher sees):</p>

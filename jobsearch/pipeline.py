@@ -99,6 +99,16 @@ def dedupe(jobs: list[JobPosting]) -> list[JobPosting]:
     return unique
 
 
+def _write_role_profile(root: Path, settings: dict, profile) -> None:
+    """Persist the derived profile so the UI / report can show what the run
+    targeted (data/role_profile.json, gitignored)."""
+    import json
+
+    path = root / settings.get("output", {}).get("role_profile_file", "data/role_profile.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(profile.to_dict(), indent=2))
+
+
 def run(root: Path) -> int:
     settings = load_settings(root / "config" / "settings.yaml")
     # Curated companies.yaml + the resume-tailored generated registry, if a
@@ -110,6 +120,22 @@ def run(root: Path) -> int:
         print("NOTE: no resume found at data/resume.txt — scoring against the "
               "bundled sample resume. Upload yours on the /resume page of the "
               "UI (python -m jobsearch ui) for personalized results.", file=sys.stderr)
+
+    # Re-target the search to the roles THIS resume is for: the matched
+    # occupation's query and title filters replace the hand-tuned (SWE-by-
+    # default) ones in settings.yaml. role_targeting: manual keeps settings.
+    from .role_profile import apply_profile, resolve_profile
+    profile = resolve_profile(root, settings, resume_text)
+    if profile:
+        settings["search"] = apply_profile(settings["search"], profile)
+        _write_role_profile(root, settings, profile)
+        print(f"Role profile [{profile.matched_via}]: {', '.join(profile.occupations)} "
+              f"({profile.seniority}) — query '{profile.query}', "
+              f"{len(profile.title_include)} title patterns. "
+              f"Relevant skills: {', '.join(profile.skills[:10])}", file=sys.stderr)
+    else:
+        print("Role targeting off (manual or low-confidence match) — using the "
+              "title filters in config/settings.yaml.", file=sys.stderr)
 
     print(f"Fetching boards for {sum(c.enabled for c in companies)} companies...", file=sys.stderr)
     all_jobs, errors = fetch_all(companies, settings)
@@ -138,7 +164,7 @@ def run(root: Path) -> int:
     if max_age:
         jobs = [j for j in jobs if (j.age_days() or 0) <= max_age]
         near_miss = [j for j in near_miss if (j.age_days() or 0) <= max_age]
-    print(f"{len(jobs)} NYC senior-SWE postings after filters "
+    print(f"{len(jobs)} matching postings after filters "
           f"(+{len(near_miss)} near-miss); scoring...", file=sys.stderr)
 
     # Vectorizer + K-means are fit on the full fetched corpus; matched and

@@ -3,6 +3,7 @@ and route smoke tests. Everything runs against a temp SQLite DB."""
 
 import gzip
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -252,3 +253,51 @@ def test_routes(tmp_path):
     client.post("/profile", data={"full_name": "Test User", "email": "t@x.com"})
     fields = {f["field"]: f["value"] for f in profile.all_fields(app.state.conn)}
     assert fields["email"] == "t@x.com"
+
+
+def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
+    """The /resume page shows the resume's target roles, and the run button
+    triggers the pipeline (mocked) in the background."""
+    from fastapi.testclient import TestClient
+
+    from jobsearch import pipeline
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    repo_config = Path(__file__).resolve().parent.parent / "config"
+    (root / "config" / "occupations.yaml").write_text(
+        (repo_config / "occupations.yaml").read_text())
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  role_targeting: auto\n  role_match_backend: tfidf\n"
+        "  query: senior software engineer\n  locations: [new york]\n"
+        "role:\n  occupations_file: config/occupations.yaml\n"
+        "ranking:\n  half_life_days: 7\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+    (root / "data" / "resume.txt").write_text(
+        "Senior Customer Success Specialist. 20 years EdTech, cloud, consulting. "
+        "Agile project manager, scrum, stakeholder management, trusted advisor, "
+        "customer success, account management, transformation roadmaps. Director.")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
+    page = client.get("/resume")
+    assert page.status_code == 200
+    assert "Target roles for this resume" in page.text
+    # The CS resume must surface a customer-facing role, never Software Engineer.
+    assert "Customer Success Manager" in page.text
+    assert "Run pipeline for these roles" in page.text
+
+    calls = []
+    monkeypatch.setattr(pipeline, "run", lambda r: calls.append(r) or 0)
+    resp = client.post("/resume/run", follow_redirects=False)
+    assert resp.status_code == 303
+    # Background thread runs the (mocked) pipeline.
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls == [root]

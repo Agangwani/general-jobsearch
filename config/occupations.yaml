@@ -1,0 +1,251 @@
+# Occupation taxonomy for resume → role-profile matching (role_profile.py).
+#
+# A distilled, O*NET-shaped knowledge base: each entry is one occupation with
+# the canonical job TITLES it goes by, a server-side search QUERY, the SKILLS
+# that identify it, and the Muse job CATEGORIES it maps to. A resume is matched
+# to its nearest occupation(s) here (TF-IDF or MiniLM cosine), and the matched
+# entry becomes the search profile that drives the daily run — so the pipeline
+# targets *the roles the resume is actually for*, not a hard-coded SWE filter.
+#
+# This file is a SEED covering the common role families. The full O*NET
+# database (~900 occupations, ~56k alternate titles) can be distilled into this
+# exact shape with tools/build_occupations.py — point it at an O*NET release to
+# expand coverage. O*NET data is public domain (U.S. Dept. of Labor).
+#
+# Fields:
+#   name        display name of the occupation
+#   soc         O*NET-SOC code (reference only)
+#   manage      true for management/leadership occupations — their generated
+#               title filters do NOT exclude manager/director titles
+#   titles      canonical + alternate titles; generated title_include patterns
+#               are derived from these (seniority words stripped)
+#   query       sent to boards that search server-side (Workday/Amazon/…) and
+#               used as the Adzuna `what` term
+#   skills      identifying skills/keywords — the bulk of the match signal, and
+#               surfaced as the resume's "relevant skills"
+#   categories  The Muse job categories used by company discovery
+
+occupations:
+  # ----------------------------------------------------------- Engineering ---
+  - name: Software Engineer
+    soc: "15-1252"
+    titles: [Software Engineer, Senior Software Engineer, Staff Software Engineer,
+             Backend Engineer, Back End Engineer, Full Stack Engineer, Software Developer,
+             Software Development Engineer, Platform Engineer, Distributed Systems Engineer,
+             Senior Backend Engineer, Server Engineer, Applications Engineer]
+    query: senior software engineer
+    skills: [software, backend, distributed systems, microservices, apis, python, java,
+             golang, kubernetes, cloud, scalability, system design, postgresql, algorithms]
+    categories: [Software Engineering]
+
+  - name: Frontend Engineer
+    soc: "15-1254"
+    titles: [Frontend Engineer, Front End Engineer, UI Engineer, Web Engineer,
+             Frontend Developer, JavaScript Engineer, React Engineer]
+    query: senior frontend engineer
+    skills: [frontend, react, typescript, javascript, css, html, web, ui, accessibility,
+             redux, nextjs, browser, design systems]
+    categories: [Software Engineering]
+
+  - name: Machine Learning Engineer
+    soc: "15-2051"
+    titles: [Machine Learning Engineer, ML Engineer, Applied Scientist, Research Engineer,
+             Senior Machine Learning Engineer, Deep Learning Engineer, AI Engineer]
+    query: machine learning engineer
+    skills: [machine learning, deep learning, pytorch, tensorflow, nlp, llm, models,
+             training, embeddings, transformers, mlops, python, neural networks]
+    categories: [Data Science, Software Engineering]
+
+  - name: Data Scientist
+    soc: "15-2051"
+    titles: [Data Scientist, Senior Data Scientist, Applied Data Scientist,
+             Quantitative Researcher, Research Scientist]
+    query: data scientist
+    skills: [data science, statistics, python, r, machine learning, experimentation,
+             a/b testing, modeling, pandas, sql, forecasting, causal inference]
+    categories: [Data Science, Data and Analytics]
+
+  - name: Data Engineer
+    soc: "15-2051"
+    titles: [Data Engineer, Senior Data Engineer, Analytics Engineer, ETL Developer,
+             Big Data Engineer, Data Platform Engineer]
+    query: data engineer
+    skills: [data engineering, etl, spark, airflow, dbt, warehouse, snowflake, kafka,
+             pipelines, sql, python, data modeling]
+    categories: [Data and Analytics, Software Engineering]
+
+  - name: DevOps / Site Reliability Engineer
+    soc: "15-1244"
+    titles: [DevOps Engineer, Site Reliability Engineer, SRE, Platform Engineer,
+             Infrastructure Engineer, Cloud Engineer, Senior SRE]
+    query: site reliability engineer
+    skills: [devops, sre, kubernetes, terraform, aws, gcp, ci/cd, observability,
+             docker, infrastructure, reliability, automation, linux]
+    categories: [Software Engineering, IT]
+
+  - name: Security Engineer
+    soc: "15-1212"
+    titles: [Security Engineer, Application Security Engineer, Security Analyst,
+             Information Security Engineer, Senior Security Engineer]
+    query: security engineer
+    skills: [security, appsec, vulnerability, threat, penetration testing, iam,
+             encryption, compliance, incident response, soc, siem]
+    categories: [Software Engineering, IT]
+
+  - name: Cloud / Solutions Architect
+    soc: "15-1241"
+    titles: [Solutions Architect, Cloud Architect, Enterprise Architect,
+             Solutions Engineer, Cloud Solutions Architect, Technical Architect]
+    query: solutions architect
+    skills: [cloud, architecture, aws, azure, solutions, migration, api management,
+             devops, enterprise, integration, system design, governance]
+    categories: [Software Engineering, IT]
+
+  # ------------------------------------------------ Product / Program / PM ---
+  - name: Product Manager
+    soc: "11-2021"
+    titles: [Product Manager, Senior Product Manager, Group Product Manager,
+             Director of Product, Principal Product Manager, Product Lead]
+    query: product manager
+    manage: false
+    skills: [product, roadmap, stakeholders, prioritization, user research, discovery,
+             metrics, go-to-market, backlog, requirements, strategy]
+    categories: [Product Management]
+
+  - name: Technical Program Manager
+    soc: "15-1299"
+    titles: [Technical Program Manager, TPM, Program Manager, Senior Program Manager,
+             Engineering Program Manager, Delivery Manager]
+    query: technical program manager
+    manage: false
+    skills: [program management, cross-functional, roadmap, delivery, agile, scrum,
+             stakeholders, risk management, planning, dependencies, jira]
+    categories: [Project and Program Management, Product Management]
+
+  - name: Project Manager
+    soc: "13-1082"
+    titles: [Project Manager, Senior Project Manager, Agile Project Manager,
+             Scrum Master, Delivery Lead, Program Delivery Manager, PMO Lead]
+    query: project manager
+    manage: false
+    skills: [project management, agile, scrum, kanban, jira, pmp, sprint, stakeholders,
+             delivery, risk management, roadmap, waterfall, milestones, budget]
+    categories: [Project and Program Management]
+
+  - name: Engineering Manager
+    soc: "11-3021"
+    titles: [Engineering Manager, Senior Engineering Manager, Director of Engineering,
+             VP of Engineering, Head of Engineering, Software Engineering Manager]
+    query: engineering manager
+    manage: true
+    skills: [engineering management, leadership, hiring, mentoring, roadmap, delivery,
+             team building, architecture, strategy, cross-functional, software]
+    categories: [Software Engineering, Project and Program Management]
+
+  # --------------------------------------- Customer-facing / GTM / Success ---
+  - name: Customer Success Manager
+    soc: "13-1198"
+    titles: [Customer Success Manager, Client Success Manager, Customer Success Specialist,
+             Customer Success Director, Engagement Manager, Account Manager,
+             Client Partner, Customer Success Lead, Relationship Manager]
+    query: customer success
+    manage: false
+    skills: [customer success, account management, onboarding, retention, churn, renewals,
+             saas, stakeholder management, relationship, adoption, upsell, trusted advisor,
+             client, consulting, transformation, edtech]
+    categories: [Account Management, Customer Service]
+
+  - name: Solutions / Sales Engineer
+    soc: "41-9031"
+    titles: [Sales Engineer, Solutions Engineer, Solutions Consultant, Pre-Sales Engineer,
+             Technical Account Manager, Customer Engineer]
+    query: solutions engineer
+    manage: false
+    skills: [pre-sales, solutions, technical, demos, proof of concept, customer,
+             integration, api, cloud, enablement, stakeholders]
+    categories: [Account Management, Software Engineering]
+
+  - name: Account Executive
+    soc: "41-4012"
+    titles: [Account Executive, Enterprise Account Executive, Sales Manager,
+             Business Development Representative, Sales Director, Account Director]
+    query: account executive
+    manage: false
+    skills: [sales, quota, pipeline, prospecting, crm, salesforce, closing, deals,
+             negotiation, revenue, b2b, saas]
+    categories: [Sales]
+
+  # ------------------------------------------------ Management consulting -----
+  - name: Management Consultant
+    soc: "13-1111"
+    titles: [Management Consultant, Strategy Consultant, Engagement Manager,
+             Principal Consultant, Director - Consulting, Transformation Lead,
+             Digital Transformation Consultant]
+    query: management consultant
+    manage: true
+    skills: [consulting, strategy, transformation, stakeholders, business case,
+             roadmap, change management, market research, advisory, governance,
+             digital transformation, cloud strategy, thought leadership]
+    categories: [Business Operations, Project and Program Management]
+
+  # ----------------------------------------------------- Design / Analytics --
+  - name: Product Designer
+    soc: "27-1024"
+    titles: [Product Designer, UX Designer, UI Designer, UX/UI Designer,
+             Senior Product Designer, Interaction Designer, Design Lead]
+    query: product designer
+    manage: false
+    skills: [design, ux, ui, figma, prototyping, wireframes, user research, usability,
+             interaction, visual design, design systems, accessibility]
+    categories: [Design and UX]
+
+  - name: Data Analyst
+    soc: "15-2031"
+    titles: [Data Analyst, Business Analyst, Business Intelligence Analyst,
+             Analytics Analyst, Senior Data Analyst, BI Developer]
+    query: data analyst
+    manage: false
+    skills: [analytics, sql, tableau, looker, dashboards, reporting, excel, etl,
+             business intelligence, metrics, kpis, visualization]
+    categories: [Data and Analytics, Business Operations]
+
+  # ------------------------------------------------- Corporate functions -----
+  - name: Marketing Manager
+    soc: "11-2021"
+    titles: [Marketing Manager, Product Marketing Manager, Growth Marketing Manager,
+             Demand Generation Manager, Senior Marketing Manager, Brand Manager]
+    query: marketing manager
+    manage: false
+    skills: [marketing, seo, sem, campaigns, brand, demand generation, content,
+             growth, analytics, positioning, go-to-market, lifecycle]
+    categories: [Marketing]
+
+  - name: Finance / FP&A
+    soc: "13-2051"
+    titles: [Financial Analyst, FP&A Manager, Finance Manager, Corporate Finance Analyst,
+             Senior Financial Analyst, Controller]
+    query: financial analyst
+    manage: false
+    skills: [finance, fp&a, modeling, forecasting, budgeting, accounting, variance,
+             excel, valuation, reporting, gaap, planning]
+    categories: [Accounting and Finance]
+
+  - name: Recruiter / People
+    soc: "13-1071"
+    titles: [Recruiter, Technical Recruiter, Talent Acquisition Partner,
+             People Operations Manager, HR Business Partner, Talent Manager]
+    query: technical recruiter
+    manage: false
+    skills: [recruiting, talent acquisition, sourcing, interviewing, onboarding,
+             hr, people operations, candidate experience, employer branding, ats]
+    categories: [HR]
+
+  - name: Operations Manager
+    soc: "11-1021"
+    titles: [Operations Manager, Business Operations Manager, Strategy and Operations,
+             Chief of Staff, Director of Operations, Program Operations Manager]
+    query: operations manager
+    manage: true
+    skills: [operations, process, strategy, cross-functional, analytics, vendor,
+             planning, efficiency, stakeholders, project management, scaling]
+    categories: [Business Operations, Project and Program Management]

@@ -70,4 +70,5 @@ def load_settings(path: Path) -> dict:
     settings.setdefault("fetch", {})
     settings.setdefault("output", {})
     settings.setdefault("discovery", {})
+    settings.setdefault("role", {})
     return settings

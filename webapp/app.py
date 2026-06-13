@@ -33,6 +33,9 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
                                data_dir=root / "data")
 
+    # Guards against launching overlapping background pipeline runs.
+    _pipeline_state = {"running": False}
+
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["qp"] = quote_plus
     templates.env.filters["description_html"] = description_html
@@ -122,8 +125,22 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return RedirectResponse(f"/?ingested={counts['inserted']}", status_code=303)
 
     # ------------------------------------------------------- resume & profile
+    def _role_profile(resume_text: str):
+        """The occupation(s)/skills the current resume targets — what the next
+        run will search for. Best-effort: never let a matcher hiccup 500 the
+        resume page."""
+        if not resume_text:
+            return None
+        try:
+            from jobsearch.config import load_settings
+            from jobsearch.role_profile import resolve_profile
+            settings = load_settings(root / "config" / "settings.yaml")
+            return resolve_profile(root, settings, resume_text)
+        except Exception:  # noqa: BLE001
+            return None
+
     @app.get("/resume", response_class=HTMLResponse)
-    def resume(request: Request, uploaded: int = 0, error: str = ""):
+    def resume(request: Request, uploaded: int = 0, error: str = "", started: int = 0):
         text_path = root / "data" / "resume.txt"
         using_sample = not text_path.exists()
         if using_sample:
@@ -135,6 +152,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return render(request, "resume.html", resume_text=resume_text,
                       sections=sections, pdf_name=pdfs[-1].name if pdfs else "",
                       using_sample=using_sample, uploaded=uploaded, error=error,
+                      started=started, role_profile=_role_profile(resume_text),
+                      pipeline_running=_pipeline_state["running"],
                       keywords=extract_keywords(resume_text) if resume_text else [])
 
     @app.post("/resume/upload")
@@ -157,6 +176,31 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         (root / "data" / "resume.txt").write_text(text + "\n")
         profile.reseed_from_resume(conn, text)
         return RedirectResponse("/resume?uploaded=1", status_code=303)
+
+    @app.post("/resume/run")
+    def run_pipeline():
+        """Kick off a full pipeline run (discover → fetch → rank) in the
+        background, targeting the role profile derived from the current resume.
+        Returns immediately; progress shows in the server log, results land in
+        the dashboard after the next 'Ingest latest run'."""
+        import threading
+
+        from jobsearch import pipeline
+
+        if _pipeline_state["running"]:
+            return RedirectResponse("/resume?started=2", status_code=303)
+
+        def _go():
+            try:
+                pipeline.run(root)
+            except Exception as exc:  # noqa: BLE001 — surfaced via the log
+                print(f"pipeline run failed: {exc}")
+            finally:
+                _pipeline_state["running"] = False
+
+        _pipeline_state["running"] = True
+        threading.Thread(target=_go, daemon=True).start()
+        return RedirectResponse("/resume?started=1", status_code=303)
 
     @app.get("/resume.pdf")
     def resume_pdf():

@@ -52,9 +52,14 @@ The default search targets senior software engineering roles in NYC — edit
    the company's own site — direct applications only, never a third-party
    board. Meta and Apple also get a browser fallback for when their
    undocumented APIs break.
-3. **Filter** — title regexes (senior/staff SWE, excluding intern, manager,
-   principal, mobile, ...) and NYC location matching, both editable in
-   `config/settings.yaml`.
+3. **Filter** — title regexes and NYC location matching. By default the title
+   targeting is **derived from your resume**: the resume is matched to its
+   nearest occupation in `config/occupations.yaml` (O*NET-shaped: Customer
+   Success, Project Manager, Data Scientist, …) and that occupation's query +
+   title patterns replace the SWE defaults, so a non-engineering resume stops
+   coming back full of engineering jobs (docs/design-role-targeting.md). Set
+   `search.role_targeting: manual` in `config/settings.yaml` to use hand-tuned
+   regexes instead. Location matching stays in `config/settings.yaml`.
 4. **Rank by fit** — all postings are embedded in a shared TF-IDF token
    space and clustered with **K-means**; the resume is projected into the
    same space. A posting's fit = 0.7 × cosine similarity to the resume +
@@ -131,8 +136,18 @@ skipped with an actionable note in the report instead of failing the run.
   `ADZUNA_APP_KEY` are set (free key at developer.adzuna.com). Curated
   entries in `companies.yaml` always win conflicts; delete the generated
   file to fall back to the curated registry alone.
-- **Change role/location targeting** — `search.title_include`,
-  `search.title_exclude`, and `search.locations` in `config/settings.yaml`.
+- **Retarget to your roles (automatic)** — by default (`search.role_targeting:
+  auto`) the pipeline matches your resume to an occupation in
+  `config/occupations.yaml` and searches for *that* role. Upload your resume on
+  the `/resume` page and it shows the detected target roles + relevant skills,
+  with a **▶ Run pipeline** button. To widen coverage beyond the shipped seed,
+  distil the full O*NET database into `config/occupations.yaml` with
+  `python tools/build_occupations.py <onet_dir>`. Matching uses TF-IDF by
+  default; `pip install sentence-transformers` enables the more robust MiniLM
+  backend automatically (`search.role_match_backend`).
+- **Change role/location targeting (manual)** — set `search.role_targeting:
+  manual` and edit `search.title_include`, `search.title_exclude`, and
+  `search.locations` in `config/settings.yaml`.
   Set `include_remote: true` to accept all US-remote roles, or leave it off
   and use `remote_min_pay` (default $200k) to admit only remote roles whose
   posted pay range clears the floor. `promote_unleveled: true` lets
@@ -150,13 +165,17 @@ in `discovery.exclude_companies` so dynamic discovery can never add it back.
 
 ```
 config/companies.yaml    curated company registry (FAANG + NYC top 50, ATS pointers)
+config/occupations.yaml  occupation taxonomy: resume → target roles/skills
 config/settings.yaml     filters, ranking knobs, fetch limits, discovery knobs
-data/resume.txt          resume text used for fit scoring
+data/resume.txt          resume text used for role targeting + fit scoring
+data/role_profile.json   what the last run targeted (occupations, skills), gitignored
 data/companies.discovered.yaml  generated registry (discover-companies), gitignored
 data/seen_jobs.json      state: job IDs seen on previous runs
 jobsearch/fetchers/      one adapter per ATS / company API
 jobsearch/sources/       company-lead sources: generalized boards (Muse, HN, Adzuna)
+jobsearch/role_profile.py       resume → occupation matching (TF-IDF / MiniLM)
 jobsearch/company_discovery.py  resume-tailored registry generation
+tools/build_occupations.py      expand config/occupations.yaml from O*NET
 jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting
 jobsearch/pipeline.py    orchestration
 reports/                 daily output (markdown, CSV, JSON)
