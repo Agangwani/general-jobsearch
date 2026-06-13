@@ -297,9 +297,21 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False) -> int
               "the bundled sample resume. Upload yours first for a registry "
               "tailored to you.", file=sys.stderr)
 
-    query = settings.get("search", {}).get("query", "software engineer")
-    categories = discovery.get("categories") or infer_categories(
-        extract_keywords(resume_text), query)
+    # The role profile (resume → occupation) decides what to search for; it
+    # supplies both the aggregator query and the Muse categories, so discovery
+    # re-targets per resume exactly like the daily run does. infer_categories
+    # remains the fallback when role targeting is off or unmatched.
+    from .role_profile import resolve_profile
+    profile = resolve_profile(root, settings, resume_text)
+    if profile:
+        query = profile.query
+        categories = discovery.get("categories") or profile.categories
+        print(f"Role profile [{profile.matched_via}]: {', '.join(profile.occupations)} "
+              f"({profile.seniority})", file=sys.stderr)
+    else:
+        query = settings.get("search", {}).get("query", "software engineer")
+        categories = discovery.get("categories") or infer_categories(
+            extract_keywords(resume_text), query)
     ctx = {
         "query": query,
         "location": discovery.get("location", "New York, NY"),

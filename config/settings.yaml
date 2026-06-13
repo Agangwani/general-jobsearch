@@ -4,9 +4,25 @@
 resume: data/resume.txt
 
 search:
+  # Resume-driven role targeting. With `auto` (default) the pipeline matches
+  # your resume to its nearest occupation in config/occupations.yaml and
+  # REPLACES `query` + `title_include` + `title_exclude` below with ones
+  # generated for that role — so a Customer Success or PM resume stops coming
+  # back full of software-engineer jobs. Set `manual` to use the hand-tuned
+  # patterns in this file verbatim (what the values below are).
+  role_targeting: auto
+  # Occupation matcher: `auto` uses MiniLM embeddings when sentence-transformers
+  # is installed (more robust to wording) and falls back to `tfidf` otherwise.
+  # Force one with `tfidf` or `minilm`.
+  role_match_backend: auto
+  # If the best occupation match scores below this, role targeting is skipped
+  # and the manual patterns below are used (guards against a garbled resume).
+  role_match_min_score: 0.02
+
   # Query sent to job boards that support server-side search (Workday,
   # Amazon, Google, Microsoft, ...). Board-dump APIs (Greenhouse, Lever,
   # Ashby) return everything and are filtered locally with the rules below.
+  # Under role_targeting: auto this is overridden by the matched occupation.
   query: senior software engineer
 
   # A title must match at least one include pattern and no exclude pattern
@@ -102,9 +118,17 @@ fetch:
   # Cap on per-job detail requests (Workday/SmartRecruiters-style boards).
   max_detail_requests: 40
 
+# Role matching (resume → occupation).
+role:
+  # The occupation knowledge base matched against your resume. Ships as a seed;
+  # expand it from the full O*NET database with tools/build_occupations.py.
+  occupations_file: config/occupations.yaml
+
 output:
   reports_dir: reports
   state_file: data/seen_jobs.tsv
+  # Derived role profile (what the last run targeted), for the UI/report.
+  role_profile_file: data/role_profile.json
   # Full fetched corpus snapshots (gitignored) for offline scoring experiments.
   corpus_dir: data/corpus
   corpus_retention_days: 14

@@ -141,6 +141,10 @@ th a.sa { color: var(--accent); }
 .banner.err { background: rgba(248, 81, 73, .15); border-color: #f85149; color: #ff7b72; }
 .banner.warn { background: rgba(187, 128, 9, .15); border-color: #bb8009; color: #e3b341; }
 .keyword-chips { display: flex; flex-wrap: wrap; gap: .35rem; margin: .25rem 0 .75rem; }
+.chip { background: var(--chip-bg, #eef2f7); border-radius: 999px; padding: .15rem .6rem; font-size: .85rem; }
+.role-profile { border: 1px solid var(--line, #e3e8ef); border-radius: 8px; padding: .75rem 1rem; margin: 1rem 0; background: var(--bg-soft, #fafbfc); }
+.role-profile h2 { margin: 0 0 .25rem; font-size: 1.05rem; }
+.chip-role { background: #e7eefe; color: #1d4ed8; font-weight: 600; }
 .chip { background: var(--bg-card); border: 1px solid var(--line); color: var(--text);
         border-radius: 999px; padding: .15rem .6rem; font-size: .85rem; }
 
