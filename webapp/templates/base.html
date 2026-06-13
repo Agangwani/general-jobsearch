@@ -18,7 +18,15 @@
   <form method="post" action="/ingest" class="nav-ingest">
     <button class="btn btn-ghost" title="Pull the latest pipeline report into the database">⟳ Ingest latest run</button>
   </form>
+  <button class="btn btn-primary" id="run-pipeline" title="Fetch every board, score against your resume, and load the results">▶ Run pipeline</button>
 </nav>
+<section id="run-panel" hidden>
+  <div class="run-panel-head">
+    <strong id="run-status">Running pipeline…</strong>
+    <button class="btn btn-ghost" id="run-hide">hide</button>
+  </div>
+  <pre id="run-log"></pre>
+</section>
 <main>
 {% block content %}{% endblock %}
 </main>
