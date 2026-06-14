@@ -75,6 +75,22 @@ The default search targets senior software engineering roles in NYC — edit
    broken boards, and a "check manually" list (currently just LinkedIn, whose
    careers site sits behind bot protection that scraping would violate).
 
+## Debugging a run
+
+Every `run` writes **`reports/run-log.json`** (and a readable
+`reports/run-log.md`) recording what it actually did: the role profile it
+matched (occupations, query, seniority, skills), which boards returned
+postings vs. errored vs. came back empty, the fetch→match→near-miss funnel,
+and this run's top matched titles. The main report (`reports/latest.md`) now
+also leads with a **"What this run targeted"** section. If results look wrong
+("why am I seeing software-engineer jobs for a customer-success resume?"),
+that log shows whether targeting engaged and what it searched for.
+
+Note the **tracker dashboard accumulates** across runs: ingest adds each run's
+jobs but never deletes earlier ones, so jobs from a previous (differently
+targeted) run stay in your to-apply stack. Ingest now logs how many unapplied
+jobs are *not* in the latest report so leftovers are obvious.
+
 ## Daily schedule
 
 `.github/workflows/daily-job-search.yml` runs the pipeline every day at
@@ -178,6 +194,7 @@ jobsearch/company_discovery.py  resume-tailored registry generation
 tools/build_occupations.py      expand config/occupations.yaml from O*NET
 jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting
 jobsearch/pipeline.py    orchestration
-reports/                 daily output (markdown, CSV, JSON)
+reports/                 daily output (markdown, CSV, JSON, run-log)
+reports/run-log.json     per-run diagnostics: what was targeted, board results, funnel
 tests/                   offline tests (no network needed)
 ```

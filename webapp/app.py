@@ -52,12 +52,17 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, q: str = "", company: str = "", stack: str = "",
                   near_miss: str = "1", sort_by: str = "", sort_dir: str = "",
-                  min_fit: str = "", status_filter: str = ""):
+                  min_fit: str = "", status_filter: str = "", run_scope: str = "latest"):
         min_fit_val = float(min_fit) if min_fit else None
+        # Default to the latest run so stale to-apply jobs from earlier,
+        # differently-targeted runs don't pile up; run_scope=all shows everything.
+        latest_at = db.latest_run_ingested_at(conn)
+        since = latest_at if (run_scope == "latest" and latest_at) else ""
         jobs = db.search_jobs(conn, q=q, company=company, stack=stack,
                               include_near_miss=near_miss == "1",
                               sort_by=sort_by, sort_dir=sort_dir,
-                              min_fit=min_fit_val, status_filter=status_filter)
+                              min_fit=min_fit_val, status_filter=status_filter,
+                              since=since)
         companies = [r["company"] for r in conn.execute(
             "SELECT DISTINCT company FROM jobs ORDER BY company").fetchall()]
         last_run = conn.execute(
@@ -66,6 +71,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       stack=stack, near_miss=near_miss, companies=companies,
                       last_run=last_run, sort_by=sort_by, sort_dir=sort_dir,
                       min_fit=min_fit, status_filter=status_filter,
+                      run_scope=run_scope, has_runs=bool(latest_at),
                       all_statuses=db.APP_STATUSES)
 
     # ------------------------------------------------------------ job detail
@@ -136,6 +142,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 runner.lines.append(
                     f"Ingested into UI: {counts['inserted']} new, "
                     f"{counts['updated']} updated jobs. Refresh the dashboard.")
+                stale = counts.get("stale_unapplied", 0)
+                if stale:
+                    runner.lines.append(
+                        f"Heads up: {stale} unapplied job(s) on the dashboard are "
+                        "from earlier runs (not in this report) — likely a previous "
+                        "role target. Filter or clear them to see only this run.")
             except Exception as exc:  # noqa: BLE001 — surface in the log panel
                 runner.lines.append(f"Ingest failed: {exc}")
         return JSONResponse(runner.snapshot(since))

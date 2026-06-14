@@ -154,7 +154,8 @@ def test_ingest_latest(tmp_path, conn):
                              "description": "Full description here."}) + "\n")
 
     counts = ingest_latest(root, conn)
-    assert counts == {"inserted": 2, "updated": 0, "unchanged": 0}
+    assert (counts["inserted"], counts["updated"], counts["unchanged"]) == (2, 0, 0)
+    assert counts["stale_unapplied"] == 0  # everything in the DB is in this report
     acme = conn.execute("SELECT * FROM jobs WHERE key = 'greenhouse:Acme:1'").fetchone()
     assert acme["description"] == "Full description here."  # joined from corpus
     beta = conn.execute("SELECT * FROM jobs WHERE key = 'lever:Beta:2'").fetchone()
@@ -163,6 +164,64 @@ def test_ingest_latest(tmp_path, conn):
     counts2 = ingest_latest(root, conn)  # idempotent re-run
     assert counts2["inserted"] == 0 and len(conn.execute("SELECT * FROM jobs").fetchall()) == 2
     assert len(conn.execute("SELECT * FROM runs").fetchall()) == 2
+
+
+def test_search_jobs_since_scopes_to_apply_but_keeps_engaged(conn):
+    """`since` (the latest-run boundary) hides stale not-applied jobs but keeps
+    any job the user has already started/applied to, regardless of run."""
+    db.upsert_job(conn, record(key="greenhouse:Old:1", company="Old",
+                               title="Senior Software Engineer"),
+                  now="2026-06-10T10:00:00+00:00")
+    db.upsert_job(conn, record(key="greenhouse:OldApplied:2", company="Old",
+                               title="Staff Software Engineer"),
+                  now="2026-06-10T10:00:00+00:00")
+    db.upsert_job(conn, record(key="greenhouse:Fresh:3", company="Gainsight",
+                               title="Senior Customer Success Manager"),
+                  now="2026-06-13T10:00:00+00:00")
+    # Mark the second old job as applied.
+    app2 = conn.execute(
+        "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id "
+        "WHERE j.key = 'greenhouse:OldApplied:2'").fetchone()["id"]
+    db.set_application_status(conn, app2, "applied", detail="x", via="test")
+
+    boundary = "2026-06-13T10:00:00+00:00"
+    scoped = {r["key"] for r in db.search_jobs(conn, since=boundary)}
+    assert "greenhouse:Fresh:3" in scoped         # this run's to-apply job
+    assert "greenhouse:OldApplied:2" in scoped     # engaged job kept across runs
+    assert "greenhouse:Old:1" not in scoped        # stale not-applied: hidden
+
+    everything = {r["key"] for r in db.search_jobs(conn, since="")}
+    assert "greenhouse:Old:1" in everything        # all-runs view shows it
+
+
+def test_ingest_flags_stale_to_apply_jobs(tmp_path, conn):
+    """A later run targeting different roles leaves the earlier run's unapplied
+    jobs in the DB; ingest reports them as stale so the dashboard's leftovers
+    are explained, not mysterious."""
+    root = tmp_path
+    (root / "reports").mkdir()
+    (root / "data" / "corpus").mkdir(parents=True)
+
+    def write_report(job):
+        (root / "reports" / "latest.json").write_text(json.dumps({
+            "generated": "2026-06-12T15:00:00+00:00", "company_fit": {},
+            "jobs": [job], "near_miss": []}))
+
+    swe = {"key": "greenhouse:Acme:1", "company": "Acme",
+           "title": "Senior Software Engineer", "location": "NYC",
+           "url": "https://acme.com/1", "posted": "2026-06-10", "fit": 80.0,
+           "rank_score": 60.0, "new": True, "cluster": 1, "filter_reason": "",
+           "validation": "", "validation_note": ""}
+    write_report(swe)
+    assert ingest_latest(root, conn)["stale_unapplied"] == 0
+
+    # Second run targets a Customer Success role — the SWE job is now stale.
+    csm = {**swe, "key": "greenhouse:Gainsight:9", "company": "Gainsight",
+           "title": "Senior Customer Success Manager"}
+    write_report(csm)
+    counts = ingest_latest(root, conn)
+    assert counts["inserted"] == 1
+    assert counts["stale_unapplied"] == 1  # the leftover SWE job from run one
 
 
 # ----------------------------------------------------- apply browser heuristic
