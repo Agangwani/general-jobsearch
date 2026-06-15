@@ -32,11 +32,11 @@ score, keyword, and profile field switches to it.</p>
     them by editing <code>config/occupations.yaml</code> or
     <code>search.role_targeting</code> in <code>config/settings.yaml</code>.</p>
   <div class="keyword-chips">
-    {% for occ in role_profile.occupations %}<span class="chip chip-role">{{ occ }}</span>{% endfor %}
+    {% for occ in role_profile.occupations %}<span class="chip chip-role">{{ occ }}</span> {% endfor %}
   </div>
   <p class="muted">Relevant skills:</p>
   <div class="keyword-chips">
-    {% for skill in role_profile.skills %}<span class="chip">{{ skill }}</span>{% endfor %}
+    {% for skill in role_profile.skills %}<span class="chip">{{ skill }}</span> {% endfor %}
   </div>
   <form class="upload-row" action="/resume/run" method="post">
     <button class="btn" type="submit" {% if pipeline_running %}disabled{% endif %}>
@@ -49,7 +49,7 @@ score, keyword, and profile field switches to it.</p>
 {% if keywords %}
 <p class="muted">Extracted keywords (what the matcher sees):</p>
 <div class="keyword-chips">
-  {% for kw in keywords %}<span class="chip">{{ kw }}</span>{% endfor %}
+  {% for kw in keywords %}<span class="chip">{{ kw }}</span> {% endfor %}
 </div>
 {% endif %}
 

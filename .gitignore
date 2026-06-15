@@ -1,21 +1,67 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
 venv/
-.pytest_cache/
+env/
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.python-version
+
+# OS
 .DS_Store
-data/corpus/
-data/jobsearch.db*
-data/browser_profile/
-data/profile.yaml
-data/credentials.json
-data/token.json
+Thumbs.db
+desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+.*.swp
+*~
+
+# Secrets — never commit. API keys belong in environment variables or in
+# data/ (which is itself ignored), never at the repo root. The bare names
+# (no leading slash) ignore the file at any depth, in case one gets dropped
+# in an unexpected place.
+.env
+.env.*
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+token.json
+client_secret*.json
+
+# Runtime logs
+*.log
+logs/
+
+# Playwright (browser cache + report output, in case tests get added)
+playwright-report/
+test-results/
+playwright/.cache/
 
 # Runtime artifacts and personal data — never committed. Your resume,
-# fetched reports, application history, and tokens all live here locally.
+# fetched reports, application history, browser profiles (LinkedIn cookies
+# included), tokens, the SQLite database, and the referral candidate cache
+# all live here locally. The sample resume is kept so a fresh checkout has
+# something to seed with.
 data/*
 !data/.gitkeep
 !data/sample_resume.txt
 reports/*
 !reports/.gitkeep
+
+# Interview-prep source material: large, copyrighted books (CtCI, DDIA, System
+# Design Interview) plus the saved Grokking page. Kept local only — the prep
+# lessons distilled from them live in jobsearch/prep/. Extracted/marked text
+# and per-module JSON go under data/ (already ignored above).
+prep_work/

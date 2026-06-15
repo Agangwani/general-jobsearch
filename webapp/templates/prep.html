@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Interview Prep{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <div>
+    <h1>Software Interview Prep</h1>
+    <div class="subtitle muted">
+      A daily, resumable curriculum distilled from <em>Cracking the Coding Interview</em>,
+      <em>System Design Interview</em> (Alex Xu), <em>Designing Data-Intensive Applications</em>
+      (Kleppmann), and Grokking the Modern System Design Interview. Every lesson cites its source.
+    </div>
+  </div>
+  <div class="actions">
+    <div style="min-width:220px">
+      <div class="muted" style="margin-bottom:4px">
+        {{ overall.lessons_done }}/{{ overall.lessons_total }} lessons ·
+        {{ overall.problems_done }}/{{ overall.problems_total }} LeetCode ·
+        {{ overall.ctci_done }}/{{ overall.ctci_total }} CtCI
+      </div>
+      <div class="prog"><span style="width: {{ (overall.lessons_done / overall.lessons_total * 100) if overall.lessons_total else 0 }}%"></span></div>
+    </div>
+  </div>
+</header>
+
+{% if resume_target %}
+<div class="resume-card">
+  <div>
+    <div class="muted">{{ '↩ Resume where you left off' if resume_target.source == 'in_progress' else '▶ Start here' }}</div>
+    <strong style="font-size:16px">{{ resume_target.lesson_title }}</strong>
+    <div class="muted">{{ resume_target.track_title }} · {{ resume_target.module_title }}</div>
+  </div>
+  <a class="btn btn-primary" href="/prep/module/{{ resume_target.module_slug }}/lesson/{{ resume_target.lesson_slug }}">
+    {{ 'Continue' if resume_target.source == 'in_progress' else 'Begin' }} →
+  </a>
+</div>
+{% else %}
+<p class="muted">🎉 You've completed every lesson. Revisit any track to review or re-drill the LeetCode sets.</p>
+{% endif %}
+
+<h2>Tracks</h2>
+<div class="prep-grid">
+  {% for t in tracks %}
+  <a class="card" href="/prep/track/{{ t.slug }}">
+    <h3>{{ t.title }}</h3>
+    <p class="desc">{{ t.description }}</p>
+    <div class="prog"><span style="width: {{ (t.lessons_done / t.lesson_count * 100) if t.lesson_count else 0 }}%"></span></div>
+    <div class="meta">
+      <span><b>{{ t.module_count }}</b> modules</span>
+      <span><b>{{ t.lessons_done }}/{{ t.lesson_count }}</b> lessons</span>
+      {% if t.problem_count %}<span><b>{{ t.problems_done }}/{{ t.problem_count }}</b> LeetCode</span>{% endif %}
+      {% if t.ctci_count %}<span><b>{{ t.ctci_done }}/{{ t.ctci_count }}</b> CtCI</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+{% endblock %}

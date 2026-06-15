@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{{ lesson.title }} — Prep{% endblock %}
+{% block content %}
+
+{% set here = '/prep/module/' ~ lesson.module_slug ~ '/lesson/' ~ lesson.slug %}
+{% set ns = namespace(prev=None, next=None, found=false) %}
+{% for s in siblings %}
+  {% if s.slug == lesson.slug %}{% set ns.found = true %}
+  {% elif not ns.found %}{% set ns.prev = s %}
+  {% elif ns.next is none %}{% set ns.next = s %}{% endif %}
+{% endfor %}
+
+<div class="crumb">
+  <a href="/prep">Prep</a> ›
+  <a href="/prep/track/{{ lesson.track_slug }}">{{ lesson.track_title }}</a> ›
+  <a href="/prep/module/{{ lesson.module_slug }}">{{ lesson.module_title }}</a>
+</div>
+
+<header class="page-head">
+  <div>
+    <h1>{{ lesson.title }}</h1>
+    <div class="subtitle muted src">{{ lesson.source_refs }}</div>
+  </div>
+  <div class="actions">
+    <span class="state {{ lesson.state }}">{{ lesson.state|replace('_',' ') }}</span>
+    <form class="inline-form" method="post" action="/prep/lessons/{{ lesson.id }}/state">
+      <input type="hidden" name="next" value="{{ here }}">
+      {% if lesson.state != 'completed' %}
+      <button class="btn btn-primary" name="state" value="completed">✓ Mark complete</button>
+      {% else %}
+      <button class="btn btn-ghost" name="state" value="in_progress">↺ Reopen</button>
+      {% endif %}
+    </form>
+  </div>
+</header>
+
+<div class="lesson-body">
+  {{ lesson.body_md | prep_markdown }}
+</div>
+
+{% if takeaways %}
+<div class="takeaways">
+  <h3>Key takeaways</h3>
+  <ul>{% for t in takeaways %}<li>{{ t }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<details style="max-width:760px;margin-top:20px">
+  <summary class="muted" style="cursor:pointer">My notes</summary>
+  <form method="post" action="/prep/lessons/{{ lesson.id }}/state">
+    <input type="hidden" name="next" value="{{ here }}">
+    <input type="hidden" name="state" value="{{ lesson.state }}">
+    <textarea class="notes-box" name="notes" placeholder="Jot what tripped you up, a re-derivation, a link…">{{ lesson.notes }}</textarea>
+    <div><button class="btn">Save notes</button></div>
+  </form>
+</details>
+
+<nav class="lesson-nav">
+  {% if ns.prev %}
+  <a class="btn" href="/prep/module/{{ lesson.module_slug }}/lesson/{{ ns.prev.slug }}">← {{ ns.prev.title }}</a>
+  {% else %}<span></span>{% endif %}
+  {% if ns.next %}
+  <a class="btn btn-primary" href="/prep/module/{{ lesson.module_slug }}/lesson/{{ ns.next.slug }}">{{ ns.next.title }} →</a>
+  {% else %}
+  <a class="btn btn-primary" href="/prep/module/{{ lesson.module_slug }}">Finish module ✓</a>
+  {% endif %}
+</nav>
+
+{% endblock %}

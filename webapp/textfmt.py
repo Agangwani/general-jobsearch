@@ -59,3 +59,83 @@ def description_html(text: str) -> Markup:
             out.append(f"<p>{html.escape(line)}</p>")
     flush_list()
     return Markup("".join(out))
+
+
+# --------------------------------------------------------------- prep markdown
+# A small, dependency-free Markdown subset for the interview-prep lesson bodies:
+# headings (##/###), -/* and 1. lists, fenced + inline code, **bold**, and
+# [text](url) links. Everything is HTML-escaped first — content is trusted
+# (we author it) but escaping keeps `<`, `&`, and code samples rendering right.
+_MD_INLINE_CODE = re.compile(r"`([^`]+)`")
+_MD_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_MD_HEADING = re.compile(r"^(#{1,4})\s+(.*)$")
+_MD_UL = re.compile(r"^[-*]\s+(.*)$")
+_MD_OL = re.compile(r"^\d+\.\s+(.*)$")
+
+
+def _md_inline(s: str) -> str:
+    s = html.escape(s)
+    s = _MD_INLINE_CODE.sub(r"<code>\1</code>", s)
+    s = _MD_BOLD.sub(r"<strong>\1</strong>", s)
+    s = _MD_LINK.sub(r'<a href="\2" target="_blank" rel="noopener">\1</a>', s)
+    return s
+
+
+def prep_markdown(text: str) -> Markup:
+    lines = (text or "").split("\n")
+    out: list[str] = []
+    para: list[str] = []
+    ul: list[str] = []
+    ol: list[str] = []
+
+    def flush_para() -> None:
+        if para:
+            out.append("<p>" + " ".join(_md_inline(x) for x in para) + "</p>")
+            para.clear()
+
+    def flush_ul() -> None:
+        if ul:
+            out.append("<ul>" + "".join(f"<li>{_md_inline(x)}</li>" for x in ul) + "</ul>")
+            ul.clear()
+
+    def flush_ol() -> None:
+        if ol:
+            out.append("<ol>" + "".join(f"<li>{_md_inline(x)}</li>" for x in ol) + "</ol>")
+            ol.clear()
+
+    def flush_all() -> None:
+        flush_para(); flush_ul(); flush_ol()
+
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            flush_all()
+            i += 1
+            code: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code.append(lines[i]); i += 1
+            i += 1  # skip closing fence
+            out.append("<pre><code>" + html.escape("\n".join(code)) + "</code></pre>")
+            continue
+        if not stripped:
+            flush_all(); i += 1; continue
+        heading = _MD_HEADING.match(stripped)
+        if heading:
+            flush_all()
+            level = min(len(heading.group(1)) + 1, 4)  # '#' -> h2, '##' -> h3 ...
+            out.append(f"<h{level}>{_md_inline(heading.group(2))}</h{level}>")
+            i += 1; continue
+        bullet = _MD_UL.match(stripped)
+        if bullet:
+            flush_para(); flush_ol()
+            ul.append(bullet.group(1)); i += 1; continue
+        numbered = _MD_OL.match(stripped)
+        if numbered:
+            flush_para(); flush_ul()
+            ol.append(numbered.group(1)); i += 1; continue
+        flush_ul(); flush_ol()
+        para.append(stripped); i += 1
+    flush_all()
+    return Markup("".join(out))
