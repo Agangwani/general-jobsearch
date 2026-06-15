@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Referrals — {{ job.company }} — {{ job.title }}{% endblock %}
+{% block content %}
+
+<style>
+  /* Self-contained table styling so referrals don't depend on cross-page CSS. */
+  .referral-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  .referral-table th, .referral-table td {
+    padding: .55rem .6rem; border-bottom: 1px solid var(--line, #e5e7eb);
+    vertical-align: top; text-align: left;
+  }
+  .referral-table th { font-size: .8rem; text-transform: uppercase;
+    color: var(--muted, #6b7280); letter-spacing: .04em; }
+  .referral-table .score { text-align: right; font-variant-numeric: tabular-nums;
+    font-weight: 500; width: 5.5rem; }
+  .referral-table .score-strong { font-weight: 700; }
+  .referral-table .headline { color: var(--muted, #4b5563); max-width: 32rem; }
+  .referral-table .row-actions { white-space: nowrap; }
+  .referral-banner { margin: .25rem 0 1rem; }
+</style>
+
+<header class="page-head">
+  <div>
+    <h1>Referrals for {{ job.title }}</h1>
+    <div class="subtitle">
+      <strong>{{ job.company }}</strong> · {{ job.location }}
+    </div>
+    <div class="muted"><a href="/jobs/{{ job.id }}">← back to job</a></div>
+  </div>
+  <div class="actions">
+    <form method="post" action="/jobs/{{ job.id }}/referrals/discover" style="display:inline">
+      <button class="btn btn-primary" type="submit" {% if is_running %}disabled{% endif %}
+              title="Opens a Chromium window pointed at LinkedIn. Log in there once — your session is saved across runs in data/browser_profile/linkedin/.">
+        {% if is_running %}Searching LinkedIn…
+        {% elif candidates %}↻ Refresh from LinkedIn
+        {% else %}🤝 Find people who can refer you{% endif %}
+      </button>
+    </form>
+  </div>
+</header>
+
+{% if is_running %}
+<p class="muted referral-banner">A Chromium window is open. If LinkedIn asks you to log in or
+   verify, complete it in that window — your session persists. This page does not auto-refresh;
+   reload after a moment to see results.</p>
+{% elif run and run.state == 'error' %}
+<p class="tag tag-amber referral-banner">Last search failed: {{ run.detail }}</p>
+{% elif run %}
+<p class="muted referral-banner">Last search: {{ run.finished_at or run.started_at }}{% if run.detail %} · {{ run.detail }}{% endif %}</p>
+{% endif %}
+
+{% if candidates %}
+<table class="referral-table">
+  <thead>
+    <tr>
+      <th>Person</th>
+      <th>Headline</th>
+      <th>Job fit</th>
+      <th>Your fit</th>
+      <th>Combined</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in candidates %}
+    <tr>
+      <td>
+        <strong>{{ c.name }}</strong>
+        {% if c.location %}<div class="muted">{{ c.location }}</div>{% endif %}
+      </td>
+      <td class="headline">{{ c.headline }}</td>
+      <td class="score">{{ '%.0f'|format(c.job_match) }}</td>
+      <td class="score">{{ '%.0f'|format(c.user_match) }}</td>
+      <td class="score score-strong">{{ '%.0f'|format(c.combined) }}</td>
+      <td class="row-actions">
+        <a class="btn btn-ghost" href="{{ c.linkedin_url }}" target="_blank" rel="noopener">
+          Open profile ↗
+        </a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="muted">Scores are TF-IDF cosines (×100) between the candidate's headline and the
+   job description / your resume. <strong>Combined</strong> is their mean — best for both
+   signals together; use the column sorts in your head when you want to prioritize one axis.
+   Candidate enrichment (Claude-drafted message, browser auto-paste) lands in a later phase.</p>
+{% elif not is_running and not run %}
+<p class="muted">No candidates discovered yet. Click the button above to search LinkedIn for
+   people at <strong>{{ job.company }}</strong> who match this role and your background.
+   A Chromium window will open — log in once if prompted, then your session is saved.</p>
+{% elif not is_running %}
+<p class="muted">No matching candidates surfaced on the last run. If LinkedIn was asking for
+   verification, complete it in the open Chromium window and retry the search.</p>
+{% endif %}
+
+{% endblock %}

@@ -132,3 +132,24 @@ output:
   # Full fetched corpus snapshots (gitignored) for offline scoring experiments.
   corpus_dir: data/corpus
   corpus_retention_days: 14
+
+# Referral discovery (per job, from the job detail page → "Find a referral"):
+# opens a headed Chromium pointed at LinkedIn People Search and ranks the
+# results by job fit + match to your background. The browser profile persists
+# your LinkedIn login across runs, so you only sign in once.
+#
+# Honest caveat: LinkedIn aggressively detects automation. Repeated rapid
+# searches can trigger verification challenges or temporary restrictions on
+# your account — consider using a secondary LinkedIn login if that's a risk
+# you don't want to take with your primary account.
+referrals:
+  # Persistent Playwright user-data-dir (gitignored under data/). Delete to
+  # log out / start from a fresh session.
+  browser_profile_dir: data/browser_profile/linkedin
+  # Headless=false means a real Chromium window opens — required for first-run
+  # login and for solving any verification LinkedIn shows you. Don't change
+  # this unless you know your account won't be challenged.
+  headless: false
+  # Cap on candidates returned per search. LinkedIn shows ~10 results per page
+  # before requiring scrolling; 25 covers the first two pages comfortably.
+  max_candidates: 25

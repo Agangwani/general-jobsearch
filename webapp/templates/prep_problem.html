@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}{{ problem.ctci_id }} {{ problem.title }} — Prep{% endblock %}
+{% block content %}
+
+{% set here = '/prep/module/' ~ problem.module_slug ~ '/ctci/' ~ problem.slug %}
+{% set ns = namespace(prev=None, next=None, found=false) %}
+{% for s in siblings %}
+  {% if s.slug == problem.slug %}{% set ns.found = true %}
+  {% elif not ns.found %}{% set ns.prev = s %}
+  {% elif ns.next is none %}{% set ns.next = s %}{% endif %}
+{% endfor %}
+
+<div class="crumb">
+  <a href="/prep">Prep</a> ›
+  <a href="/prep/track/{{ problem.track_slug }}">{{ problem.track_title }}</a> ›
+  <a href="/prep/module/{{ problem.module_slug }}">{{ problem.module_title }}</a>
+</div>
+
+<header class="page-head">
+  <div>
+    <h1>{{ problem.ctci_id }} {{ problem.title }}</h1>
+    {% if problem.complexity %}
+    <div class="subtitle muted src">Target complexity: {{ problem.complexity }}</div>
+    {% endif %}
+  </div>
+  <div class="actions">
+    <span class="state {{ problem.state }}">{{ problem.state|replace('_',' ') }}</span>
+    <form class="inline-form" method="post" action="/prep/ctci-problems/{{ problem.id }}/state">
+      <input type="hidden" name="next" value="{{ here }}">
+      {% if problem.state != 'solved' %}
+      <button class="btn btn-primary" name="state" value="solved">✓ Mark solved</button>
+      <button class="btn btn-ghost" name="state" value="attempted">… Mark attempted</button>
+      {% else %}
+      <button class="btn btn-ghost" name="state" value="not_started">↺ Reset</button>
+      {% endif %}
+    </form>
+  </div>
+</header>
+
+<div class="lesson-body">
+  <h2>Prompt</h2>
+  {{ problem.prompt_md | prep_markdown }}
+  {% if problem.examples_md %}
+  <h3>Example</h3>
+  {{ problem.examples_md | prep_markdown }}
+  {% endif %}
+</div>
+
+{% if hints %}
+<div class="ctci-hints">
+  <h2>Hints ({{ hints|length }})</h2>
+  <p class="muted">Try the problem on your own first. Each hint nudges progressively further.</p>
+  {% for h in hints %}
+  <details>
+    <summary>Hint #{{ loop.index }}</summary>
+    <div class="hint-body">{{ h | prep_markdown }}</div>
+  </details>
+  {% endfor %}
+</div>
+{% endif %}
+
+<details class="solution-disclosure">
+  <summary><strong>Show worked solution</strong> — try the hints first</summary>
+  <div class="lesson-body" style="margin-top:14px">
+    {{ problem.solution_md | prep_markdown }}
+  </div>
+</details>
+
+<details style="max-width:760px;margin-top:20px">
+  <summary class="muted" style="cursor:pointer">My notes</summary>
+  <form method="post" action="/prep/ctci-problems/{{ problem.id }}/state">
+    <input type="hidden" name="next" value="{{ here }}">
+    <input type="hidden" name="state" value="{{ problem.state }}">
+    <textarea class="notes-box" name="notes" placeholder="What approach did you try? What tripped you up?">{{ problem.notes }}</textarea>
+    <div><button class="btn">Save notes</button></div>
+  </form>
+</details>
+
+<nav class="lesson-nav">
+  {% if ns.prev %}
+  <a class="btn" href="/prep/module/{{ problem.module_slug }}/ctci/{{ ns.prev.slug }}">← {{ ns.prev.ctci_id }} {{ ns.prev.title }}</a>
+  {% else %}<span></span>{% endif %}
+  {% if ns.next %}
+  <a class="btn btn-primary" href="/prep/module/{{ problem.module_slug }}/ctci/{{ ns.next.slug }}">{{ ns.next.ctci_id }} {{ ns.next.title }} →</a>
+  {% else %}
+  <a class="btn btn-primary" href="/prep/module/{{ problem.module_slug }}">Back to module ✓</a>
+  {% endif %}
+</nav>
+
+{% endblock %}

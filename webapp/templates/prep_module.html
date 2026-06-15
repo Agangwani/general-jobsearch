@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ module.title }} — Prep{% endblock %}
+{% block content %}
+
+<div class="crumb">
+  <a href="/prep">Prep</a> ›
+  <a href="/prep/track/{{ module.track_slug }}">{{ module.track_title }}</a>
+</div>
+<header class="page-head">
+  <div>
+    <h1>{{ module.title }}</h1>
+    <div class="subtitle muted">{{ module.summary }}</div>
+    <div class="muted src" style="margin-top:6px">{{ module.source_refs }} · ~{{ module.est_minutes }} min</div>
+  </div>
+</header>
+
+<h2>Lessons</h2>
+{% for l in lessons %}
+<div class="lesson-row">
+  <span class="num">{{ loop.index }}</span>
+  <a class="title" href="/prep/module/{{ module.slug }}/lesson/{{ l.slug }}">{{ l.title }}</a>
+  <span class="src">{{ l.source_refs }}</span>
+  <span class="state {{ l.state }}">{{ l.state|replace('_',' ') }}</span>
+</div>
+{% endfor %}
+
+{% if ctci_problems %}
+<h2>CtCI book problems — full prompt, hints &amp; solution</h2>
+<table class="prob-table">
+  <thead>
+    <tr><th>#</th><th>Problem</th><th>Status</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for cp in ctci_problems %}
+    <tr>
+      <td class="muted">{{ cp.ctci_id }}</td>
+      <td><a href="/prep/module/{{ module.slug }}/ctci/{{ cp.slug }}">{{ cp.title }}</a>
+        {% if cp.complexity %}<span class="muted src"> — {{ cp.complexity }}</span>{% endif %}
+      </td>
+      <td><span class="state {{ cp.state }}">{{ cp.state|replace('_',' ') }}</span></td>
+      <td>
+        <form class="inline-form" method="post" action="/prep/ctci-problems/{{ cp.id }}/state">
+          <input type="hidden" name="next" value="/prep/module/{{ module.slug }}">
+          <button class="btn btn-row" name="state" value="solved" title="Mark solved">✓</button>
+          <button class="btn btn-row" name="state" value="attempted" title="Mark attempted">…</button>
+          <button class="btn btn-row btn-ghost" name="state" value="not_started" title="Reset">↺</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if problems %}
+<h2>LeetCode — drill this topic</h2>
+<table class="prob-table">
+  <thead>
+    <tr><th>#</th><th>Problem</th><th>Difficulty</th><th>Pattern</th><th>Status</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for p in problems %}
+    <tr>
+      <td class="muted">{{ p.leetcode_number }}</td>
+      <td><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }} ↗</a></td>
+      <td class="diff-{{ p.difficulty }}">{{ p.difficulty }}</td>
+      <td class="muted">{{ p.topic }}</td>
+      <td><span class="state {{ p.state }}">{{ p.state|replace('_',' ') }}</span></td>
+      <td>
+        <form class="inline-form" method="post" action="/prep/problems/{{ p.id }}/state">
+          <input type="hidden" name="next" value="/prep/module/{{ module.slug }}">
+          <button class="btn btn-row" name="state" value="solved" title="Mark solved">✓</button>
+          <button class="btn btn-row" name="state" value="attempted" title="Mark attempted">…</button>
+          <button class="btn btn-row btn-ghost" name="state" value="not_started" title="Reset">↺</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% endblock %}

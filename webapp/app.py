@@ -16,12 +16,16 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from jobsearch.prep.seed import seed_into_db
+from jobsearch.referrals import discover as referrals_discover
+from jobsearch.referrals import store as referrals_store
+from jobsearch.referrals.sources.linkedin import LinkedinDiscoverer
 from jobsearch.resume import extract_keywords, pdf_to_text
 
 from . import db, emailmod, gmail, ingest, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
-from .textfmt import description_html
+from .textfmt import description_html, prep_markdown
 
 HERE = Path(__file__).parent
 
@@ -31,10 +35,27 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
+    # Load the software-interview prep curriculum into the prep_* tables. Cheap
+    # and idempotent (a content hash skips the work when nothing changed); user
+    # progress lives in separate tables and is never wiped.
+    seed_into_db(conn)
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
                                data_dir=root / "data")
     runner = PipelineRunner(root)
     app.state.runner = runner
+
+    # Lazy LinkedIn referral discoverer — Playwright doesn't start until the
+    # first /referrals/discover request, so this adds no startup cost.
+    _settings_path = root / "config" / "settings.yaml"
+    _settings_raw = ((yaml.safe_load(_settings_path.read_text()) or {})
+                     if _settings_path.exists() else {})
+    _ref_cfg = _settings_raw.get("referrals", {}) or {}
+    discoverer = LinkedinDiscoverer(
+        profile_dir=root / _ref_cfg.get(
+            "browser_profile_dir", "data/browser_profile/linkedin"),
+        headless=bool(_ref_cfg.get("headless", False)),
+        max_candidates=int(_ref_cfg.get("max_candidates", 25)),
+    )
 
     # Guards against launching overlapping background pipeline runs.
     _pipeline_state = {"running": False}
@@ -42,10 +63,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["qp"] = quote_plus
     templates.env.filters["description_html"] = description_html
+    templates.env.filters["prep_markdown"] = prep_markdown
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
         ctx.setdefault("counts", db.stack_counts(conn))
+        ctx.setdefault("prep_counts", db.prep_overall_counts(conn))
         return templates.TemplateResponse(request, template, ctx)
 
     # ------------------------------------------------------------ dashboard
@@ -94,6 +117,122 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
                       profile_fields=profile.all_fields(conn))
+
+    # ----------------------------------------------------------- referrals
+    @app.get("/jobs/{job_id}/referrals", response_class=HTMLResponse)
+    def job_referrals(request: Request, job_id: int):
+        job = db.job_with_application(conn, job_id)
+        if job is None:
+            return RedirectResponse("/", status_code=303)
+        candidates = referrals_store.candidates_for_job(conn, job_id)
+        run = referrals_store.latest_run(conn, job_id)
+        is_running = bool(run and run["state"] == "running")
+        return render(request, "referrals.html", job=job,
+                      candidates=candidates, run=run, is_running=is_running)
+
+    @app.post("/jobs/{job_id}/referrals/discover")
+    def trigger_referrals(job_id: int):
+        # Don't queue overlapping searches for the same job — the existing
+        # row stays "running" until the background worker finishes or fails.
+        if referrals_store.is_running(conn, job_id):
+            return RedirectResponse(f"/jobs/{job_id}/referrals", status_code=303)
+        import threading
+        def _go():
+            # Each worker thread owns its own conn — sqlite WAL writes are
+            # safer that way even with check_same_thread=False.
+            worker_conn = db.connect(db_path)
+            try:
+                referrals_discover.discover_for_job(
+                    worker_conn, root, job_id, discoverer)
+            finally:
+                worker_conn.close()
+        threading.Thread(target=_go, daemon=True).start()
+        return RedirectResponse(f"/jobs/{job_id}/referrals", status_code=303)
+
+    # ------------------------------------------------- software interview prep
+    @app.get("/prep", response_class=HTMLResponse)
+    def prep_home(request: Request):
+        return render(request, "prep.html",
+                      tracks=db.prep_tracks_overview(conn),
+                      resume_target=db.prep_resume_target(conn),
+                      overall=db.prep_overall_counts(conn))
+
+    @app.get("/prep/track/{track_slug}", response_class=HTMLResponse)
+    def prep_track(request: Request, track_slug: str):
+        track = conn.execute(
+            "SELECT * FROM prep_tracks WHERE slug = ?", (track_slug,)).fetchone()
+        if track is None:
+            return RedirectResponse("/prep", status_code=303)
+        return render(request, "prep_track.html", track=dict(track),
+                      modules=db.prep_modules_for_track(conn, track["id"]))
+
+    @app.get("/prep/module/{module_slug}", response_class=HTMLResponse)
+    def prep_module(request: Request, module_slug: str):
+        detail = db.prep_module_detail(conn, module_slug)
+        if detail is None:
+            return RedirectResponse("/prep", status_code=303)
+        return render(request, "prep_module.html", **detail)
+
+    @app.get("/prep/module/{module_slug}/lesson/{lesson_slug}", response_class=HTMLResponse)
+    def prep_lesson(request: Request, module_slug: str, lesson_slug: str):
+        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug)
+        if detail is None:
+            return RedirectResponse("/prep", status_code=303)
+        lesson = detail["lesson"]
+        # Opening a fresh lesson marks it in-progress so the /prep landing can
+        # resume you here. Already-completed lessons are left as-is.
+        if lesson["state"] == "not_started":
+            db.set_lesson_state(conn, lesson["id"], "in_progress")
+            lesson["state"] = "in_progress"
+        try:
+            takeaways = json.loads(lesson.get("key_takeaways") or "[]")
+        except (ValueError, TypeError):
+            takeaways = []
+        return render(request, "prep_lesson.html", lesson=lesson,
+                      siblings=detail["siblings"], takeaways=takeaways)
+
+    @app.post("/prep/lessons/{lesson_id}/state")
+    def prep_set_lesson(lesson_id: int, state: str = Form(...),
+                        notes: str = Form(None), next: str = Form("/prep")):
+        try:
+            db.set_lesson_state(conn, lesson_id, state, notes=notes)
+        except ValueError:
+            pass
+        return RedirectResponse(next, status_code=303)
+
+    @app.post("/prep/problems/{problem_id}/state")
+    def prep_set_problem(problem_id: int, state: str = Form(...),
+                         next: str = Form("/prep")):
+        try:
+            db.set_problem_state(conn, problem_id, state)
+        except ValueError:
+            pass
+        return RedirectResponse(next, status_code=303)
+
+    @app.get("/prep/module/{module_slug}/ctci/{problem_slug}", response_class=HTMLResponse)
+    def prep_ctci_problem(request: Request, module_slug: str, problem_slug: str):
+        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug)
+        if detail is None:
+            return RedirectResponse(f"/prep/module/{module_slug}", status_code=303)
+        problem = detail["problem"]
+        if problem["state"] == "not_started":
+            db.set_ctci_problem_state(conn, problem["id"], "attempted")
+            problem["state"] = "attempted"
+        try:
+            hints = json.loads(problem.get("hints") or "[]")
+        except (ValueError, TypeError):
+            hints = []
+        return render(request, "prep_problem.html", problem=problem,
+                      siblings=detail["siblings"], hints=hints)
+
+    @app.post("/prep/ctci-problems/{ctci_problem_id}/state")
+    def prep_set_ctci_problem(ctci_problem_id: int, state: str = Form(...),
+                              notes: str = Form(None), next: str = Form("/prep")):
+        try:
+            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes)
+        except ValueError:
+            pass
+        return RedirectResponse(next, status_code=303)
 
     # --------------------------------------------------------------- actions
     @app.post("/jobs/{job_id}/apply")

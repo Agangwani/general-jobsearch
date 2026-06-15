@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ track.title }} — Prep{% endblock %}
+{% block content %}
+
+<div class="crumb"><a href="/prep">← All tracks</a></div>
+<header class="page-head">
+  <div>
+    <h1>{{ track.title }}</h1>
+    <div class="subtitle muted">{{ track.description }}</div>
+  </div>
+</header>
+
+{% for m in modules %}
+<a class="card" href="/prep/module/{{ m.slug }}" style="margin-bottom:14px">
+  <h3>{{ loop.index }}. {{ m.title }}</h3>
+  <p class="desc">{{ m.summary }}</p>
+  <div class="prog"><span style="width: {{ (m.lessons_done / m.lesson_count * 100) if m.lesson_count else 0 }}%"></span></div>
+  <div class="meta">
+    <span class="src">{{ m.source_refs }}</span>
+    <span>·</span>
+    <span><b>{{ m.lessons_done }}/{{ m.lesson_count }}</b> lessons</span>
+    {% if m.problem_count %}<span><b>{{ m.problems_done }}/{{ m.problem_count }}</b> LeetCode</span>{% endif %}
+    {% if m.ctci_count %}<span><b>{{ m.ctci_done }}/{{ m.ctci_count }}</b> CtCI</span>{% endif %}
+    <span>~{{ m.est_minutes }} min</span>
+  </div>
+</a>
+{% endfor %}
+
+{% endblock %}
