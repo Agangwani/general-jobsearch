@@ -4,12 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}jobsearch{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v={{ css_v }}">
 </head>
 <body>
 <nav class="topnav">
   <a class="brand" href="/">jobsearch</a>
   <a href="/?stack=to_apply">To apply <span class="pill">{{ counts.to_apply }}</span></a>
+  <a href="/?stack=in_progress">In progress <span class="pill pill-amber">{{ counts.in_progress }}</span></a>
   <a href="/?stack=applied">Applied <span class="pill pill-green">{{ counts.applied }}</span></a>
   <a href="/prep">Prep <span class="pill pill-amber">{{ prep_counts.lessons_done }}/{{ prep_counts.lessons_total }}</span></a>
   <a href="/resume">Resume</a>

@@ -19,10 +19,11 @@ document.addEventListener("click", (e) => {
 // Auto-fill apply flow. Works from the job page button and the per-row ⚡
 // buttons — each click opens its own tab in the shared integrated browser,
 // auto-fills the form, and reports progress. Submission stays manual.
-async function startApply(btn) {
+async function startApply(btn, action = "apply") {
   const box = document.getElementById("apply-state"); // job page only
   const compact = !!btn.dataset.compact;
   const original = btn.textContent;
+  const refill = action === "refill";
   const show = (msg, ok) => {
     if (box) { box.hidden = false; box.textContent = msg; box.classList.toggle("ok", !!ok); }
     btn.title = msg;
@@ -30,9 +31,10 @@ async function startApply(btn) {
   const short = (t) => { if (compact) btn.textContent = t; };
 
   btn.disabled = true;
-  short("Opening…");
-  show("Opening a tab in the integrated browser…");
-  const res = await fetch(`/jobs/${btn.dataset.jobId}/apply`, { method: "POST" });
+  short(refill ? "Re-filling…" : "Opening…");
+  show(refill ? "Re-running auto-fill on the open tab…"
+              : "Opening a tab in the integrated browser…");
+  const res = await fetch(`/jobs/${btn.dataset.jobId}/${action}`, { method: "POST" });
   if (!res.ok) {
     show("Could not launch — is the job URL missing?"); short("⚡ error");
     btn.disabled = false; return;
@@ -63,8 +65,143 @@ async function startApply(btn) {
   }, 1500);
 }
 document.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-apply-btn]");
-  if (btn) { e.preventDefault(); startApply(btn); }
+  const applyBtn = e.target.closest("[data-apply-btn]");
+  if (applyBtn) { e.preventDefault(); startApply(applyBtn, "apply"); return; }
+  const refillBtn = e.target.closest("[data-refill-btn]");
+  if (refillBtn) { e.preventDefault(); startApply(refillBtn, "refill"); }
+});
+
+
+// "Fill all open tabs" — adopt every job tab already open in the integrated
+// browser and auto-fill it in one go. Submission stays manual, as always.
+// Shared by "Fill all open tabs" and "Prepare top 5": after launching tabs,
+// poll /api/apply-all-status and show per-tab progress until everything settles.
+const applyAllSummary = document.getElementById("apply-all-summary");
+const applyAllList = document.getElementById("apply-all-list");
+let applyAllPoll = null;
+function _tabLabel(s) {
+  try {
+    const u = new URL(s.url);
+    return u.hostname.replace(/^(www|job-boards|boards)\./, "") + u.pathname.slice(0, 22);
+  } catch { return s.url || `tab ${s.application_id}`; }
+}
+function _renderTabs(rows) {
+  if (!applyAllList) return;
+  applyAllList.hidden = rows.length === 0;
+  applyAllList.innerHTML = rows.map((s) => {
+    const f = s.fill || {};
+    const detail = f.filled ? `${f.filled} filled${f.skipped ? `, ${f.skipped} left` : ""}`
+                            : (s.detail || "working…");
+    const state = s.state === "applied" ? "submitted" : s.state;
+    return `<li><span class="muted">${_tabLabel(s)}</span> — ${state} (${detail})</li>`;
+  }).join("");
+}
+function pollApplySessions(btn, prefix) {
+  if (applyAllPoll) clearInterval(applyAllPoll);
+  // Filled tabs intentionally stay state="open" for the user's manual submit, so
+  // we can't wait for them to close. "Settled" = no tab still opening and the
+  // total filled count has stopped growing — i.e. auto-fill is done.
+  let idleTicks = 0, lastFilled = -1;
+  applyAllPoll = setInterval(async () => {
+    const data = (await (await fetch("/api/apply-all-status")).json()).sessions || [];
+    _renderTabs(data);
+    const filled = data.reduce((n, s) => n + ((s.fill && s.fill.filled) || 0), 0);
+    const opening = data.filter((s) => s.state === "starting").length;
+    const settled = opening === 0 && filled === lastFilled;
+    lastFilled = filled;
+    if (applyAllSummary)
+      applyAllSummary.textContent = `${prefix}${data.length} tab(s), ${filled} field(s) filled`
+        + (settled ? "" : " — filling…");
+    idleTicks = settled ? idleTicks + 1 : 0;
+    if (idleTicks >= 2) {  // stable for two ticks → done; tabs stay open for review
+      clearInterval(applyAllPoll); applyAllPoll = null;
+      if (btn) btn.disabled = false;
+      if (applyAllSummary && data.length)
+        applyAllSummary.textContent += " — done. Review each tab, then submit yourself.";
+    }
+  }, 1500);
+}
+
+// POST helper that distinguishes a real server response from a failed request
+// (e.g. a 404 because the running server predates a new route → needs a restart).
+const STALE_MSG = "Couldn't reach this action on the server — it's likely running older "
+  + "code. Restart the web app to load the latest changes, then retry.";
+async function _postJson(url) {
+  const r = await fetch(url, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+const applyAllBtn = document.getElementById("apply-all-btn");
+if (applyAllBtn) {
+  applyAllBtn.addEventListener("click", async () => {
+    applyAllBtn.disabled = true;
+    if (applyAllSummary) applyAllSummary.textContent = "Scanning open tabs…";
+    let res;
+    try { res = await _postJson("/api/apply-all"); }
+    catch { if (applyAllSummary) applyAllSummary.textContent = STALE_MSG; applyAllBtn.disabled = false; return; }
+    if (!res.requested) {
+      if (applyAllSummary) applyAllSummary.textContent = res.detail || "Nothing to fill.";
+      applyAllBtn.disabled = false; return;
+    }
+    pollApplySessions(applyAllBtn, "");
+  });
+}
+
+const prepareTopBtn = document.getElementById("prepare-top-btn");
+if (prepareTopBtn) {
+  prepareTopBtn.addEventListener("click", async () => {
+    prepareTopBtn.disabled = true;
+    if (applyAllSummary) applyAllSummary.textContent = "Picking the best-fit jobs and opening tabs…";
+    let res;
+    try { res = await _postJson("/api/prepare-top"); }
+    catch { if (applyAllSummary) applyAllSummary.textContent = STALE_MSG; prepareTopBtn.disabled = false; return; }
+    if (!res.count) {
+      if (applyAllSummary) applyAllSummary.textContent = "No applyable jobs found — ingest a run first.";
+      prepareTopBtn.disabled = false; return;
+    }
+    pollApplySessions(prepareTopBtn, `Opened ${res.count} · `);
+  });
+}
+
+// Bulk-select: checkboxes + "Mark selected as applied" (a plain form post to
+// /applications/bulk-status). JS just manages the bar, the count, and select-all.
+const bulkForm = document.getElementById("bulk-form");
+if (bulkForm) {
+  const bar = document.getElementById("bulk-bar");
+  const count = document.getElementById("bulk-count");
+  const selectAll = document.getElementById("select-all");
+  const rowChecks = () => Array.from(bulkForm.querySelectorAll(".row-check"));
+  const refresh = () => {
+    const boxes = rowChecks();
+    const n = boxes.filter((c) => c.checked).length;
+    if (bar) bar.style.display = n ? "flex" : "none";  // inline display, so toggle it (not [hidden])
+    if (count) count.textContent = `${n} selected`;
+    if (selectAll) selectAll.checked = n > 0 && n === boxes.length;
+  };
+  bulkForm.addEventListener("change", (e) => {
+    if (e.target === selectAll) rowChecks().forEach((c) => { c.checked = selectAll.checked; });
+    refresh();
+  });
+  refresh();
+}
+
+// Per-row status change on the dashboard: POST to /applications/{id}/status and
+// reload so the row moves into the To apply / In progress / Applied tab. The
+// <select> has no name, so it never participates in the bulk-apply form submit.
+document.addEventListener("change", async (e) => {
+  const sel = e.target.closest(".row-status");
+  if (!sel) return;
+  sel.disabled = true;
+  try {
+    await fetch(`/applications/${sel.dataset.applicationId}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ status: sel.value }),
+      redirect: "manual",
+    });
+  } catch { /* ignore — the reload reflects server truth */ }
+  location.reload();
 });
 
 

@@ -4,14 +4,38 @@
 
 <header class="page-head">
   <h1>Profile</h1>
-  <span class="muted">Preloaded into every job's copy-paste panel; stored only in the local database.</span>
+  <span class="muted">Used to auto-fill application forms and the per-job copy-paste panel;
+    stored only in the local database. Address, education, and the voluntary
+    self-identification fields are filled when set — leave any blank and the engine
+    skips it (it never guesses). Submission always stays manual.</span>
 </header>
+
+<form method="post" action="/profile/from-resume" class="from-resume">
+  <button class="btn">Populate from resume</button>
+  <span class="muted">Fills empty fields (name, contact, location, current role, education)
+    from <code>data/resume.txt</code> — won't overwrite anything you've edited.</span>
+</form>
 
 <form method="post" action="/profile" class="profile-form">
   {% for f in fields %}
   <label>
     <span>{{ f.field.replace('_',' ') }}</span>
+    {% if f.field == "cover_letter" %}
+    <textarea name="{{ f.field }}" rows="6"
+              placeholder="Optional default cover letter — filled into cover-letter text boxes.">{{ f.value }}</textarea>
+    {% elif f.field in field_options %}
+    <select name="{{ f.field }}">
+      <option value="" {{ 'selected' if not f.value }}>—</option>
+      {% for opt in field_options[f.field] %}
+      <option value="{{ opt }}" {{ 'selected' if opt == f.value }}>{{ opt }}</option>
+      {% endfor %}
+      {% if f.value and f.value not in field_options[f.field] %}
+      <option value="{{ f.value }}" selected>{{ f.value }} (current)</option>
+      {% endif %}
+    </select>
+    {% else %}
     <input type="text" name="{{ f.field }}" value="{{ f.value }}">
+    {% endif %}
   </label>
   {% endfor %}
   <button class="btn btn-primary">Save profile</button>

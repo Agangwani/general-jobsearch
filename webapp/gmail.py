@@ -75,7 +75,9 @@ def save_token(data_dir: Path, token: dict) -> None:
     if "refresh_token" not in token and "refresh_token" in existing:
         token["refresh_token"] = existing["refresh_token"]  # refresh responses omit it
     token["expires_at"] = time.time() + int(token.get("expires_in", 3600)) - 60
-    (data_dir / TOKEN_FILE).write_text(json.dumps(token, indent=2))
+    path = data_dir / TOKEN_FILE
+    path.write_text(json.dumps(token, indent=2))
+    path.chmod(0o600)  # OAuth tokens are secrets — keep them owner-only at rest
 
 
 # ------------------------------------------------------------------ OAuth flow

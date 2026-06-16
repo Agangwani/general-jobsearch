@@ -406,6 +406,29 @@ def job_with_application(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row |
     ).fetchone()
 
 
+def application_by_url(conn: sqlite3.Connection, url: str) -> sqlite3.Row | None:
+    """Exact-URL lookup of an application — used to attribute an open browser
+    tab (in 'fill all open tabs') back to a tracked job."""
+    if not url:
+        return None
+    return conn.execute(
+        """SELECT a.id AS application_id, j.id AS job_id, j.title, j.company
+           FROM jobs j JOIN applications a ON a.job_id = j.id
+           WHERE j.url = ? LIMIT 1""",
+        (url,),
+    ).fetchone()
+
+
+def active_application_urls(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """(application_id, url) for every active job — the caller fuzzy-matches an
+    open tab's URL against these (e.g. by canonical apply form / ATS job id)."""
+    return conn.execute(
+        """SELECT a.id AS application_id, j.url
+           FROM jobs j JOIN applications a ON a.job_id = j.id
+           WHERE j.is_active = 1 AND j.url != ''"""
+    ).fetchall()
+
+
 # Columns the user can sort by. Values are safe SQL column references.
 SORTABLE = {
     "fit":        "j.fit_score",
@@ -451,9 +474,13 @@ def search_jobs(
     if stack == "applied":
         sql.append(f"AND a.status IN ({','.join('?' * len(APPLIED_SET))})")
         args += sorted(APPLIED_SET)
+    elif stack == "in_progress":
+        sql.append("AND a.status = 'in_progress'")
     elif stack == "to_apply":
-        sql.append(f"AND a.status NOT IN ({','.join('?' * len(APPLIED_SET))})")
-        args += sorted(APPLIED_SET)
+        # Fresh, not-yet-started jobs only — in_progress is its own stack now.
+        not_to_apply = APPLIED_SET | {"in_progress"}
+        sql.append(f"AND a.status NOT IN ({','.join('?' * len(not_to_apply))})")
+        args += sorted(not_to_apply)
     if not include_near_miss:
         sql.append("AND j.filter_reason = ''")
     if min_fit is not None:
@@ -474,6 +501,42 @@ def search_jobs(
     return conn.execute(" ".join(sql), args).fetchall()
 
 
+def top_fit_to_apply(conn: sqlite3.Connection, n: int = 5) -> list[sqlite3.Row]:
+    """The n best-fit jobs that are applyable now: active, have a URL, and not
+    yet in an applied/closed state. Highest fit first, rank as tiebreak."""
+    placeholders = ",".join("?" * len(APPLIED_SET))
+    return conn.execute(
+        f"""SELECT j.*, a.id AS application_id, a.status
+            FROM jobs j JOIN applications a ON a.job_id = j.id
+            WHERE j.is_active = 1 AND j.url != '' AND a.status NOT IN ({placeholders})
+            ORDER BY j.fit_score DESC NULLS LAST, j.rank_score DESC NULLS LAST,
+                     j.first_seen_at DESC
+            LIMIT ?""",
+        (*sorted(APPLIED_SET), n),
+    ).fetchall()
+
+
+def companies_for_stack(conn: sqlite3.Connection, stack: str = "") -> list[str]:
+    """Distinct companies, scoped to a stack (to_apply / applied) so each
+    section's company filter lists only the companies that actually have jobs
+    in it. Empty stack → every company."""
+    sql = ["SELECT DISTINCT j.company FROM jobs j "
+           "JOIN applications a ON a.job_id = j.id WHERE 1=1"]
+    args: list = []
+    if stack == "applied":
+        sql.append(f"AND a.status IN ({','.join('?' * len(APPLIED_SET))})")
+        args += sorted(APPLIED_SET)
+    elif stack == "in_progress":
+        sql.append("AND a.status = 'in_progress'")
+    elif stack == "to_apply":
+        # Fresh, not-yet-started jobs only — in_progress is its own stack now.
+        not_to_apply = APPLIED_SET | {"in_progress"}
+        sql.append(f"AND a.status NOT IN ({','.join('?' * len(not_to_apply))})")
+        args += sorted(not_to_apply)
+    sql.append("ORDER BY j.company")
+    return [r["company"] for r in conn.execute(" ".join(sql), args).fetchall()]
+
+
 def latest_run_ingested_at(conn: sqlite3.Connection) -> str:
     """Ingest timestamp of the most recent run, or '' if none. Jobs that run
     surfaced all carry this exact value in last_seen_at (upsert stamps every
@@ -489,8 +552,11 @@ def stack_counts(conn: sqlite3.Connection) -> dict[str, int]:
     ).fetchall()
     by_status = {r["status"]: r["n"] for r in rows}
     applied = sum(n for s, n in by_status.items() if s in APPLIED_SET)
-    to_apply = sum(n for s, n in by_status.items() if s not in APPLIED_SET)
-    return {"to_apply": to_apply, "applied": applied, "by_status": by_status}
+    in_progress = by_status.get("in_progress", 0)
+    to_apply = sum(n for s, n in by_status.items()
+                   if s not in APPLIED_SET and s != "in_progress")
+    return {"to_apply": to_apply, "in_progress": in_progress, "applied": applied,
+            "by_status": by_status}
 
 
 # ---------------------------------------------------------- prep queries ---

@@ -4,19 +4,47 @@ Goal: anyone can sign up, upload a resume, and get matched jobs; one shared
 hosted database of users with the repo owner as admin; small budget; built
 with security as a first-class requirement.
 
+## What the app is today
+
+Since this doc was first written the project grew from a CLI pipeline into a
+full local web product. `python -m jobsearch ui` serves a FastAPI app
+(`webapp/`) on `127.0.0.1:8484`, backed by SQLite at `data/jobsearch.db`.
+It is deliberately single-user-local: no auth, profile PII and OAuth tokens
+on disk under `data/`, and an integrated Chromium that drives *your* logged-in
+browser sessions. The current feature surface:
+
+- **Job dashboard** — to-apply / applied stacks, filtering and sorting over
+  the pipeline's scored postings; per-job detail + event history.
+- **Resume upload & rescoring** (`/resume`) — upload a PDF, rescore the whole
+  corpus against it on demand.
+- **Profile** (`/profile`) — the structured PII (name, contact, work
+  authorization, salary, links…) that feeds auto-fill.
+- **Integrated apply browser + auto-fill** (`webapp/apply_browser.py`,
+  `autofill.py`) — opens a posting in a Chromium with your own cookies and
+  pre-fills the application form; never clicks submit.
+- **Gmail sync** (`webapp/gmail.py`, `/emails`) — now *built*: OAuth
+  (`gmail.readonly`) with the token in `data/token.json`, server-scoped search
+  to mail from companies you're applying to, auto-advances `applied →
+  confirmed`.
+- **LinkedIn referral discovery** (`jobsearch/referrals/`) — Playwright drives
+  your logged-in LinkedIn session to find potential referrers per job.
+- **Interview prep** (`jobsearch/prep/`, `/prep`) — a seeded curriculum
+  (tracks/modules/lessons/CTCI problems) with per-user progress tracking.
+
 ## What changes between "local app" and "hosted product"
 
-The current app is deliberately single-user-local: SQLite on disk, no auth,
-file paths under `data/`, and an integrated Chromium that drives *your*
-browser sessions. Three of those translate directly; one does not:
+Most data tables translate directly to multi-tenant; the three browser-session
+features do not, because they run with *your* credentials on *your* machine:
 
 | Local feature | Hosted equivalent |
 |---|---|
-| SQLite `data/jobsearch.db` | Managed Postgres, every table gains a `user_id` |
-| Resume at `data/resume.txt` | Per-user upload in object storage / DB column |
-| Daily pipeline run | One shared fetch worker for ALL users (see below) |
-| Auto-fill apply browser | **Stays local-only.** It drives a Chromium with the user's own cookies/sessions on their machine; running it server-side would mean holding users' credentials. Hosted UI links out to postings; power users keep running the local app. |
-| Gmail sync | Defer from hosted v1. Holding Google OAuth tokens for other people raises the security bar (encryption at rest, Google verification review) far above the rest of the app. |
+| SQLite `data/jobsearch.db` | Managed Postgres; per-user tables gain a `user_id` (postings stay global — see below) |
+| Profile PII (`profile_fields`) + resume PDF | Per-user rows / object-storage upload, scoped by `user_id` |
+| Daily pipeline run (GitHub Action, already exists) | Same Action, repointed to write Postgres instead of committing reports (see below) |
+| Auto-fill apply browser | **Stays local-only.** Drives a Chromium with the user's own cookies/sessions; server-side would mean holding users' credentials. Hosted UI links out to postings; power users keep running the local app. |
+| LinkedIn referral discovery | **Stays local-only**, same reason: it relies on the user's logged-in LinkedIn session in a local Playwright Chromium. |
+| Gmail sync | Defer from hosted v1. The code exists and works locally, but holding Google OAuth tokens for *other* people raises the bar (encryption at rest, Google verification review, gmail.readonly app audit) far above the rest of the app. |
+| Interview prep | Curriculum content is global (seeded, idempotent); only the `*_progress` tables are per-user. Trivially multi-tenant. |
 
 **The key architectural win:** job postings are global, not per-user, so
 fetch cost scales with **distinct search profiles, not users**:
@@ -35,6 +63,15 @@ fetch cost scales with **distinct search profiles, not users**:
 
 Per-user work is just scoring — TF-IDF projection of one resume against the
 day's corpus takes seconds. Cost is therefore sublinear in users.
+
+**The fetch worker already exists.** `.github/workflows/daily-job-search.yml`
+runs the pipeline daily (`23 11 * * *`), installs Playwright/Chromium for the
+browser-scraped boards, runs the tests, then **commits** `reports/` and
+`data/seen_jobs.tsv` back to the repo. The hosted change is small and isolated:
+keep the same Action and Playwright setup, but the final step writes postings
+to Postgres via a `DATABASE_URL` secret and triggers per-user rescoring,
+instead of `git commit`/`git push`. No new infrastructure for the heaviest
+component.
 
 ## Recommended stack (cheapest credible path)
 
@@ -60,17 +97,23 @@ is the Postgres upgrade, not compute.
 ## Effort estimate (staged, each stage shippable)
 
 1. **Multi-tenancy + auth (the bulk: ~1–2 weeks of focused sessions).**
-   `users` table; `user_id` column + index on applications/events/profile
-   tables (postings stay global); signup/login/logout with secure session
-   cookies; every query scoped by the session's user id — enforced in one
-   `current_user` dependency, not per-route discipline. Admin page (user
-   list, disable user, usage counts) behind `is_admin`.
-2. **Shared fetch worker + per-user scoring (~2–3 days).** Pipeline writes
-   postings to Postgres instead of reports; a post-fetch step rescores every
-   active user's resume against the new corpus and stores per-user fit rows.
+   `users` table; add a `user_id` column + index to the per-user tables —
+   `applications`, `application_events`, `profile_fields`, `runs`, and the
+   `prep_*_progress` tables — while `jobs`/`job_events` and the prep
+   *content* tables (`prep_tracks/modules/lessons/problems`) stay global.
+   Signup/login/logout with secure session cookies; every query scoped by the
+   session's user id — enforced in one `current_user` dependency, not
+   per-route discipline. Admin page (user list, disable user, usage counts)
+   behind `is_admin`.
+2. **Shared fetch worker + per-user scoring (~2–3 days).** Repoint the
+   existing Action to write postings to Postgres; a post-fetch step rescores
+   every active user's resume against the new corpus and stores per-user fit
+   rows.
 3. **Hardening pass (~1 week initial, then ongoing).** See checklist.
-4. **Later**: per-user company lists, email digests, Gmail sync (only with
-   token encryption + scoped review).
+4. **Later**: per-user company lists, email digests, and hosted Gmail sync
+   (the local module already works — hosting it adds token encryption at rest
+   + Google verification review). Auto-fill and referral discovery remain
+   local-only by design.
 
 ## Security checklist (what "no security flaws" means in practice)
 
@@ -109,4 +152,5 @@ bugs, a small attack surface, and fast recovery. Concretely:
 | Cost | $0–5/mo start; ~$25–45/mo grown |
 | Effort | ~2–3 weeks of sessions to multi-user v1; auth is the bulk |
 | Shared admin DB | Postgres with `users.is_admin`; you own the credentials |
-| Biggest cuts for v1 | Auto-fill browser stays local; Gmail sync deferred |
+| Biggest cuts for v1 | Auto-fill browser and LinkedIn referral discovery stay local (user's own sessions); Gmail sync deferred despite working locally |
+| Fetch worker | Already built as a GitHub Action; hosting just repoints its output from git to Postgres |

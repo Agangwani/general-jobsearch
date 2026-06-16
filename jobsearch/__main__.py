@@ -38,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
     ui.add_argument("--port", type=int, default=8484)
     ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument(
+        "--allow-remote", action="store_true",
+        help="Permit binding a non-loopback host. The UI is unauthenticated and "
+        "exposes profile PII, your resume, Gmail, and browser control — only use "
+        "this on a network you fully trust.")
 
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -57,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
         ingest_latest(args.root, conn)
         return 0
     if args.command == "ui":
+        if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.allow_remote:
+            print(
+                f"refusing to bind {args.host}: the UI is unauthenticated and exposes "
+                "your profile PII, resume, Gmail, and browser control.\n"
+                "Re-run with --allow-remote only if you trust every device on that network.")
+            return 2
         import uvicorn
         from webapp.app import create_app
         app = create_app(args.root)

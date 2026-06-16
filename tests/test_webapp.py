@@ -72,7 +72,7 @@ def test_patch_never_erases_description(conn):
 def test_status_lifecycle_and_stacks(conn):
     db.upsert_job(conn, record("greenhouse:Acme:1"))
     db.upsert_job(conn, record("greenhouse:Beta:2", company="Beta"))
-    assert db.stack_counts(conn) == {"to_apply": 2, "applied": 0,
+    assert db.stack_counts(conn) == {"to_apply": 2, "in_progress": 0, "applied": 0,
                                      "by_status": {"not_applied": 2}}
     app_id = conn.execute("SELECT id FROM applications LIMIT 1").fetchone()["id"]
     db.set_application_status(conn, app_id, "applied", via="integrated_browser")
@@ -83,6 +83,48 @@ def test_status_lifecycle_and_stacks(conn):
     history = conn.execute(
         "SELECT status FROM application_events WHERE application_id = ?", (app_id,)).fetchall()
     assert [h["status"] for h in history] == ["applied"]
+
+
+def test_in_progress_is_its_own_stack(conn):
+    db.upsert_job(conn, record("k1", company="A"))   # stays not_applied → To apply
+    db.upsert_job(conn, record("k2", company="B"))   # → In progress
+    db.upsert_job(conn, record("k3", company="C"))   # → Applied
+    ids = {r["company"]: r["id"] for r in conn.execute(
+        "SELECT j.company, a.id AS id FROM applications a JOIN jobs j ON j.id = a.job_id")}
+    db.set_application_status(conn, ids["B"], "in_progress")
+    db.set_application_status(conn, ids["C"], "applied")
+    counts = db.stack_counts(conn)
+    assert (counts["to_apply"], counts["in_progress"], counts["applied"]) == (1, 1, 1)
+    assert [r["company"] for r in db.search_jobs(conn, stack="to_apply")] == ["A"]
+    assert [r["company"] for r in db.search_jobs(conn, stack="in_progress")] == ["B"]
+    assert [r["company"] for r in db.search_jobs(conn, stack="applied")] == ["C"]
+    assert db.companies_for_stack(conn, "in_progress") == ["B"]
+    assert db.companies_for_stack(conn, "to_apply") == ["A"]
+
+
+def test_top_fit_to_apply_picks_best_unapplied(conn):
+    db.upsert_job(conn, record("k1", company="A", fit_score=90.0))
+    db.upsert_job(conn, record("k2", company="B", fit_score=99.0, url=""))   # no URL → skip
+    db.upsert_job(conn, record("k3", company="C", fit_score=95.0))
+    db.upsert_job(conn, record("k4", company="D", fit_score=60.0))
+    a3 = conn.execute("SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id "
+                      "WHERE j.key = 'k3'").fetchone()["id"]
+    db.set_application_status(conn, a3, "applied")               # already applied → skip
+    top = db.top_fit_to_apply(conn, 5)
+    assert [r["key"] for r in top] == ["k1", "k4"]               # best-fit, applyable, by fit desc
+    assert all(r["application_id"] and r["url"] for r in top)
+
+
+def test_companies_for_stack_scopes_to_section(conn):
+    db.upsert_job(conn, record("k1", company="Acme"))
+    db.upsert_job(conn, record("k2", company="Beta"))
+    applied_id = conn.execute(
+        "SELECT a.id FROM applications a JOIN jobs j ON j.id = a.job_id "
+        "WHERE j.key = 'k1'").fetchone()["id"]
+    db.set_application_status(conn, applied_id, "applied")
+    assert db.companies_for_stack(conn) == ["Acme", "Beta"]       # both sections
+    assert db.companies_for_stack(conn, "applied") == ["Acme"]    # only applied
+    assert db.companies_for_stack(conn, "to_apply") == ["Beta"]   # only to-apply
 
 
 def test_search(conn):
@@ -166,6 +208,32 @@ def test_ingest_latest(tmp_path, conn):
     assert len(conn.execute("SELECT * FROM runs").fetchall()) == 2
 
 
+# ------------------------------------------------- apply-all tab→application
+def test_application_by_url_and_active_urls(conn):
+    db.upsert_job(conn, record("greenhouse:Acme:1", url="https://acme.com/jobs/1"))
+    db.upsert_job(conn, record("greenhouse:Beta:2", company="Beta",
+                               url="https://beta.com/jobs/2"))
+    row = db.application_by_url(conn, "https://acme.com/jobs/1")
+    assert row is not None and row["company"] == "Acme"
+    assert db.application_by_url(conn, "https://nope.com/x") is None
+    urls = {r["url"] for r in db.active_application_urls(conn)}
+    assert urls == {"https://acme.com/jobs/1", "https://beta.com/jobs/2"}
+
+
+def test_match_application_by_greenhouse_job_id(conn):
+    # The stored URL is the branded posting; the open tab is the embed form.
+    # They must reconcile via the shared gh job id.
+    from webapp.apply_browser import BrowserHost
+    db.upsert_job(conn, record("greenhouse:Acme:1",
+                               url="https://www.acme.com/careers/7701651?gh_jid=7701651"))
+    app_id = conn.execute("SELECT id FROM applications").fetchone()["id"]
+    embed = "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=7701651"
+    assert BrowserHost._match_application(conn, embed) == app_id
+    # An unrelated greenhouse id matches nothing.
+    other = "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=999"
+    assert BrowserHost._match_application(conn, other) is None
+
+
 def test_search_jobs_since_scopes_to_apply_but_keeps_engaged(conn):
     """`since` (the latest-run boundary) hides stale not-applied jobs but keeps
     any job the user has already started/applied to, regardless of run."""
@@ -225,6 +293,34 @@ def test_ingest_flags_stale_to_apply_jobs(tmp_path, conn):
 
 
 # ----------------------------------------------------- apply browser heuristic
+def test_resume_path_and_name_prefer_uploaded_file(tmp_path):
+    from webapp.apply_browser import BrowserHost
+    data = tmp_path / "data"
+    data.mkdir()
+    host = BrowserHost(tmp_path / "t.db", tmp_path / "profile", data)
+    # A decoy PDF that sorts after "resume.pdf" must NOT be chosen.
+    (data / "resume.pdf").write_bytes(b"%PDF-1.4 real")
+    (data / "zzz-other.pdf").write_bytes(b"%PDF-1.4 decoy")
+    assert host._resume_path() == str(data / "resume.pdf")
+    # No sidecar yet → falls back to the on-disk basename.
+    assert host._resume_name() == "resume.pdf"
+    # With the sidecar, the original upload name is used.
+    (data / "resume.pdf.name").write_text("Aman_Gangwani_Resume.pdf\n")
+    assert host._resume_name() == "Aman_Gangwani_Resume.pdf"
+
+
+def test_reset_for_refill_clears_state():
+    from webapp.apply_browser import ApplySession, BrowserHost
+    s = ApplySession(1, "https://jobs.ashbyhq.com/acme/abc")
+    s.done_urls.add("u"); s.done_keys.add("k"); s.fill_url = "u"; s.fill_passes = 3
+    s.advanced = True; s.state = "applied"
+    s.fill = {"filled": 5, "skipped": 2, "fields": ["email"], "notes": ["x"]}
+    BrowserHost._reset_for_refill(s)
+    assert not s.done_urls and not s.done_keys and s.fill_url == ""
+    assert s.fill_passes == 0 and s.advanced is False and s.settled is False
+    assert s.state == "open" and s.fill["filled"] == 0 and s.fill["fields"] == []
+
+
 def test_confirmation_detection():
     assert looks_like_confirmation("https://x.com/apply/confirmation")
     assert looks_like_confirmation("https://x.com/thank-you")
@@ -260,14 +356,55 @@ def test_email_classifier_labels():
 
 
 # -------------------------------------------------------------------- profile
+def test_profile_ensure_fields_tops_up_without_clobbering(conn):
+    profile.set_field(conn, "full_name", "Aman")  # a pre-existing value
+    profile.ensure_fields(conn)                    # add the newer form-fill fields
+    fields = {f["field"]: f["value"] for f in profile.all_fields(conn)}
+    assert {"gender", "cover_letter", "street_address", "school"} <= set(fields)
+    assert fields["full_name"] == "Aman"           # existing value preserved
+    assert fields["gender"] == ""                  # new field seeded blank
+
+
 def test_profile_seed_from_resume():
-    text = ("Alex Candidate\nSenior Software Engineer, New York, NY\n"
-            "alex@example.com | 555-123-4567 | linkedin.com/in/alex | github.com/alex\n")
-    fields = profile.seed_from_resume(text)
-    assert fields["full_name"] == "Alex Candidate"
-    assert fields["current_title"] == "Senior Software Engineer"
-    assert fields["email"] == "alex@example.com"
-    assert fields["linkedin"] == "linkedin.com/in/alex"
+    text = ("Alex Candidate\n"
+            "alex@example.com | 555-123-4567 | github.com/alex | linkedin.com/in/alex\n"
+            "EXPERIENCE\n"
+            "Acme Corp San Francisco, CA\n"
+            "Staff Software Engineer  Jan 2022 - Present\n"
+            "EDUCATION\n"
+            "Stanford University, Stanford, CA\n"
+            "B.S. Computer Science, Minor in Mathematics\n")
+    f = profile.seed_from_resume(text)
+    assert f["full_name"] == "Alex Candidate"
+    assert f["email"] == "alex@example.com"
+    assert f["linkedin"] == "linkedin.com/in/alex"
+    assert f["github"] == "github.com/alex"
+    assert f["location"] == "San Francisco, CA"
+    assert f["current_company"] == "Acme Corp"
+    assert f["current_title"] == "Staff Software Engineer"
+    assert f["school"] == "Stanford University"
+    assert f["degree"] == "Bachelor's Degree"          # B.S. canonicalised
+    assert f["discipline"] == "Computer Science"
+
+
+def test_seed_from_resume_tolerates_pdf_space_noise():
+    # PDF extraction injects stray spaces inside header words.
+    text = "Jordan Lee\nRELEV ANT EXPERIENCE\nGlobex New York, NY\nSenior Engineer 2021\n"
+    f = profile.seed_from_resume(text)
+    assert f["location"] == "New York, NY" and f["current_company"] == "Globex"
+
+
+def test_populate_from_resume_only_fills_blanks(conn, tmp_path):
+    profile.ensure_fields(conn)
+    profile.set_field(conn, "current_company", "My Current Employer")  # a manual edit
+    text = ("Sam Dev\nEXPERIENCE\nAcme Corp Austin, TX\nEngineer 2020\n"
+            "EDUCATION\nMIT, Cambridge, MA\nM.S. Robotics\n")
+    changed = profile.populate_from_resume(conn, text)
+    vals = {r["field"]: r["value"] for r in profile.all_fields(conn)}
+    assert vals["location"] == "Austin, TX"            # blank → filled
+    assert vals["degree"] == "Master's Degree"
+    assert vals["current_company"] == "My Current Employer"  # manual edit preserved
+    assert "current_company" not in changed
 
 
 # ------------------------------------------------------------ route smoke test
@@ -290,21 +427,58 @@ def test_routes(tmp_path):
     client = TestClient(app)
     db.upsert_job(app.state.conn, record())
 
-    assert client.get("/").status_code == 200
+    home = client.get("/")
+    assert home.status_code == 200
+    assert "/?stack=in_progress" in home.text          # In progress nav tab
+    assert 'class="row-status' in home.text            # editable per-row status
+    assert client.get("/?stack=in_progress").status_code == 200
     assert "Senior Software Engineer" in client.get("/?q=Senior").text
     job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
     detail = client.get(f"/jobs/{job_id}")
     assert detail.status_code == 200 and "Copy-paste panel" in detail.text
     assert client.get("/resume").status_code == 200
-    assert client.get("/profile").status_code == 200
+    profile_page = client.get("/profile")
+    assert profile_page.status_code == 200
+    assert "<select" in profile_page.text  # dropdowns rendered for curated fields
+    assert "Decline to self-identify" in profile_page.text
+    # populate-from-resume endpoint fills blanks then redirects
+    assert client.post("/profile/from-resume", follow_redirects=False).status_code == 303
     assert client.get("/settings").status_code == 200
     assert client.get("/emails").status_code == 200
     assert client.get("/api/jobs").json()[0]["company"] == "Acme"
+
+    # prep source-chapter view renders even with no local books (graceful), and
+    # the PDF route 404s since the books are kept local-only.
+    mslug = app.state.conn.execute("SELECT slug FROM prep_modules LIMIT 1").fetchone()["slug"]
+    assert client.get(f"/prep/module/{mslug}/source").status_code == 200
+    assert client.get("/prep/book/ctci").status_code == 404
+
+    # apply-all endpoints: with no integrated browser open yet, status is empty
+    # and the request is politely declined rather than launching a browser.
+    assert client.get("/api/apply-all-status").json() == {"sessions": []}
+    declined = client.post("/api/apply-all").json()
+    assert declined["requested"] is False and "browser" in declined["detail"]
 
     app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
     resp = client.post(f"/applications/{app_id}/status",
                        data={"status": "applied", "note": "done"}, follow_redirects=False)
     assert resp.status_code == 303
+
+    # bulk status: mark several applications applied in one post (checkbox values)
+    db.upsert_job(app.state.conn, record("k-bulk", company="Beta"))
+    aids = [str(r["id"]) for r in app.state.conn.execute("SELECT id FROM applications").fetchall()]
+    assert len(aids) >= 2
+    # A non-existent id and a non-integer must NOT 500 or abort the batch.
+    rb = client.post("/applications/bulk-status",
+                     data={"application_id": aids + ["999999", "abc"], "status": "applied"},
+                     follow_redirects=False)
+    assert rb.status_code == 303
+    rows = app.state.conn.execute("SELECT status FROM applications").fetchall()
+    assert all(r["status"] == "applied" for r in rows)
+    # An invalid status is rejected (no write).
+    client.post("/applications/bulk-status", data={"application_id": aids, "status": "bogus"})
+    assert all(r["status"] == "applied" for r in
+               app.state.conn.execute("SELECT status FROM applications").fetchall())
     assert app.state.conn.execute(
         "SELECT status FROM applications").fetchone()["status"] == "applied"
 
