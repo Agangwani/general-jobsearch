@@ -57,7 +57,7 @@ score, keyword, and profile field switches to it.</p>
 
 <div class="resume-sections" id="full-resume" data-copy="{{ resume_text }}">
   {% for section in sections %}
-  <section class="resume-block">
+  <section class="resume-block anim-up" style="--i:{{ loop.index0 if loop.index0 < 12 else 12 }}">
     <button class="copy-btn" data-copy="{{ section }}" title="copy this block">⧉</button>
     <pre>{{ section }}</pre>
   </section>

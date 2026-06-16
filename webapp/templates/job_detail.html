@@ -3,17 +3,25 @@
 {% block content %}
 
 <header class="page-head">
-  <div>
-    <h1>{{ job.title }}</h1>
-    <div class="subtitle">
-      <strong>{{ job.company }}</strong> · {{ job.location }} ·
-      fit {{ '%.0f'|format(job.fit_score) if job.fit_score is not none else '—' }}
-      {% if job.filter_reason %}<span class="tag tag-amber">{{ job.filter_reason }}</span>{% endif %}
-      {% if job.validation %}<span class="tag">{{ job.validation }}{% if job.validation_note %}: {{ job.validation_note }}{% endif %}</span>{% endif %}
+  <div class="job-head">
+    {% if job.fit_score is not none %}
+    <span class="fit-ring fit-ring-lg" style="--fit:{{ '%.0f'|format(job.fit_score) }}"
+          data-tier="{{ 'high' if job.fit_score >= 75 else 'mid' if job.fit_score >= 50 else 'low' }}"
+          title="fit {{ '%.0f'|format(job.fit_score) }} / 100">
+      <span class="fit-val">{{ '%.0f'|format(job.fit_score) }}</span>
+    </span>
+    {% endif %}
+    <div>
+      <h1>{{ job.title }}</h1>
+      <div class="subtitle">
+        <strong>{{ job.company }}</strong> · {{ job.location }}
+        {% if job.filter_reason %}<span class="tag tag-amber">{{ job.filter_reason }}</span>{% endif %}
+        {% if job.validation %}<span class="tag">{{ job.validation }}{% if job.validation_note %}: {{ job.validation_note }}{% endif %}</span>{% endif %}
+      </div>
+      <div class="muted">posted {{ job.posted_at or 'unknown' }} ·
+        first seen {{ job.first_seen_at }} · last seen {{ job.last_seen_at }} ·
+        <code>{{ job.key }}</code></div>
     </div>
-    <div class="muted">posted {{ job.posted_at or 'unknown' }} ·
-      first seen {{ job.first_seen_at }} · last seen {{ job.last_seen_at }} ·
-      <code>{{ job.key }}</code></div>
   </div>
   <div class="actions">
     <span class="status status-{{ job.status }}">{{ job.status.replace('_',' ') }}</span>

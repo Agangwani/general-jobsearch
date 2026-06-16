@@ -11,7 +11,7 @@
 </header>
 
 {% for m in modules %}
-<a class="card" href="/prep/module/{{ m.slug }}" style="margin-bottom:14px">
+<a class="card" href="/prep/module/{{ m.slug }}" style="margin-bottom:14px;--i:{{ loop.index0 }}">
   <h3>{{ loop.index }}. {{ m.title }}</h3>
   <p class="desc">{{ m.summary }}</p>
   <div class="prog"><span style="width: {{ (m.lessons_done / m.lesson_count * 100) if m.lesson_count else 0 }}%"></span></div>

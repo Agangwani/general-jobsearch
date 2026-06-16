@@ -3,6 +3,40 @@
 > **Status (2026-06-12): v1 shipped.** `python -m jobsearch ui` →
 > http://127.0.0.1:8484. Local-only FastAPI + SQLite + a Playwright-driven
 > integrated browser for applying.
+>
+> **Update (2026-06-16): "Aurora" visual redesign.** A ground-up restyle of
+> the UI in the spirit of Apple's design language — clarity, deference, depth.
+> See **Visual design** below. It is **presentation-only**: no Python, route,
+> schema, or data-flow changes, and every JS hook + server-rendered contract
+> is preserved, so the sections that follow still describe the system exactly.
+
+## Visual design — "Aurora" (templates + CSS + ~60 lines of vanilla JS)
+
+The look is Apple-inspired and entirely dependency-free (still no node
+toolchain). Everything is driven by `webapp/static/app.css`'s design tokens.
+
+- **Type & color.** System-first typography (SF Pro on Apple hardware, Inter
+  as the cross-platform fallback), an Apple-blue accent, and a signature
+  blue→indigo→violet "aurora" gradient used sparingly (brand mark, the
+  *Tracked* stat, progress bars, ring accents). A faint fixed aurora glow sits
+  behind the canvas.
+- **Light / dark / system.** Tokens cover both modes. The theme follows the OS
+  by default and a nav toggle (☾ / ☀) lets the user force light or dark,
+  persisted in `localStorage` and applied pre-paint to avoid a flash.
+- **Dashboard.** A hero with four clickable, count-up **stat cards** (To apply
+  / In progress / Applied / Tracked), an iOS-style **segmented control** for
+  switching stacks, and the jobs table reframed as a card. The fit score is
+  now an Apple "Activity ring" (a masked `conic-gradient`, colored by tier)
+  that fills on load.
+- **Motion.** Fluid spring easing, staggered fade-up entrances (driven by a
+  `--i` index custom property), hover lift on cards/rows, and cross-page
+  **view transitions** where supported. All entrance motion lives under
+  `@media (prefers-reduced-motion: no-preference)`, so reduced-motion users
+  get the full, static layout.
+- **Invariants.** All JS contracts are untouched: `data-apply-btn` /
+  `data-refill-btn`, `.row-status`, the bulk-select form, `#run-panel` /
+  `#run-pipeline`, `[data-copy]`, and the apply-all controls. Filtering,
+  sorting, bulk actions, status changes, and auto-fill behave exactly as before.
 
 ## What it is
 

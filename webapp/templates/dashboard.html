@@ -15,18 +15,52 @@
   {%- endif -%}
 {%- endmacro -%}
 
+{#-- Switch the stack while preserving the rest of the active filters --#}
+{%- macro stack_href(s) -%}
+/?stack={{ s }}&q={{ q|qp }}&company={{ company|qp }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&run_scope={{ run_scope }}
+{%- endmacro -%}
+
+{% set tracked = counts.by_status.values()|sum %}
+
 <header class="page-head">
-  <h1>
-    {% if stack == "applied" %}Applied{% elif stack == "in_progress" %}In progress{% elif stack == "to_apply" %}To apply{% else %}All jobs{% endif %}
-    <span class="muted">({{ jobs|length }})</span>
-  </h1>
-  {% if last_run %}
-  <span class="muted">Last ingest {{ last_run.ingested_at }} — {{ last_run.jobs_inserted }} new,
-    {{ last_run.jobs_updated }} patched</span>
-  {% else %}
-  <span class="muted">No data yet — run <code>python -m jobsearch run</code>, then hit "Ingest latest run".</span>
-  {% endif %}
+  <div>
+    <h1>
+      {% if stack == "applied" %}Applied{% elif stack == "in_progress" %}In progress{% elif stack == "to_apply" %}To apply{% else %}Your search{% endif %}
+      <span class="muted">({{ jobs|length }})</span>
+    </h1>
+    <div class="subtitle muted">
+    {% if last_run %}
+      Last ingest {{ last_run.ingested_at }} — {{ last_run.jobs_inserted }} new, {{ last_run.jobs_updated }} patched.
+    {% else %}
+      No data yet — run <code>python -m jobsearch run</code>, then hit “⟳ Ingest”.
+    {% endif %}
+    </div>
+  </div>
 </header>
+
+{#-- At-a-glance overview: clickable, animated counters that filter the table --#}
+<section class="stat-row">
+  <a class="stat-card" data-accent="blue" style="--i:0" href="{{ stack_href('to_apply') }}">
+    <span class="stat-label">To apply</span>
+    <span class="stat-num" data-count="{{ counts.to_apply }}">{{ counts.to_apply }}</span>
+    <span class="stat-foot">ready for you</span>
+  </a>
+  <a class="stat-card" data-accent="amber" style="--i:1" href="{{ stack_href('in_progress') }}">
+    <span class="stat-label">In progress</span>
+    <span class="stat-num" data-count="{{ counts.in_progress }}">{{ counts.in_progress }}</span>
+    <span class="stat-foot">started, not submitted</span>
+  </a>
+  <a class="stat-card" data-accent="green" style="--i:2" href="{{ stack_href('applied') }}">
+    <span class="stat-label">Applied</span>
+    <span class="stat-num" data-count="{{ counts.applied }}">{{ counts.applied }}</span>
+    <span class="stat-foot">submitted</span>
+  </a>
+  <a class="stat-card" data-accent="brand" style="--i:3" href="/?run_scope=all">
+    <span class="stat-label">Tracked</span>
+    <span class="stat-num" data-count="{{ tracked }}">{{ tracked }}</span>
+    <span class="stat-foot">across every run</span>
+  </a>
+</section>
 
 <div class="apply-all-bar">
   <button class="btn btn-primary" id="prepare-top-btn"
@@ -41,8 +75,16 @@
   <ul class="apply-all-list" id="apply-all-list" hidden></ul>
 </div>
 
+{#-- Stack switcher (segmented control) --#}
+<div class="segmented" role="tablist" aria-label="Filter by stack">
+  <a class="seg {{ 'is-active' if not stack }}" href="{{ stack_href('') }}" role="tab" aria-selected="{{ 'true' if not stack else 'false' }}">All</a>
+  <a class="seg {{ 'is-active' if stack == 'to_apply' }}" href="{{ stack_href('to_apply') }}" role="tab" aria-selected="{{ 'true' if stack == 'to_apply' else 'false' }}">To apply <span class="pill">{{ counts.to_apply }}</span></a>
+  <a class="seg {{ 'is-active' if stack == 'in_progress' }}" href="{{ stack_href('in_progress') }}" role="tab" aria-selected="{{ 'true' if stack == 'in_progress' else 'false' }}">In progress <span class="pill">{{ counts.in_progress }}</span></a>
+  <a class="seg {{ 'is-active' if stack == 'applied' }}" href="{{ stack_href('applied') }}" role="tab" aria-selected="{{ 'true' if stack == 'applied' else 'false' }}">Applied <span class="pill">{{ counts.applied }}</span></a>
+</div>
+
 {% if has_runs %}
-<p class="muted run-scope">
+<p class="muted run-scope" style="margin:var(--sp-3) 0 var(--sp-4)">
   {% if run_scope == 'all' %}
     Showing <strong>all runs</strong> — includes jobs from earlier runs that may have targeted different roles.
     <a href="/?stack={{ stack }}&near_miss={{ near_miss }}&run_scope=latest">Show this run only →</a>
@@ -57,16 +99,11 @@
   <input type="hidden" name="sort_by" value="{{ sort_by }}">
   <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
   <input type="hidden" name="run_scope" value="{{ run_scope }}">
+  <input type="hidden" name="stack" value="{{ stack }}">
   <input type="search" name="q" value="{{ q }}" placeholder="Search title, description, company, location…">
   <select name="company">
     <option value="">All companies</option>
     {% for c in companies %}<option value="{{ c }}" {{ 'selected' if c == company }}>{{ c }}</option>{% endfor %}
-  </select>
-  <select name="stack">
-    <option value="">All</option>
-    <option value="to_apply" {{ 'selected' if stack == 'to_apply' }}>To apply</option>
-    <option value="in_progress" {{ 'selected' if stack == 'in_progress' }}>In progress</option>
-    <option value="applied" {{ 'selected' if stack == 'applied' }}>Applied</option>
   </select>
   <label class="check"><input type="checkbox" name="near_miss" value="1" {{ 'checked' if near_miss == '1' }}> near-miss</label>
   <input class="filter-num" type="number" name="min_fit" value="{{ min_fit }}" placeholder="Min fit ≥" min="0" max="100" step="1">
@@ -74,7 +111,7 @@
     <option value="">Any status</option>
     {% for s in all_statuses %}<option value="{{ s }}" {{ 'selected' if s == status_filter }}>{{ s.replace('_',' ') }}</option>{% endfor %}
   </select>
-  <button class="btn">Filter</button>
+  <button class="btn btn-primary">Filter</button>
   {% if sort_by or min_fit or status_filter %}
   <a class="btn btn-ghost" href="/?q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&run_scope={{ run_scope }}">Reset sort</a>
   {% endif %}
@@ -82,18 +119,17 @@
 
 <form method="post" action="/applications/bulk-status" id="bulk-form">
   <input type="hidden" name="status" value="applied">
-  <div class="bulk-bar" id="bulk-bar"
-       style="position:sticky;top:0;z-index:5;display:none;gap:10px;align-items:center;
-              padding:8px 12px;margin-bottom:6px;background:var(--accent-soft,#eef);border-radius:6px">
+  <div class="bulk-bar" id="bulk-bar" style="display:none">
     <span id="bulk-count" class="muted"></span>
     <button class="btn btn-primary" type="submit">Mark selected as applied →</button>
   </div>
 
+<div class="table-wrap">
 <table class="jobs">
   <thead>
     <tr>
       <th class="check-col" style="width:1%"><input type="checkbox" id="select-all" title="Select all"></th>
-      <th><a class="sh{{ ' sa' if sort_by == 'fit' }}" href="{{ sort_href('fit') }}">Fit{{ sort_icon('fit') }}</a></th>
+      <th class="fit-cell"><a class="sh{{ ' sa' if sort_by == 'fit' }}" href="{{ sort_href('fit') }}">Fit{{ sort_icon('fit') }}</a></th>
       <th><a class="sh{{ ' sa' if sort_by == 'company' }}" href="{{ sort_href('company') }}">Company{{ sort_icon('company') }}</a></th>
       <th><a class="sh{{ ' sa' if sort_by == 'title' }}" href="{{ sort_href('title') }}">Title{{ sort_icon('title') }}</a></th>
       <th><a class="sh{{ ' sa' if sort_by == 'location' }}" href="{{ sort_href('location') }}">Location{{ sort_icon('location') }}</a></th>
@@ -106,9 +142,18 @@
   </thead>
   <tbody>
   {% for j in jobs %}
-    <tr class="{{ 'row-applied' if j.status in ('applied','confirmed','interviewing','offer') }}{{ ' row-dead' if j.status in ('rejected','withdrawn') }}">
+    <tr class="{{ 'row-applied' if j.status in ('applied','confirmed','interviewing','offer') }}{{ ' row-dead' if j.status in ('rejected','withdrawn') }}"
+        style="--i:{{ loop.index0 if loop.index0 < 18 else 18 }}">
       <td class="check-col"><input type="checkbox" class="row-check" name="application_id" value="{{ j.application_id }}"></td>
-      <td class="num">{{ '%.0f'|format(j.fit_score) if j.fit_score is not none else '—' }}</td>
+      <td class="fit-cell">
+        {% if j.fit_score is not none %}
+        <span class="fit-ring" style="--fit:{{ '%.0f'|format(j.fit_score) }}"
+              data-tier="{{ 'high' if j.fit_score >= 75 else 'mid' if j.fit_score >= 50 else 'low' }}"
+              title="fit {{ '%.0f'|format(j.fit_score) }} / 100">
+          <span class="fit-val">{{ '%.0f'|format(j.fit_score) }}</span>
+        </span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
       <td>{{ j.company }}</td>
       <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
       <td class="muted">{{ j.location[:42] }}</td>
@@ -137,10 +182,11 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="10" class="empty">Nothing here. Run the pipeline, then "Ingest latest run".</td></tr>
+    <tr><td colspan="10" class="empty">Nothing here. Run the pipeline, then “⟳ Ingest”.</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
 </form>
 
 {% endblock %}
