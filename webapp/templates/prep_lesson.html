@@ -22,6 +22,10 @@
     <div class="subtitle muted src">{{ lesson.source_refs }}</div>
   </div>
   <div class="actions">
+    {% if has_source %}
+    <a class="btn btn-ghost" href="/prep/module/{{ lesson.module_slug }}/source"
+       title="Open the source book chapter for this module">📖 Source chapter</a>
+    {% endif %}
     <span class="state {{ lesson.state }}">{{ lesson.state|replace('_',' ') }}</span>
     <form class="inline-form" method="post" action="/prep/lessons/{{ lesson.id }}/state">
       <input type="hidden" name="next" value="{{ here }}">

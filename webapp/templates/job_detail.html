@@ -22,6 +22,11 @@
             title="Opens a tab in the integrated browser and auto-fills your profile into the form. Never submits — you review and click submit.">
       ⚡ Auto-fill apply
     </button>
+    <button class="btn btn-ghost" data-refill-btn
+            data-job-id="{{ job.id }}" data-application-id="{{ job.application_id }}"
+            title="Re-run auto-fill on this job's already-open tab — useful after the form finishes loading or you've updated your profile. Opens a tab if none is open.">
+      ↻ Re-fill open tab
+    </button>
     <a class="btn btn-ghost" href="/jobs/{{ job.id }}/referrals"
        title="Find current employees who can refer you. Searches LinkedIn for people on this team and ranks them by job fit + match to your background.">
       🤝 Find a referral

@@ -7,6 +7,7 @@ design: the database holds profile PII and application history.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -22,7 +23,7 @@ from jobsearch.referrals import store as referrals_store
 from jobsearch.referrals.sources.linkedin import LinkedinDiscoverer
 from jobsearch.resume import extract_keywords, pdf_to_text
 
-from . import db, emailmod, gmail, ingest, profile
+from . import db, emailmod, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -35,6 +36,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
+    profile.ensure_fields(conn)  # top up newly-added profile fields on old DBs
     # Load the software-interview prep curriculum into the prep_* tables. Cheap
     # and idempotent (a content hash skips the work when nothing changed); user
     # progress lives in separate tables and is never wiped.
@@ -81,8 +83,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                               include_near_miss=near_miss == "1",
                               sort_by=sort_by, sort_dir=sort_dir,
                               min_fit=min_fit_val, status_filter=status_filter)
-        companies = [r["company"] for r in conn.execute(
-            "SELECT DISTINCT company FROM jobs ORDER BY company").fetchall()]
+        # Company filter scoped to the current section (To apply / Applied), so
+        # it only lists companies with jobs there. Keep a stale selection visible.
+        companies = db.companies_for_stack(conn, stack)
+        if company and company not in companies:
+            companies = sorted(set(companies) | {company})
         last_run = conn.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         return render(request, "dashboard.html", jobs=jobs, q=q, company=company,
@@ -110,7 +115,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             (job_id,)).fetchall()
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
-                      profile_fields=profile.all_fields(conn))
+                      profile_fields=profile.panel_fields(conn))
 
     # ----------------------------------------------------------- referrals
     @app.get("/jobs/{job_id}/referrals", response_class=HTMLResponse)
@@ -165,7 +170,33 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         detail = db.prep_module_detail(conn, module_slug)
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
+        detail["has_source"] = prep_sources.available(root, detail["module"]["source_refs"])
         return render(request, "prep_module.html", **detail)
+
+    @app.get("/prep/module/{module_slug}/source", response_class=HTMLResponse)
+    def prep_module_source(request: Request, module_slug: str):
+        row = conn.execute(
+            """SELECT m.*, t.slug AS track_slug, t.title AS track_title
+               FROM prep_modules m JOIN prep_tracks t ON t.id = m.track_id
+               WHERE m.slug = ?""", (module_slug,)).fetchone()
+        if row is None:
+            return RedirectResponse("/prep", status_code=303)
+        info = prep_sources.source_for(root, row["source_refs"])
+        text = ""
+        if info and info["has_text"]:
+            text = Path(info["text_path"]).read_text(errors="ignore")
+        return render(request, "prep_source.html", module=dict(row), info=info, text=text)
+
+    @app.get("/prep/book/{book_key}")
+    def prep_book(book_key: str):
+        pdf = prep_sources.pdf_path(root, book_key)
+        if pdf is None:
+            return JSONResponse(
+                {"error": "book PDF not available locally (kept in prep_work/)"},
+                status_code=404)
+        # Inline so the browser's PDF viewer honours the #page=N anchor.
+        return FileResponse(str(pdf), media_type="application/pdf",
+                            headers={"Content-Disposition": "inline"})
 
     @app.get("/prep/module/{module_slug}/lesson/{lesson_slug}", response_class=HTMLResponse)
     def prep_lesson(request: Request, module_slug: str, lesson_slug: str):
@@ -182,8 +213,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             takeaways = json.loads(lesson.get("key_takeaways") or "[]")
         except (ValueError, TypeError):
             takeaways = []
+        mod = conn.execute("SELECT source_refs FROM prep_modules WHERE slug = ?",
+                           (module_slug,)).fetchone()
+        has_source = prep_sources.available(root, mod["source_refs"]) if mod else False
         return render(request, "prep_lesson.html", lesson=lesson,
-                      siblings=detail["siblings"], takeaways=takeaways)
+                      siblings=detail["siblings"], takeaways=takeaways,
+                      has_source=has_source)
 
     @app.post("/prep/lessons/{lesson_id}/state")
     def prep_set_lesson(lesson_id: int, state: str = Form(...),
@@ -237,6 +272,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         session = sessions.launch(job["application_id"], job["url"])
         return JSONResponse({"state": session.state})
 
+    @app.post("/jobs/{job_id}/refill")
+    def refill(job_id: int):
+        # Re-run auto-fill on this job's already-open tab (or open one if none).
+        job = db.job_with_application(conn, job_id)
+        if job is None or not job["url"]:
+            return JSONResponse({"error": "job or url missing"}, status_code=404)
+        session = sessions.refill(job["application_id"], job["url"])
+        return JSONResponse({"state": session.state})
+
     @app.get("/api/apply-status/{application_id}")
     def apply_status(application_id: int):
         status = sessions.status(application_id)  # includes the fill summary
@@ -244,6 +288,44 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                            (application_id,)).fetchone()
         status["application_status"] = row["status"] if row else "unknown"
         return JSONResponse(status)
+
+    @app.post("/api/apply-all")
+    def apply_all():
+        # Fill every job tab already open in the integrated browser.
+        return JSONResponse(sessions.apply_all())
+
+    @app.get("/api/apply-all-status")
+    def apply_all_status():
+        return JSONResponse({"sessions": sessions.all_statuses()})
+
+    @app.post("/api/prepare-top")
+    def prepare_top(n: int = 5):
+        # Pick the n best-fit applyable jobs and open+auto-fill a tab for each.
+        launched = []
+        for job in db.top_fit_to_apply(conn, n):
+            session = sessions.launch(job["application_id"], job["url"])
+            launched.append({"application_id": job["application_id"],
+                             "company": job["company"], "title": job["title"],
+                             "state": session.state})
+        return JSONResponse({"count": len(launched), "launched": launched})
+
+    @app.post("/applications/bulk-status")
+    async def bulk_status(request: Request):
+        # Batch-set status (e.g. "applied") for the checked rows, then return to
+        # the same filtered view so the rows move into the right section.
+        form = await request.form()
+        status = form.get("status", "applied")
+        ids = form.getlist("application_id")
+        if status in db.APP_STATUSES:
+            for raw in ids:
+                # Skip bad/stale ids (non-int, or an id with no application row →
+                # a FK IntegrityError) without aborting the rest of the batch.
+                try:
+                    db.set_application_status(conn, int(raw), status,
+                                              detail="bulk action", via="ui")
+                except (ValueError, TypeError, sqlite3.Error):
+                    continue
+        return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
     @app.post("/applications/{application_id}/status")
     def set_status(application_id: int, status: str = Form(...), note: str = Form("")):
@@ -327,6 +409,10 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             if name.endswith(".pdf"):
                 text = pdf_to_text(data)
                 (root / "data" / "resume.pdf").write_bytes(data)
+                # Remember the original filename so auto-apply attaches the
+                # resume under the same name the user uploaded.
+                (root / "data" / "resume.pdf.name").write_text(
+                    Path(file.filename or "resume.pdf").name)
             elif name.endswith((".txt", ".md")):
                 text = data.decode("utf-8", errors="replace").strip()
                 if len(text) < 100:
@@ -374,13 +460,22 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/profile", response_class=HTMLResponse)
     def profile_page(request: Request):
-        return render(request, "profile.html", fields=profile.all_fields(conn))
+        return render(request, "profile.html", fields=profile.all_fields(conn),
+                      field_options=profile.FIELD_OPTIONS)
 
     @app.post("/profile")
     async def save_profile(request: Request):
         form = await request.form()
         for field, value in form.items():
             profile.set_field(conn, field, str(value))
+        return RedirectResponse("/profile", status_code=303)
+
+    @app.post("/profile/from-resume")
+    def profile_from_resume():
+        # Fill empty profile fields from the resume; never clobbers manual edits.
+        resume = root / "data" / "resume.txt"
+        if resume.exists():
+            profile.populate_from_resume(conn, resume.read_text())
         return RedirectResponse("/profile", status_code=303)
 
     # ------------------------------------------------------ search config view

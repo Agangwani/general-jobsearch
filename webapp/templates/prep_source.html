@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ module.title }} — source chapter{% endblock %}
+{% block content %}
+
+<div class="crumb">
+  <a href="/prep">Prep</a> ›
+  <a href="/prep/track/{{ module.track_slug }}">{{ module.track_title }}</a> ›
+  <a href="/prep/module/{{ module.slug }}">{{ module.title }}</a> ›
+  Source
+</div>
+
+<header class="page-head">
+  <div>
+    <h1>{{ module.title }} — source chapter</h1>
+    <div class="muted src" style="margin-top:6px">{{ module.source_refs }}</div>
+  </div>
+  {% if info and info.has_pdf %}
+  <a class="btn btn-primary" target="_blank" rel="noopener"
+     href="/prep/book/{{ info.book }}{% if info.pdf_page %}#page={{ info.pdf_page }}{% endif %}">
+    Open {{ info.book_name }} (PDF){% if info.pdf_page %} · p.{{ info.pdf_page }}{% endif %} ↗
+  </a>
+  {% endif %}
+</header>
+
+{% if text %}
+<pre class="prep-source">{{ text }}</pre>
+{% else %}
+<p class="muted">
+  No extracted chapter text is available for this module
+  {%- if info and info.has_pdf %} — use the PDF link above to open the book.
+  {%- else %}. The source books live in <code>prep_work/</code> (kept local only).{% endif %}
+</p>
+{% endif %}
+
+{% endblock %}

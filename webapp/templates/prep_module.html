@@ -12,6 +12,10 @@
     <div class="subtitle muted">{{ module.summary }}</div>
     <div class="muted src" style="margin-top:6px">{{ module.source_refs }} · ~{{ module.est_minutes }} min</div>
   </div>
+  {% if has_source %}
+  <a class="btn btn-ghost" href="/prep/module/{{ module.slug }}/source"
+     title="Open the source book chapter this module was distilled from">📖 Open source chapter</a>
+  {% endif %}
 </header>
 
 <h2>Lessons</h2>

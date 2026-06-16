@@ -17,7 +17,7 @@
 
 <header class="page-head">
   <h1>
-    {% if stack == "applied" %}Applied{% elif stack == "to_apply" %}To apply{% else %}All jobs{% endif %}
+    {% if stack == "applied" %}Applied{% elif stack == "in_progress" %}In progress{% elif stack == "to_apply" %}To apply{% else %}All jobs{% endif %}
     <span class="muted">({{ jobs|length }})</span>
   </h1>
   {% if last_run %}
@@ -28,6 +28,19 @@
   {% endif %}
 </header>
 
+<div class="apply-all-bar">
+  <button class="btn btn-primary" id="prepare-top-btn"
+          title="Open and auto-fill the 5 best-fit jobs you haven't applied to yet. Never submits — you review and submit each.">
+    ★ Prepare top 5 applications
+  </button>
+  <button class="btn" id="apply-all-btn"
+          title="Auto-fill every job tab already open in the integrated browser. Never submits.">
+    ⚡ Fill all open tabs
+  </button>
+  <span class="muted" id="apply-all-summary"></span>
+  <ul class="apply-all-list" id="apply-all-list" hidden></ul>
+</div>
+
 <form class="filters" method="get" action="/">
   <input type="hidden" name="sort_by" value="{{ sort_by }}">
   <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
@@ -37,8 +50,9 @@
     {% for c in companies %}<option value="{{ c }}" {{ 'selected' if c == company }}>{{ c }}</option>{% endfor %}
   </select>
   <select name="stack">
-    <option value="">Both stacks</option>
+    <option value="">All</option>
     <option value="to_apply" {{ 'selected' if stack == 'to_apply' }}>To apply</option>
+    <option value="in_progress" {{ 'selected' if stack == 'in_progress' }}>In progress</option>
     <option value="applied" {{ 'selected' if stack == 'applied' }}>Applied</option>
   </select>
   <label class="check"><input type="checkbox" name="near_miss" value="1" {{ 'checked' if near_miss == '1' }}> near-miss</label>
@@ -53,9 +67,19 @@
   {% endif %}
 </form>
 
+<form method="post" action="/applications/bulk-status" id="bulk-form">
+  <input type="hidden" name="status" value="applied">
+  <div class="bulk-bar" id="bulk-bar"
+       style="position:sticky;top:0;z-index:5;display:none;gap:10px;align-items:center;
+              padding:8px 12px;margin-bottom:6px;background:var(--accent-soft,#eef);border-radius:6px">
+    <span id="bulk-count" class="muted"></span>
+    <button class="btn btn-primary" type="submit">Mark selected as applied →</button>
+  </div>
+
 <table class="jobs">
   <thead>
     <tr>
+      <th class="check-col" style="width:1%"><input type="checkbox" id="select-all" title="Select all"></th>
       <th><a class="sh{{ ' sa' if sort_by == 'fit' }}" href="{{ sort_href('fit') }}">Fit{{ sort_icon('fit') }}</a></th>
       <th><a class="sh{{ ' sa' if sort_by == 'company' }}" href="{{ sort_href('company') }}">Company{{ sort_icon('company') }}</a></th>
       <th><a class="sh{{ ' sa' if sort_by == 'title' }}" href="{{ sort_href('title') }}">Title{{ sort_icon('title') }}</a></th>
@@ -70,6 +94,7 @@
   <tbody>
   {% for j in jobs %}
     <tr class="{{ 'row-applied' if j.status in ('applied','confirmed','interviewing','offer') }}{{ ' row-dead' if j.status in ('rejected','withdrawn') }}">
+      <td class="check-col"><input type="checkbox" class="row-check" name="application_id" value="{{ j.application_id }}"></td>
       <td class="num">{{ '%.0f'|format(j.fit_score) if j.fit_score is not none else '—' }}</td>
       <td>{{ j.company }}</td>
       <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
@@ -82,19 +107,27 @@
         {% elif j.validation == 'mismatch' %}<span class="tag tag-amber">⚠</span>
         {% elif j.validation == 'stale' %}<span class="tag tag-red">✗ stale</span>{% endif %}
       </td>
-      <td><span class="status status-{{ j.status }}">{{ j.status.replace('_',' ') }}</span></td>
+      <td>
+        <select class="row-status status-{{ j.status }}" aria-label="Change status"
+                data-application-id="{{ j.application_id }}" title="Change status">
+          {% for s in all_statuses %}
+          <option value="{{ s }}" {{ 'selected' if s == j.status }}>{{ s.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+      </td>
       <td class="apply-cell">
         {% if j.url and j.status not in ('applied','confirmed','interviewing','offer') %}
-        <button class="btn btn-row" data-apply-btn data-compact="1"
+        <button type="button" class="btn btn-row" data-apply-btn data-compact="1"
                 data-job-id="{{ j.id }}" data-application-id="{{ j.application_id }}"
                 title="Open in the integrated browser and auto-fill — you review & submit">⚡ Auto-fill</button>
         {% endif %}
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="9" class="empty">Nothing here. Run the pipeline, then "Ingest latest run".</td></tr>
+    <tr><td colspan="10" class="empty">Nothing here. Run the pipeline, then "Ingest latest run".</td></tr>
   {% endfor %}
   </tbody>
 </table>
+</form>
 
 {% endblock %}
