@@ -23,7 +23,7 @@
 </header>
 
 {% if text %}
-<pre class="prep-source">{{ text }}</pre>
+<article class="lesson-body prep-source">{{ text | prep_markdown }}</article>
 {% else %}
 <p class="muted">
   No extracted chapter text is available for this module

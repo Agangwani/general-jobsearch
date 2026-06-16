@@ -31,6 +31,12 @@ from .textfmt import description_html, prep_markdown
 HERE = Path(__file__).parent
 
 
+def _safe_next(value: str) -> str:
+    """Keep post-action redirects on this site — reject absolute URLs and
+    scheme-relative (``//host``) values that could send the user off-origin."""
+    return value if value.startswith("/") and not value.startswith("//") else "/prep"
+
+
 def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="jobsearch UI")
     db_path = db_path or root / "data" / "jobsearch.db"
@@ -66,6 +72,9 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     templates.env.filters["qp"] = quote_plus
     templates.env.filters["description_html"] = description_html
     templates.env.filters["prep_markdown"] = prep_markdown
+    # Cache-bust the stylesheet by file mtime so CSS edits show up without a
+    # manual hard-refresh (StaticFiles otherwise lets browsers serve it stale).
+    templates.env.globals["css_v"] = str(int((HERE / "static" / "app.css").stat().st_mtime))
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
@@ -184,7 +193,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         info = prep_sources.source_for(root, row["source_refs"])
         text = ""
         if info and info["has_text"]:
-            text = Path(info["text_path"]).read_text(errors="ignore")
+            text = prep_sources.chapter_markdown(info["text_path"])
         return render(request, "prep_source.html", module=dict(row), info=info, text=text)
 
     @app.get("/prep/book/{book_key}")
@@ -227,7 +236,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             db.set_lesson_state(conn, lesson_id, state, notes=notes)
         except ValueError:
             pass
-        return RedirectResponse(next, status_code=303)
+        return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.post("/prep/problems/{problem_id}/state")
     def prep_set_problem(problem_id: int, state: str = Form(...),
@@ -236,7 +245,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             db.set_problem_state(conn, problem_id, state)
         except ValueError:
             pass
-        return RedirectResponse(next, status_code=303)
+        return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.get("/prep/module/{module_slug}/ctci/{problem_slug}", response_class=HTMLResponse)
     def prep_ctci_problem(request: Request, module_slug: str, problem_slug: str):
@@ -261,7 +270,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes)
         except ValueError:
             pass
-        return RedirectResponse(next, status_code=303)
+        return RedirectResponse(_safe_next(next), status_code=303)
 
     # --------------------------------------------------------------- actions
     @app.post("/jobs/{job_id}/apply")
@@ -403,10 +412,17 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.post("/resume/upload")
     async def upload_resume(file: UploadFile = File(...)):
-        data = await file.read()
+        max_bytes = 10 * 1024 * 1024  # cap the read so a huge upload can't OOM us
+        data = await file.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            return RedirectResponse(
+                f"/resume?error={quote_plus('file too large (max 10 MB)')}",
+                status_code=303)
         name = (file.filename or "").lower()
         try:
             if name.endswith(".pdf"):
+                if not data.startswith(b"%PDF"):
+                    raise ValueError("that file isn't a valid PDF")
                 text = pdf_to_text(data)
                 (root / "data" / "resume.pdf").write_bytes(data)
                 # Remember the original filename so auto-apply attaches the

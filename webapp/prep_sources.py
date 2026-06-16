@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .prep_render import to_markdown
+
 # book key → display name + glob for the local PDF (globbed to dodge the unicode
 # punctuation in the DDIA filename).
 BOOKS: dict[str, dict] = {
@@ -93,3 +95,18 @@ def available(root: Path, source_refs: str) -> bool:
     """True when there's a chapter text or a local PDF to open."""
     info = source_for(root, source_refs)
     return bool(info and (info["has_text"] or info["has_pdf"]))
+
+
+def chapter_markdown(text_path: str | Path) -> str:
+    """Clean Markdown for a chapter: the cached ``.md`` if present, otherwise
+    render it from the raw ``.txt`` and cache it next to the source."""
+    txt = Path(text_path)
+    md = txt.with_suffix(".md")
+    if md.exists():
+        return md.read_text(errors="ignore")
+    out = to_markdown(txt.read_text(errors="ignore"), txt.name.split("_", 1)[0])
+    try:
+        md.write_text(out)
+    except OSError:
+        pass
+    return out
