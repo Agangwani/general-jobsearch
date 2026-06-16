@@ -11,7 +11,7 @@ from .fetchers import BROWSER_FETCHERS, FETCHERS
 from .filters import MATCH, NEAR_LOCATION, NEAR_TITLE, JobFilter, build_funnel
 from .http import make_session
 from .models import Company, FetchError, JobPosting
-from .report import render_markdown, write_reports
+from .report import render_markdown, write_reports, write_run_log
 from .scoring import apply_recency, rank_companies, score_jobs
 from .state import load_seen, mark_new, update_seen
 from .validation import (
@@ -99,6 +99,51 @@ def dedupe(jobs: list[JobPosting]) -> list[JobPosting]:
     return unique
 
 
+def _build_runlog(targeting, resume_text, is_sample, settings, companies,
+                  all_jobs, jobs, near_miss, company_fit, errors) -> dict:
+    """Assemble the structured run record written to reports/run-log.json."""
+    from datetime import datetime, timezone
+
+    enabled = [c for c in companies if c.enabled]
+    fetched_by_company: dict[str, int] = {}
+    for job in all_jobs:
+        fetched_by_company[job.company] = fetched_by_company.get(job.company, 0) + 1
+    errored = {e.company for e in errors}
+    zero_fetch = sorted(c.name for c in enabled
+                        if c.name not in fetched_by_company and c.name not in errored)
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "resume": {
+            "source": "sample" if is_sample else settings.get("resume", "data/resume.txt"),
+            "chars": len(resume_text),
+        },
+        "targeting": targeting,
+        "search": {
+            "query": settings["search"].get("query", ""),
+            "locations": settings["search"].get("locations", []),
+        },
+        "companies": {
+            "enabled": len(enabled),
+            "with_postings": sorted(fetched_by_company),
+            "fetched_by_company": dict(sorted(
+                fetched_by_company.items(), key=lambda kv: -kv[1])),
+            "zero_fetch": zero_fetch,
+            "errored": [{"company": e.company, "error": e.error[:300]} for e in errors],
+        },
+        "totals": {
+            "fetched": len(all_jobs),
+            "matched": len(jobs),
+            "near_miss": len(near_miss),
+        },
+        "company_fit": dict(sorted(company_fit.items(), key=lambda kv: -kv[1])),
+        "top_jobs": [
+            {"company": j.company, "title": j.title, "location": j.location,
+             "fit": j.fit_score, "rank_score": j.rank_score}
+            for j in jobs[:30]
+        ],
+    }
+
+
 def _write_role_profile(root: Path, settings: dict, profile) -> None:
     """Persist the derived profile so the UI / report can show what the run
     targeted (data/role_profile.json, gitignored)."""
@@ -129,11 +174,23 @@ def run(root: Path) -> int:
     if profile:
         settings["search"] = apply_profile(settings["search"], profile)
         _write_role_profile(root, settings, profile)
+        targeting = {
+            "occupations": profile.occupations,
+            "query": profile.query,
+            "seniority": profile.seniority,
+            "matched_via": profile.matched_via,
+            "skills": profile.skills,
+            "title_include": len(profile.title_include),
+            "title_exclude": len(profile.title_exclude),
+            "scores": profile.scores,
+        }
         print(f"Role profile [{profile.matched_via}]: {', '.join(profile.occupations)} "
               f"({profile.seniority}) — query '{profile.query}', "
               f"{len(profile.title_include)} title patterns. "
               f"Relevant skills: {', '.join(profile.skills[:10])}", file=sys.stderr)
     else:
+        targeting = {"mode": "manual/low-confidence",
+                     "query": settings["search"].get("query", "")}
         print("Role targeting off (manual or low-confidence match) — using the "
               "title filters in config/settings.yaml.", file=sys.stderr)
 
@@ -206,9 +263,15 @@ def run(root: Path) -> int:
         near_miss=near_miss,
         funnel=funnel,
         cluster_names=cluster_names,
+        targeting=targeting,
     )
     out_dir = root / settings["output"].get("reports_dir", "reports")
     written = write_reports(out_dir, markdown, jobs, company_fit, near_miss=near_miss, funnel=funnel)
+
+    runlog = _build_runlog(
+        targeting, resume_text, is_sample, settings, companies, all_jobs,
+        jobs, near_miss, company_fit, errors)
+    written.append(write_run_log(out_dir, runlog))
 
     request_path = write_validation_request(jobs, near_miss, out_dir / "validation-request.md")
     written.append(request_path)

@@ -65,10 +65,12 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
 
     now = db.utcnow()
     counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    report_keys: set[str] = set()
     for raw in list(report.get("jobs", [])) + list(report.get("near_miss", [])):
         record = _to_record(raw, descriptions)
         if record is None:
             continue
+        report_keys.add(record["key"])
         outcome = db.upsert_job(conn, record, now=now)
         counts[outcome] += 1
 
@@ -81,4 +83,25 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     conn.commit()
     print(f"Ingest: {counts['inserted']} inserted, {counts['updated']} patched, "
           f"{counts['unchanged']} unchanged", file=sys.stderr)
+
+    # Diagnostic: the dashboard shows every job ever ingested, not just this
+    # run's. If a previous run targeted different roles (e.g. SWE) those jobs
+    # persist in the to-apply stack. Surface how many so a "why am I still
+    # seeing old roles?" result is explained rather than mysterious.
+    stale = _count_stale_to_apply(conn, report_keys)
+    if stale:
+        print(f"Note: {stale} unapplied job(s) in the dashboard are NOT in this "
+              "report — they're from earlier runs (possibly a different role "
+              "target). Filter the dashboard by company/score, or clear them, "
+              "to focus on this run.", file=sys.stderr)
+    counts["stale_unapplied"] = stale
     return counts
+
+
+def _count_stale_to_apply(conn, report_keys: set[str]) -> int:
+    """Count not-applied jobs in the DB that are absent from the current
+    report — i.e. carried over from earlier runs."""
+    rows = conn.execute(
+        "SELECT j.key FROM jobs j JOIN applications a ON a.job_id = j.id "
+        "WHERE a.status = 'not_applied'").fetchall()
+    return sum(1 for r in rows if r["key"] not in report_keys)
