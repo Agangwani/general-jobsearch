@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+**/__pycache__
+*.pyc
+.pytest_cache
+tests
+docs
+# Personal runtime data — never bake into the image. Resume/profile/DB get
+# uploaded at runtime through the UI instead.
+data/*
+!data/.gitkeep
+!data/sample_resume.txt
+reports/*
+!reports/.gitkeep

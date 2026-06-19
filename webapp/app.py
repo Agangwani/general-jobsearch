@@ -6,14 +6,17 @@ design: the database holds profile PII and application history.
 
 from __future__ import annotations
 
+import base64
 import json
+import os
+import secrets
 import sqlite3
 from pathlib import Path
 from urllib.parse import quote_plus
 
 import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -39,6 +42,31 @@ def _safe_next(value: str) -> str:
 
 def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="jobsearch UI")
+
+    # Optional HTTP Basic-auth gate. Off by default (local-only use needs no
+    # password); set JOBSEARCH_BASIC_AUTH_PASSWORD to require credentials, which
+    # is what the public cloud deploy does so the unauthenticated UI — profile
+    # PII, resume, Gmail, browser control — isn't exposed to anyone with the URL.
+    _auth_pw = os.environ.get("JOBSEARCH_BASIC_AUTH_PASSWORD")
+    if _auth_pw:
+        _auth_user = os.environ.get("JOBSEARCH_BASIC_AUTH_USER", "demo")
+
+        @app.middleware("http")
+        async def _basic_auth(request: Request, call_next):
+            header = request.headers.get("authorization", "")
+            if header.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(header[6:]).decode("utf-8")
+                    user, _, pw = decoded.partition(":")
+                except (ValueError, UnicodeDecodeError):
+                    user = pw = ""
+                if (secrets.compare_digest(user, _auth_user)
+                        and secrets.compare_digest(pw, _auth_pw)):
+                    return await call_next(request)
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="jobsearch"'},
+            )
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
