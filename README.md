@@ -131,6 +131,25 @@ yourself.
 If Chromium isn't installed the run still works — browser-scraped boards are
 skipped with an actionable note in the report instead of failing the run.
 
+### Company interview questions (LeetCode)
+
+The **Companies** tab tracks *what each company actually asks* on LeetCode.
+Online, every big employer is known for a recognisable set of problems
+(Amazon → LRU Cache / Number of Islands, Meta → Min Remove to Make Valid
+Parentheses, …). The app ships a curated, **offline** set per company and
+shows them ranked by how often that company asks them, with mark-solved /
+attempted tracking that persists across runs (`/companies` → pick a company).
+Every **job detail page** also surfaces the top questions for that posting's
+company, so the prep is right next to the application.
+
+Hit **⟳ Refresh questions** on a company to pull a larger, frequency-measured
+list from a community "company-wise LeetCode" dataset (one CSV per company).
+It's network-optional — exactly like a broken board never sinks a run: if the
+dataset can't be reached the bundled list stays and the reason shows in the
+UI. Point it at a different dataset or time window under `company_questions:`
+in `config/settings.yaml`. Bundled content lives in
+`jobsearch/company_questions/` (curated set + the refresh loader).
+
 > **Note:** ATS board slugs in `companies.yaml` are best-effort and companies
 > migrate ATS vendors over time. Run `python -m jobsearch verify` (or just
 > read the "needs attention" section of the daily report) and fix or remove
@@ -189,6 +208,7 @@ data/companies.discovered.yaml  generated registry (discover-companies), gitigno
 data/seen_jobs.json      state: job IDs seen on previous runs
 jobsearch/fetchers/      one adapter per ATS / company API
 jobsearch/sources/       company-lead sources: generalized boards (Muse, HN, Adzuna)
+jobsearch/company_questions/  curated company→LeetCode sets + the refresh loader
 jobsearch/role_profile.py       resume → occupation matching (TF-IDF / MiniLM)
 jobsearch/company_discovery.py  resume-tailored registry generation
 tools/build_occupations.py      expand config/occupations.yaml from O*NET

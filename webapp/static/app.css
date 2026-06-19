@@ -768,6 +768,14 @@ a.card:hover {
 .diff-medium { color: var(--amber); font-weight: 600; }
 .diff-hard { color: var(--red); font-weight: 600; }
 
+/* --- company question filters + frequency bar ----------------------------- */
+.filter-bar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: var(--sp-3) 0; }
+a.chip { text-decoration: none; }
+a.chip:hover { border-color: var(--accent); color: var(--text); }
+.chip-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); font-weight: 600; }
+.freq-bar { height: 7px; width: 84px; border-radius: var(--r-pill); background: var(--bg-inset); overflow: hidden; }
+.freq-bar > span { display: block; height: 100%; background: var(--accent); border-radius: var(--r-pill); }
+
 /* =====================================================  PREP READING VIEW  ===
    A Stripe-docs-grade long-form reading experience: comfortable ~65ch measure,
    generous leading, real heading rhythm, and refined code blocks.

@@ -271,6 +271,54 @@ CREATE TABLE IF NOT EXISTS prep_meta (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- ------------------------------------- company-specific LeetCode questions ---
+-- "What does <company> actually ask?" — one row per (company, problem).
+-- Seeded from the bundled curated set (jobsearch/company_questions) on every
+-- UI start, and refreshed/extended from a community dataset via the
+-- "⟳ Refresh questions" button. Solve/attempt progress lives in a separate
+-- table keyed by row id, so re-seeding or refreshing never wipes it.
+CREATE TABLE IF NOT EXISTS company_problems (
+    id                INTEGER PRIMARY KEY,
+    company           TEXT NOT NULL,            -- display name ("Goldman Sachs")
+    company_key       TEXT NOT NULL,            -- normalized match key ("goldman sachs")
+    leetcode_number   INTEGER,
+    leetcode_slug     TEXT NOT NULL,
+    title             TEXT NOT NULL,
+    difficulty        TEXT NOT NULL DEFAULT 'medium',  -- easy | medium | hard
+    frequency         REAL NOT NULL DEFAULT 0,  -- 0–100; how often this company asks it
+    timeframe         TEXT DEFAULT '',          -- curated | alltime | 6months | ...
+    topics            TEXT DEFAULT '',
+    url               TEXT DEFAULT '',
+    source            TEXT DEFAULT 'bundled',   -- bundled | github_csv | ...
+    first_seen_at     TEXT NOT NULL,
+    last_refreshed_at TEXT NOT NULL,
+    UNIQUE(company_key, leetcode_slug)
+);
+CREATE INDEX IF NOT EXISTS idx_company_problems_key ON company_problems(company_key);
+
+CREATE TABLE IF NOT EXISTS company_problem_progress (
+    id                 INTEGER PRIMARY KEY,
+    company_problem_id INTEGER UNIQUE NOT NULL REFERENCES company_problems(id),
+    state              TEXT NOT NULL DEFAULT 'not_started',  -- not_started | attempted | solved
+    notes              TEXT DEFAULT '',
+    solved_at          TEXT,
+    updated_at         TEXT NOT NULL
+);
+
+-- Per-company (or all-company) refresh state, polled by the UI while a
+-- background pull runs — mirrors referral_runs.
+CREATE TABLE IF NOT EXISTS company_refresh_runs (
+    id          INTEGER PRIMARY KEY,
+    company_key TEXT DEFAULT '',         -- '' = all companies
+    state       TEXT NOT NULL,           -- running | done | error
+    detail      TEXT DEFAULT '',
+    added       INTEGER NOT NULL DEFAULT 0,
+    updated     INTEGER NOT NULL DEFAULT 0,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_company_refresh_key ON company_refresh_runs(company_key);
 """
 
 LESSON_STATES = ("not_started", "in_progress", "completed")
@@ -842,3 +890,198 @@ def prep_overall_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "problems_total": 0, "problems_done": 0,
         "ctci_total": 0, "ctci_done": 0,
     }
+
+
+# ----------------------------------------------- company LeetCode questions ---
+def upsert_company_problem(conn: sqlite3.Connection, rec: dict,
+                           now: str | None = None) -> str:
+    """Insert or refresh one company problem (keyed by company_key + slug).
+    Returns 'inserted' or 'updated'. Commits are batched by the caller."""
+    now = now or utcnow()
+    row = conn.execute(
+        "SELECT id FROM company_problems WHERE company_key = ? AND leetcode_slug = ?",
+        (rec["company_key"], rec["leetcode_slug"])).fetchone()
+    params = {
+        "company": rec["company"], "company_key": rec["company_key"],
+        "leetcode_number": rec.get("leetcode_number"),
+        "leetcode_slug": rec["leetcode_slug"], "title": rec["title"],
+        "difficulty": rec.get("difficulty", "medium"),
+        "frequency": float(rec.get("frequency", 0) or 0),
+        "timeframe": rec.get("timeframe", ""), "topics": rec.get("topics", ""),
+        "url": rec.get("url", ""), "source": rec.get("source", "bundled"),
+    }
+    if row is None:
+        conn.execute(
+            """INSERT INTO company_problems
+                 (company, company_key, leetcode_number, leetcode_slug, title,
+                  difficulty, frequency, timeframe, topics, url, source,
+                  first_seen_at, last_refreshed_at)
+               VALUES (:company, :company_key, :leetcode_number, :leetcode_slug,
+                       :title, :difficulty, :frequency, :timeframe, :topics,
+                       :url, :source, :now, :now)""",
+            {**params, "now": now})
+        return "inserted"
+    conn.execute(
+        """UPDATE company_problems SET
+             company = :company, leetcode_number = :leetcode_number,
+             title = :title, difficulty = :difficulty, frequency = :frequency,
+             timeframe = :timeframe, topics = :topics, url = :url,
+             source = :source, last_refreshed_at = :now
+           WHERE id = :id""",
+        {**params, "now": now, "id": row["id"]})
+    return "updated"
+
+
+def seed_company_problems(conn: sqlite3.Connection, records: list[dict]) -> dict:
+    """Bulk-upsert curated/bundled company problems. Idempotent and
+    progress-preserving (upsert by natural key keeps ids). Returns counts."""
+    now = utcnow()
+    inserted = updated = 0
+    for rec in records:
+        if upsert_company_problem(conn, rec, now) == "inserted":
+            inserted += 1
+        else:
+            updated += 1
+    conn.commit()
+    return {"inserted": inserted, "updated": updated, "total": len(records)}
+
+
+def companies_overview(conn: sqlite3.Connection) -> list[dict]:
+    """One row per company with question + solved counts, busiest first.
+    Drives the /companies landing."""
+    rows = conn.execute("""
+        SELECT cp.company_key,
+               MIN(cp.company) AS company,
+               COUNT(*) AS problem_count,
+               SUM(CASE WHEN cp.difficulty = 'easy' THEN 1 ELSE 0 END) AS easy,
+               SUM(CASE WHEN cp.difficulty = 'medium' THEN 1 ELSE 0 END) AS medium,
+               SUM(CASE WHEN cp.difficulty = 'hard' THEN 1 ELSE 0 END) AS hard,
+               SUM(CASE WHEN pr.state = 'solved' THEN 1 ELSE 0 END) AS solved,
+               MAX(cp.last_refreshed_at) AS last_refreshed_at,
+               MAX(CASE WHEN cp.source != 'bundled' THEN 1 ELSE 0 END) AS refreshed
+        FROM company_problems cp
+        LEFT JOIN company_problem_progress pr ON pr.company_problem_id = cp.id
+        GROUP BY cp.company_key
+        ORDER BY problem_count DESC, company COLLATE NOCASE
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def company_problems_for(conn: sqlite3.Connection, company_key: str,
+                         difficulty: str = "", limit: int = 0) -> list[dict]:
+    """A company's questions (most-asked first) with solve state joined."""
+    sql = ["""SELECT cp.*, COALESCE(pr.state, 'not_started') AS state
+              FROM company_problems cp
+              LEFT JOIN company_problem_progress pr ON pr.company_problem_id = cp.id
+              WHERE cp.company_key = ?"""]
+    args: list = [company_key]
+    if difficulty in ("easy", "medium", "hard"):
+        sql.append("AND cp.difficulty = ?")
+        args.append(difficulty)
+    sql.append("ORDER BY cp.frequency DESC, cp.leetcode_number")
+    if limit:
+        sql.append("LIMIT ?")
+        args.append(limit)
+    return [dict(r) for r in conn.execute(" ".join(sql), args).fetchall()]
+
+
+def company_problem_count(conn: sqlite3.Connection, company_key: str) -> int:
+    """Row count for a company without loading/dict-ifying every problem —
+    used where only the total is needed (page CTAs, the unfiltered count)."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM company_problems WHERE company_key = ?",
+        (company_key,)).fetchone()
+    return row["n"] if row else 0
+
+
+def company_display_name(conn: sqlite3.Connection, company_key: str) -> str:
+    row = conn.execute(
+        "SELECT company FROM company_problems WHERE company_key = ? LIMIT 1",
+        (company_key,)).fetchone()
+    return row["company"] if row else company_key.title()
+
+
+def set_company_problem_state(conn: sqlite3.Connection, problem_id: int,
+                              state: str, notes: str | None = None) -> None:
+    if state not in PROBLEM_STATES:
+        raise ValueError(f"invalid company problem state {state!r}")
+    now = utcnow()
+    row = conn.execute(
+        "SELECT id FROM company_problem_progress WHERE company_problem_id = ?",
+        (problem_id,)).fetchone()
+    solved_at = now if state == "solved" else None
+    if row is None:
+        conn.execute(
+            """INSERT INTO company_problem_progress
+                 (company_problem_id, state, notes, solved_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (problem_id, state, notes or "", solved_at, now))
+    else:
+        sets = ["state = ?", "updated_at = ?"]
+        args: list = [state, now]
+        if notes is not None:
+            sets.append("notes = ?")
+            args.append(notes)
+        if state == "solved":
+            sets.append("solved_at = ?")
+            args.append(now)
+        args.append(problem_id)
+        conn.execute(
+            f"UPDATE company_problem_progress SET {', '.join(sets)} "
+            "WHERE company_problem_id = ?", args)
+    conn.commit()
+
+
+def company_overall_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Headline numbers for the nav badge — distinct companies + solved/total."""
+    row = conn.execute("""
+        SELECT
+          (SELECT COUNT(DISTINCT company_key) FROM company_problems) AS companies,
+          (SELECT COUNT(*) FROM company_problems) AS problems_total,
+          (SELECT COUNT(*) FROM company_problem_progress WHERE state = 'solved')
+            AS problems_done
+    """).fetchone()
+    return dict(row) if row else {"companies": 0, "problems_total": 0,
+                                  "problems_done": 0}
+
+
+# --- company question refresh runs (mirror referral_runs) -------------------
+def start_company_refresh(conn: sqlite3.Connection, company_key: str = "") -> int:
+    cur = conn.execute(
+        "INSERT INTO company_refresh_runs (company_key, state, started_at) "
+        "VALUES (?, 'running', ?)", (company_key, utcnow()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def finish_company_refresh(conn: sqlite3.Connection, run_id: int, *,
+                           added: int = 0, updated: int = 0,
+                           detail: str = "") -> None:
+    conn.execute(
+        """UPDATE company_refresh_runs
+             SET state = 'done', added = ?, updated = ?, detail = ?,
+                 finished_at = ?
+           WHERE id = ?""",
+        (added, updated, detail, utcnow(), run_id))
+    conn.commit()
+
+
+def fail_company_refresh(conn: sqlite3.Connection, run_id: int,
+                         detail: str) -> None:
+    conn.execute(
+        "UPDATE company_refresh_runs SET state = 'error', detail = ?, "
+        "finished_at = ? WHERE id = ?", (detail[:500], utcnow(), run_id))
+    conn.commit()
+
+
+def latest_company_refresh(conn: sqlite3.Connection,
+                           company_key: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM company_refresh_runs WHERE company_key IN (?, '') "
+        "ORDER BY id DESC LIMIT 1", (company_key,)).fetchone()
+
+
+def company_refresh_running(conn: sqlite3.Connection, company_key: str) -> bool:
+    """True if a refresh covering this company (specific or all) is in flight."""
+    row = latest_company_refresh(conn, company_key)
+    return bool(row and row["state"] == "running")

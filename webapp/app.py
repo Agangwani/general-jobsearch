@@ -23,7 +23,9 @@ from jobsearch.referrals import store as referrals_store
 from jobsearch.referrals.sources.linkedin import LinkedinDiscoverer
 from jobsearch.resume import extract_keywords, pdf_to_text
 
-from . import db, emailmod, gmail, ingest, prep_sources, profile
+from jobsearch.company_questions import canonical_key
+
+from . import company_questions, db, emailmod, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -47,6 +49,9 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     # and idempotent (a content hash skips the work when nothing changed); user
     # progress lives in separate tables and is never wiped.
     seed_into_db(conn)
+    # Load the curated company → LeetCode question sets (idempotent; user
+    # solve-progress in company_problem_progress is never wiped).
+    company_questions.seed_bundled(conn)
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
                                data_dir=root / "data")
     runner = PipelineRunner(root)
@@ -80,6 +85,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
         ctx.setdefault("counts", db.stack_counts(conn))
         ctx.setdefault("prep_counts", db.prep_overall_counts(conn))
+        ctx.setdefault("company_counts", db.company_overall_counts(conn))
         return templates.TemplateResponse(request, template, ctx)
 
     # ------------------------------------------------------------ dashboard
@@ -128,9 +134,16 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         emails = conn.execute(
             "SELECT * FROM email_messages WHERE job_id = ? ORDER BY sent_at DESC",
             (job_id,)).fetchall()
+        # The LeetCode questions this company is known to ask (top few), plus a
+        # link to the full company page. Empty for companies not in the registry.
+        company_key = canonical_key(job["company"])
+        lc_questions = db.company_problems_for(conn, company_key, limit=6)
+        lc_total = db.company_problem_count(conn, company_key)
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
-                      profile_fields=profile.panel_fields(conn))
+                      profile_fields=profile.panel_fields(conn),
+                      lc_questions=lc_questions, lc_total=lc_total,
+                      company_key=company_key)
 
     # ----------------------------------------------------------- referrals
     @app.get("/jobs/{job_id}/referrals", response_class=HTMLResponse)
@@ -277,6 +290,68 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
+
+    # ----------------------------------------------- company LeetCode questions
+    @app.get("/companies", response_class=HTMLResponse)
+    def companies_home(request: Request):
+        # render() already injects company_counts (used by the nav badge and the
+        # page header), so no need to recompute it here.
+        return render(request, "companies.html",
+                      companies=db.companies_overview(conn))
+
+    @app.get("/companies/{company_key}", response_class=HTMLResponse)
+    def company_detail(request: Request, company_key: str, difficulty: str = ""):
+        problems = db.company_problems_for(conn, company_key, difficulty=difficulty)
+        # The empty state (unknown company / no problems) is handled in-template
+        # with a "⟳ Refresh questions" CTA, so no special-casing is needed here.
+        return render(request, "company.html",
+                      company=db.company_display_name(conn, company_key),
+                      company_key=company_key, problems=problems,
+                      difficulty=difficulty,
+                      run=db.latest_company_refresh(conn, company_key),
+                      is_running=db.company_refresh_running(conn, company_key),
+                      all_problem_count=db.company_problem_count(conn, company_key))
+
+    def _start_refresh(company: str, company_key: str) -> bool:
+        if db.company_refresh_running(conn, company_key):
+            return False
+        import threading
+
+        def _go():
+            worker_conn = db.connect(db_path)
+            try:
+                company_questions.run_refresh(worker_conn, root, company, company_key)
+            finally:
+                worker_conn.close()
+        threading.Thread(target=_go, daemon=True).start()
+        return True
+
+    @app.post("/companies/{company_key}/refresh")
+    def refresh_company(company_key: str, company: str = Form("")):
+        name = company or db.company_display_name(conn, company_key)
+        _start_refresh(name, company_key)
+        return RedirectResponse(f"/companies/{company_key}", status_code=303)
+
+    @app.post("/company-problems/{problem_id}/state")
+    def set_company_problem(problem_id: int, state: str = Form(...),
+                            next: str = Form("/companies")):
+        try:
+            db.set_company_problem_state(conn, problem_id, state)
+        except (ValueError, sqlite3.Error):
+            # Bad state value, or a stale id whose problem row is gone (the
+            # progress FK fails) — ignore and redirect rather than 500.
+            pass
+        return RedirectResponse(_safe_next(next), status_code=303)
+
+    @app.get("/api/companies/{company_key}/refresh-status")
+    def company_refresh_status(company_key: str):
+        run = db.latest_company_refresh(conn, company_key)
+        return JSONResponse({
+            "running": db.company_refresh_running(conn, company_key),
+            "state": run["state"] if run else "",
+            "detail": run["detail"] if run else "",
+            "problem_count": len(db.company_problems_for(conn, company_key)),
+        })
 
     # --------------------------------------------------------------- actions
     @app.post("/jobs/{job_id}/apply")
