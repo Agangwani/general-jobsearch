@@ -14,6 +14,37 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Make sure the AWS CLI and a running Docker daemon are available. No-ops on a
+# dev laptop that already has both; bootstraps them in a fresh Claude Code web
+# container (Docker stopped, CLI absent) so this script "just runs" there too.
+ensure_prereqs() {
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "· installing AWS CLI v2…"
+    local tmp; tmp="$(mktemp -d)"
+    curl -sf "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmp/awscliv2.zip"
+    (cd "$tmp" && unzip -q awscliv2.zip && sudo ./aws/install >/dev/null)
+    rm -rf "$tmp"
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    if command -v dockerd >/dev/null 2>&1; then
+      echo "· starting Docker daemon…"
+      sudo dockerd >/tmp/dockerd.log 2>&1 &
+      for _ in $(seq 1 15); do docker info >/dev/null 2>&1 && break; sleep 1; done
+    fi
+    docker info >/dev/null 2>&1 || {
+      echo "Docker isn't available. Start Docker (Docker Desktop locally) and retry." >&2
+      exit 1
+    }
+  fi
+}
+ensure_prereqs
+
+if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  echo "AWS credentials not found in the environment." >&2
+  echo "Set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION (see deploy/README.md)." >&2
+  exit 1
+fi
+
 APP_NAME="${APP_NAME:-jobsearch-mvp}"
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 ECR_REPO="${ECR_REPO:-$APP_NAME}"

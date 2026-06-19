@@ -42,9 +42,18 @@ your shell.
 
 ## 3. Deploy
 
+The script self-bootstraps: it installs the AWS CLI and starts Docker if they're
+missing, so it runs as-is both on a laptop and in a fresh Claude Code web
+session. Just make sure the session is on this branch and the AWS env vars
+(step 2) are set, then:
+
 ```bash
 JOBSEARCH_BASIC_AUTH_PASSWORD='pick-a-strong-password' ./deploy/aws-apprunner.sh
 ```
+
+> Running from a **new Claude Code web session**? Start it on this PR's branch
+> (`claude/aws-mvp-deploy-p2p1ir`) so these files are present, confirm your AWS
+> env secrets are configured, then just say "run the deploy."
 
 Omit the password and the script generates and prints one. When it finishes it
 prints a `https://<id>.<region>.awsapprunner.com/` link. Log in with user
