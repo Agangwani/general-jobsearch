@@ -56,6 +56,31 @@
          (Descriptions come from the local corpus snapshot of the run that found the job.)</p>
     {% endif %}
 
+    <h2>LeetCode questions {{ job.company }} asks</h2>
+    {% if lc_questions %}
+    <p class="muted">The problems {{ job.company }} is known to ask most often —
+       drill these before the interview.</p>
+    <table class="prob-table">
+      <thead><tr><th>#</th><th>Problem</th><th>Difficulty</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for p in lc_questions %}
+        <tr>
+          <td class="muted">{{ p.leetcode_number or '—' }}</td>
+          <td><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }} ↗</a></td>
+          <td class="diff-{{ p.difficulty }}">{{ p.difficulty }}</td>
+          <td><span class="state {{ p.state }}">{{ p.state|replace('_',' ') }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <a class="btn btn-ghost" href="/companies/{{ company_key|qp }}">
+      See all {{ lc_total }} {{ job.company }} questions →</a>
+    {% else %}
+    <p class="muted">No LeetCode questions tracked for {{ job.company }} yet.
+       <a href="/companies/{{ company_key|qp }}">Open the company page</a> and hit
+       <strong>⟳ Refresh questions</strong> to try pulling a list.</p>
+    {% endif %}
+
     <h2>History</h2>
     <ul class="timeline">
       {% for e in events %}

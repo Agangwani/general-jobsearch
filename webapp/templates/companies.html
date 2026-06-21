@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Company LeetCode Questions{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <div>
+    <h1>Company LeetCode Questions</h1>
+    <div class="subtitle muted">
+      The problems each company is known to ask most often, so you can drill the
+      right set before an interview. Ships with a curated list per company; hit
+      <strong>⟳ Refresh</strong> on a company to pull a larger, frequency-ranked
+      list from the community dataset.
+    </div>
+  </div>
+  <div class="actions">
+    <div class="muted">
+      {{ company_counts.companies }} companies · {{ company_counts.problems_done }}/{{ company_counts.problems_total }} solved
+    </div>
+  </div>
+</header>
+
+{% if companies %}
+<div class="prep-grid">
+  {% for c in companies %}
+  <a class="card" href="/companies/{{ c.company_key|qp }}">
+    <h3>{{ c.company }}{% if c.refreshed %} <span class="pill pill-green" title="Refreshed from the live dataset">live</span>{% endif %}</h3>
+    <div class="prog"><span style="width: {{ (c.solved / c.problem_count * 100) if c.problem_count else 0 }}%"></span></div>
+    <div class="meta">
+      <span><b>{{ c.problem_count }}</b> questions</span>
+      <span><b>{{ c.solved }}</b> solved</span>
+    </div>
+    <div class="meta muted">
+      <span class="diff-easy">{{ c.easy }} easy</span>
+      <span class="diff-medium">{{ c.medium }} med</span>
+      <span class="diff-hard">{{ c.hard }} hard</span>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">No company questions loaded yet. Restart the app to seed the
+   bundled set.</p>
+{% endif %}
+
+{% endblock %}
