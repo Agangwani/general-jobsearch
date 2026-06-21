@@ -3,26 +3,47 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>{% block title %}jobsearch{% endblock %}</title>
+  {#- Set the theme before first paint so there's no flash of the wrong mode. -#}
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css?v={{ css_v }}">
 </head>
 <body>
-<nav class="topnav">
-  <a class="brand" href="/">jobsearch</a>
+{%- set path = request.url.path if request else "" -%}
+<nav class="topnav" id="topnav">
+  <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>jobsearch</a>
   <a href="/?stack=to_apply">To apply <span class="pill">{{ counts.to_apply }}</span></a>
   <a href="/?stack=in_progress">In progress <span class="pill pill-amber">{{ counts.in_progress }}</span></a>
   <a href="/?stack=applied">Applied <span class="pill pill-green">{{ counts.applied }}</span></a>
-  <a href="/prep">Prep <span class="pill pill-amber">{{ prep_counts.lessons_done }}/{{ prep_counts.lessons_total }}</span></a>
-  <a href="/companies" title="Company-specific LeetCode questions">Companies <span class="pill">{{ company_counts.problems_done }}/{{ company_counts.problems_total }}</span></a>
-  <a href="/resume">Resume</a>
-  <a href="/profile">Profile</a>
-  <a href="/settings">Search config</a>
-  <a href="/emails">Email</a>
+  <span class="nav-divider" aria-hidden="true"></span>
+  <a href="/prep" class="{{ 'is-active' if path.startswith('/prep') }}">Prep <span class="pill pill-amber">{{ prep_counts.lessons_done }}/{{ prep_counts.lessons_total }}</span></a>
+  <a href="/resume" class="{{ 'is-active' if path == '/resume' }}">Resume</a>
+  <a href="/profile" class="{{ 'is-active' if path == '/profile' }}">Profile</a>
+  <a href="/settings" class="{{ 'is-active' if path == '/settings' }}">Search config</a>
+  <a href="/emails" class="{{ 'is-active' if path == '/emails' }}">Email</a>
+  <span class="nav-spacer"></span>
+  <button class="nav-btn theme-toggle" id="theme-toggle" type="button"
+          title="Toggle light / dark" aria-label="Toggle light or dark theme">
+    <span class="i-moon" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </span>
+    <span class="i-sun" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>
+    </span>
+  </button>
   <form method="post" action="/ingest" class="nav-ingest">
-    <button class="btn btn-ghost" title="Pull the latest pipeline report into the database">⟳ Ingest latest run</button>
+    <button class="btn btn-ghost" title="Pull the latest pipeline report into the database">⟳ Ingest</button>
   </form>
   <button class="btn btn-primary" id="run-pipeline" title="Fetch every board, score against your resume, and load the results">▶ Run pipeline</button>
 </nav>

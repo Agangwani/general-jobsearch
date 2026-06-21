@@ -41,7 +41,7 @@
 <h2>Tracks</h2>
 <div class="prep-grid">
   {% for t in tracks %}
-  <a class="card" href="/prep/track/{{ t.slug }}">
+  <a class="card" href="/prep/track/{{ t.slug }}" style="--i:{{ loop.index0 }}">
     <h3>{{ t.title }}</h3>
     <p class="desc">{{ t.description }}</p>
     <div class="prog"><span style="width: {{ (t.lessons_done / t.lesson_count * 100) if t.lesson_count else 0 }}%"></span></div>

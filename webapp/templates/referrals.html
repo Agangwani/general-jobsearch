@@ -2,23 +2,6 @@
 {% block title %}Referrals — {{ job.company }} — {{ job.title }}{% endblock %}
 {% block content %}
 
-<style>
-  /* Self-contained table styling so referrals don't depend on cross-page CSS. */
-  .referral-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-  .referral-table th, .referral-table td {
-    padding: .55rem .6rem; border-bottom: 1px solid var(--line, #e5e7eb);
-    vertical-align: top; text-align: left;
-  }
-  .referral-table th { font-size: .8rem; text-transform: uppercase;
-    color: var(--muted, #6b7280); letter-spacing: .04em; }
-  .referral-table .score { text-align: right; font-variant-numeric: tabular-nums;
-    font-weight: 500; width: 5.5rem; }
-  .referral-table .score-strong { font-weight: 700; }
-  .referral-table .headline { color: var(--muted, #4b5563); max-width: 32rem; }
-  .referral-table .row-actions { white-space: nowrap; }
-  .referral-banner { margin: .25rem 0 1rem; }
-</style>
-
 <header class="page-head">
   <div>
     <h1>Referrals for {{ job.title }}</h1>
