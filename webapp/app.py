@@ -25,7 +25,7 @@ from jobsearch.resume import extract_keywords, pdf_to_text
 
 from jobsearch.company_questions import canonical_key
 
-from . import company_questions, db, emailmod, gmail, ingest, prep_sources, profile
+from . import clusters, company_questions, db, emailmod, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -175,6 +175,35 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 worker_conn.close()
         threading.Thread(target=_go, daemon=True).start()
         return RedirectResponse(f"/jobs/{job_id}/referrals", status_code=303)
+
+    # ----------------------------------------------- fit clustering visualization
+    @app.get("/clusters", response_class=HTMLResponse)
+    def clusters_home(request: Request):
+        """High-level view: a 2-D map of every scored posting, coloured by the
+        K-means cluster it landed in, with the resume plotted in the same space
+        and each cluster's topic terms + resume-affinity called out."""
+        clustering = clusters.load_clustering(root)
+        ids_by_key = (db.job_ids_by_key(conn, (j["key"] for j in clustering["jobs"]))
+                      if clustering else {})
+        return render(request, "clusters.html", clustering=clustering,
+                      points=clusters.map_points(clustering, ids_by_key))
+
+    @app.get("/clusters/job/{job_id}", response_class=HTMLResponse)
+    def cluster_job(request: Request, job_id: int):
+        """Per-job view: exactly how this posting's fit score was built — the
+        cosine-similarity and cluster-affinity terms, the overlapping keywords
+        that drove the match, and where the posting sits on the map."""
+        job = db.job_with_application(conn, job_id)
+        if job is None:
+            return RedirectResponse("/clusters", status_code=303)
+        clustering = clusters.load_clustering(root)
+        breakdown = clusters.job_breakdown(clustering, job["key"])
+        cluster = clusters.cluster_by_id(clustering, breakdown["cluster"]) if breakdown else None
+        ids_by_key = (db.job_ids_by_key(conn, (j["key"] for j in clustering["jobs"]))
+                      if clustering else {})
+        return render(request, "cluster_job.html", job=job, clustering=clustering,
+                      breakdown=breakdown, cluster=cluster,
+                      points=clusters.map_points(clustering, ids_by_key))
 
     # ------------------------------------------------- software interview prep
     @app.get("/prep", response_class=HTMLResponse)

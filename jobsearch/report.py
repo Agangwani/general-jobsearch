@@ -275,6 +275,19 @@ def write_run_log(out_dir: Path, runlog: dict) -> Path:
     return json_path
 
 
+def write_clustering(out_dir: Path, explanation: dict | None) -> Path | None:
+    """Persist the per-run K-means explanation (reports/clustering.json) that
+    powers the /clusters visualization — the 2-D fit map and the per-job score
+    breakdown. Local-only, like the other report artifacts. Returns the path,
+    or None when there was nothing to score."""
+    if not explanation or not explanation.get("jobs"):
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "clustering.json"
+    path.write_text(json.dumps(explanation, indent=2) + "\n")
+    return path
+
+
 def write_reports(
     out_dir: Path,
     markdown: str,

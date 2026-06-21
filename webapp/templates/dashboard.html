@@ -31,6 +31,7 @@
     <div class="subtitle muted">
     {% if last_run %}
       Last ingest {{ last_run.ingested_at }} — {{ last_run.jobs_inserted }} new, {{ last_run.jobs_updated }} patched.
+      · <a href="/clusters">See the fit map →</a>
     {% else %}
       No data yet — run <code>python -m jobsearch run</code>, then hit “⟳ Ingest”.
     {% endif %}
