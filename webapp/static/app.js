@@ -242,3 +242,56 @@ if (runBtn) {
     poll();
   });
 }
+
+
+// ===========================================================================
+// Aurora UI enhancements — all progressive, none required for functionality.
+// ===========================================================================
+
+// Theme toggle (light / dark), persisted in localStorage. Until the user makes
+// an explicit choice, the theme follows the OS (prefers-color-scheme).
+const themeToggle = document.getElementById("theme-toggle");
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const root = document.documentElement;
+    const explicit = root.getAttribute("data-theme");
+    const systemDark = window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const currentlyDark = explicit ? explicit === "dark" : systemDark;
+    const next = currentlyDark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("theme", next); } catch (e) { /* private mode */ }
+  });
+}
+
+// Count-up for the dashboard stat numbers. The final value is already rendered
+// server-side, so this only animates from 0 → value when motion is welcome.
+(function countUp() {
+  const reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const nums = document.querySelectorAll(".stat-num[data-count]");
+  if (!nums.length || reduce) return;
+  nums.forEach((el) => {
+    const target = parseInt(el.dataset.count, 10) || 0;
+    if (target <= 0) return;
+    const dur = 700, start = performance.now();
+    el.textContent = "0";
+    const tick = (now) => {
+      const p = Math.min(1, (now - start) / dur);
+      const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      el.textContent = Math.round(target * eased);
+      if (p < 1) requestAnimationFrame(tick);
+      else el.textContent = String(target);
+    };
+    requestAnimationFrame(tick);
+  });
+})();
+
+// Strengthen the nav hairline + shadow once the page is scrolled.
+(function navShadow() {
+  const nav = document.getElementById("topnav");
+  if (!nav) return;
+  const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+  onScroll();
+  window.addEventListener("scroll", onScroll, { passive: true });
+})();
