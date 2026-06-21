@@ -182,7 +182,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return render(request, "prep.html",
                       tracks=db.prep_tracks_overview(conn),
                       resume_target=db.prep_resume_target(conn),
-                      overall=db.prep_overall_counts(conn))
+                      overall=db.prep_overall_counts(conn),
+                      companies=db.companies_overview(conn))
 
     @app.get("/prep/track/{track_slug}", response_class=HTMLResponse)
     def prep_track(request: Request, track_slug: str):

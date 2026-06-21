@@ -38,6 +38,34 @@
 <p class="muted">🎉 You've completed every lesson. Revisit any track to review or re-drill the LeetCode sets.</p>
 {% endif %}
 
+{% if companies %}
+<section class="cq-widget">
+  <div class="cq-widget-head">
+    <div>
+      <h2>Company LeetCode</h2>
+      <div class="muted">Jump straight to the problems a company is known to ask.</div>
+    </div>
+    <label class="cq-jump">
+      <span class="muted">Quick open</span>
+      <select data-company-jump aria-label="Open a company's LeetCode questions">
+        <option value="" selected disabled>Pick a company…</option>
+        {% for c in companies %}
+        <option value="/companies/{{ c.company_key|qp }}">{{ c.company }} ({{ c.problem_count }})</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <div class="cq-chips">
+    {% for c in companies[:8] %}
+    <a class="chip" href="/companies/{{ c.company_key|qp }}">
+      {{ c.company }} <b>{{ c.solved }}/{{ c.problem_count }}</b>
+    </a>
+    {% endfor %}
+    <a class="chip chip-role" href="/companies">View all {{ companies|length }} →</a>
+  </div>
+</section>
+{% endif %}
+
 <h2>Tracks</h2>
 <div class="prep-grid">
   {% for t in tracks %}

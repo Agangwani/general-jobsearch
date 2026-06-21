@@ -205,6 +205,15 @@ document.addEventListener("change", async (e) => {
 });
 
 
+// Company LeetCode quick-jump <select> on the prep page: navigate to the
+// chosen company's questions page. The <select> has no name, so it never
+// participates in any surrounding form submit.
+document.addEventListener("change", (e) => {
+  const sel = e.target.closest("[data-company-jump]");
+  if (sel && sel.value) window.location.href = sel.value;
+});
+
+
 // Run-pipeline button: kick off a run and stream its log into the panel.
 // The log is the pipeline's own stderr — per-company fetch counts included.
 const runBtn = document.getElementById("run-pipeline");

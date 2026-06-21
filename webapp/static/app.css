@@ -988,6 +988,28 @@ a.card:hover {
 .resume-card .muted { margin: var(--sp-1) 0 0; }
 .resume-card strong { font-size: var(--fs-md); }
 
+/* Company LeetCode quick-access widget on the prep page. */
+.cq-widget {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--sp-5) var(--sp-6);
+  margin: 0 0 var(--sp-6);
+  box-shadow: var(--shadow-sm);
+}
+.cq-widget-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.cq-widget-head h2 { margin: 0; }
+.cq-jump { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-xs); }
+.cq-jump select { min-width: 220px; }
+.cq-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
+.cq-chips .chip b { font-variant-numeric: tabular-nums; }
+
 /* lesson rows (module page) */
 .lesson-row {
   display: flex;
