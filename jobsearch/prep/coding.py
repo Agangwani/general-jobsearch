@@ -17,6 +17,7 @@ TRACK_CODING = {
         "Cracking the Coding Interview, 6e. Pair the lessons with the linked "
         "LeetCode problems to lock in each pattern."
     ),
+    "disciplines": ["software"],
     "modules": [
         # ---------------------------------------------------------- M1.1
         {

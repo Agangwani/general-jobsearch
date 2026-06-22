@@ -534,3 +534,45 @@ def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
             break
         time.sleep(0.02)
     assert calls == [root]
+
+
+def test_prep_page_recommends_tracks_for_resume(tmp_path):
+    """The /prep page tailors which tracks it recommends to the resume's roles —
+    Behavioral for everyone, the discipline track for the resume — while still
+    showing the full catalog (software tracks remain available to a non-engineer)."""
+    from fastapi.testclient import TestClient
+
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    repo_root = Path(__file__).resolve().parent.parent
+    (root / "config" / "occupations.yaml").write_text(
+        (repo_root / "config" / "occupations.yaml").read_text())
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  role_targeting: auto\n  role_match_backend: tfidf\n"
+        "  query: x\n  locations: [new york]\n"
+        "role:\n  occupations_file: config/occupations.yaml\n"
+        "ranking:\n  half_life_days: 7\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+    # A finance (investment banking) resume → the Finance track is recommended.
+    (root / "data" / "resume.txt").write_text(
+        (repo_root / "tests" / "fixtures" / "resumes" / "01-financial-services.txt").read_text())
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    html = client.get("/prep").text
+
+    assert "Recommended for your resume" in html
+    assert "All other tracks" in html
+    divider = html.index("All other tracks")
+    # Finance is recommended (its card appears before the "All other tracks" divider).
+    assert html.index('/prep/track/finance"') < divider
+    # Behavioral is universal — recommended for this resume too.
+    assert html.index('/prep/track/behavioral"') < divider
+    # The full catalog is intact: the software track is still on the page, just
+    # below the divider (not recommended for a finance resume).
+    assert '/prep/track/coding"' in html
+    assert html.index('/prep/track/coding"') > divider

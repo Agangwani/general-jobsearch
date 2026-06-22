@@ -249,3 +249,212 @@ occupations:
     skills: [operations, process, strategy, cross-functional, analytics, vendor,
              planning, efficiency, stakeholders, project management, scaling]
     categories: [Business Operations, Project and Program Management]
+
+  # =========================================================================
+  # Industry roles beyond tech: the seed above is tech-company-centric, so a
+  # nurse, attorney, or underwriter matched only its nearest engineering-ish
+  # occupation. These entries extend coverage to the largest non-tech NYC
+  # industries (NYC EDC "State of the Economy"; NY DOL "Significant Industries";
+  # BLS OEWS/OOH) so role targeting stays tailored for those resumes too.
+  # =========================================================================
+
+  # ------------------------------------------------ Finance: capital markets --
+  - name: Investment Banking / Capital Markets
+    soc: "13-2099"
+    titles: [Investment Banking Analyst, Investment Banking Associate, M&A Analyst,
+             Capital Markets Analyst, Equity Research Associate, Private Equity Analyst,
+             Restructuring Analyst, Leveraged Finance Analyst]
+    query: investment banking analyst
+    manage: false
+    skills: [investment banking, mergers and acquisitions, valuation, dcf, lbo,
+             financial modeling, pitch books, capital markets, leveraged buyout,
+             comparable companies, equity research, due diligence, debt capital markets]
+    categories: [Accounting and Finance]
+
+  # --------------------------------------------------------- Accounting/audit --
+  - name: Accountant / Auditor
+    soc: "13-2011"
+    titles: [Staff Accountant, Senior Accountant, Auditor, Tax Accountant, CPA,
+             Accounting Manager, Audit Associate, Cost Accountant, Controller]
+    query: accountant
+    manage: false
+    skills: [accounting, audit, tax, gaap, reconciliation, general ledger,
+             accounts payable, accounts receivable, financial statements, cpa,
+             month-end close, sox, journal entries, quickbooks, internal controls]
+    categories: [Accounting and Finance]
+
+  # ------------------------------------------------------- Insurance / actuary -
+  - name: Insurance / Underwriting
+    soc: "13-2053"
+    titles: [Insurance Underwriter, Underwriter, Actuary, Actuarial Analyst,
+             Claims Adjuster, Claims Examiner, Risk Analyst, Underwriting Manager]
+    query: insurance underwriter
+    manage: false
+    skills: [insurance, underwriting, actuarial, risk assessment, claims, premiums,
+             policy, reinsurance, loss ratio, property and casualty, life insurance,
+             risk management, exposure, regulatory, pricing]
+    categories: [Accounting and Finance]
+
+  # ------------------------------------------------------------- Real estate ---
+  - name: Real Estate
+    soc: "13-2099"
+    titles: [Real Estate Analyst, Real Estate Associate, Acquisitions Analyst,
+             Asset Manager, Property Manager, Leasing Manager, Development Manager,
+             Real Estate Agent, Investment Analyst - Real Estate]
+    query: real estate analyst
+    manage: false
+    skills: [real estate, acquisitions, leasing, property management, asset management,
+             underwriting, argus, commercial real estate, due diligence, valuation,
+             tenant, development, cap rate, pro forma, brokerage]
+    categories: [Real Estate, Accounting and Finance]
+
+  # -------------------------------------------------------------- Healthcare ---
+  - name: Registered Nurse
+    soc: "29-1141"
+    titles: [Registered Nurse, RN, Staff Nurse, Clinical Nurse, Charge Nurse,
+             ICU Nurse, Nurse Practitioner, Nurse Manager, Case Management Nurse]
+    query: registered nurse
+    manage: false
+    skills: [nursing, patient care, clinical, electronic health records, epic,
+             acute care, triage, medication administration, care plans, bls, acls,
+             patient safety, hipaa, assessment, infection control]
+    categories: [Healthcare]
+
+  - name: Healthcare Administrator
+    soc: "11-9111"
+    titles: [Healthcare Administrator, Practice Manager, Health Services Manager,
+             Clinical Operations Manager, Patient Access Manager, Revenue Cycle Manager,
+             Medical Office Manager]
+    query: healthcare administrator
+    manage: true
+    skills: [healthcare administration, operations, patient experience, revenue cycle,
+             medical billing, compliance, hipaa, scheduling, ehr, quality improvement,
+             credentialing, value-based care, staffing]
+    categories: [Healthcare, Business Operations]
+
+  # ----------------------------------------------- Life sciences / biotech -----
+  - name: Clinical Research / Life Sciences
+    soc: "19-1042"
+    titles: [Clinical Research Associate, Clinical Research Coordinator, Research Scientist,
+             Regulatory Affairs Specialist, Clinical Trial Manager, Biostatistician,
+             Clinical Data Manager, Quality Assurance Specialist]
+    query: clinical research associate
+    manage: false
+    skills: [clinical research, clinical trials, good clinical practice, protocol,
+             regulatory affairs, fda, irb, life sciences, pharmacovigilance, monitoring,
+             data collection, biotech, laboratory, ich, study coordination]
+    categories: [Science, Healthcare]
+
+  # ----------------------------------------------------------------- Legal -----
+  - name: Attorney / Legal Counsel
+    soc: "23-1011"
+    titles: [Attorney, Associate Attorney, Corporate Counsel, Legal Counsel,
+             Litigation Associate, Compliance Counsel, General Counsel, Paralegal,
+             Contracts Manager]
+    query: attorney
+    manage: false
+    skills: [legal, litigation, contracts, compliance, due diligence, regulatory,
+             counsel, negotiation, corporate law, legal research, drafting,
+             juris doctor, bar admission, discovery, intellectual property]
+    categories: [Legal]
+
+  # ------------------------------------------------- Media / publishing --------
+  - name: Editorial / Content
+    soc: "27-3041"
+    titles: [Editor, Content Editor, Managing Editor, Copywriter, Content Strategist,
+             Content Manager, Staff Writer, Editorial Assistant, Communications Manager]
+    query: editor
+    manage: false
+    skills: [editorial, writing, editing, copywriting, content strategy, cms,
+             storytelling, publishing, journalism, proofreading, ap style,
+             communications, content marketing, headlines, audience engagement]
+    categories: [Editorial, Marketing]
+
+  # --------------------------------------------- Retail / fashion merchandising
+  - name: Retail / Merchandising
+    soc: "11-9081"
+    titles: [Buyer, Retail Buyer, Merchandiser, Merchandising Manager, Planner,
+             Allocation Analyst, Category Manager, Fashion Buyer, Assortment Planner]
+    query: merchandiser buyer
+    manage: false
+    skills: [merchandising, buying, retail, assortment, inventory, allocation,
+             markdown, sell-through, vendor, planning, category management,
+             open-to-buy, product, fashion, demand]
+    categories: [Retail, Business Operations]
+
+  # ----------------------------------------------- Hospitality / tourism -------
+  - name: Hospitality Management
+    soc: "11-9081"
+    titles: [Hotel Manager, Hotel Operations Manager, Hospitality Manager, Front Office Manager,
+             Guest Services Manager, Event Manager, Restaurant Manager, Banquet Manager,
+             Director of Operations - Hotel, Food and Beverage Manager]
+    query: hospitality manager
+    manage: true
+    skills: [hospitality, hotel, guest services, front office, food and beverage,
+             events, banquets, occupancy, revenue management, customer service,
+             opera pms, housekeeping, concierge, reservations, guest satisfaction]
+    categories: [Hospitality, Business Operations]
+
+  # -------------------------------------------------------------- Education ----
+  - name: Education / Teaching
+    soc: "25-2021"
+    titles: [Teacher, Elementary Teacher, High School Teacher, Instructional Coordinator,
+             Curriculum Developer, Instructional Designer, Academic Advisor, Education Coordinator,
+             Special Education Teacher]
+    query: teacher
+    manage: false
+    skills: [teaching, curriculum, classroom management, lesson planning, instruction,
+             assessment, pedagogy, differentiated instruction, students, education,
+             learning outcomes, iep, standards, literacy, edtech tools]
+    categories: [Education]
+
+  # ----------------------------------------- Architecture / construction -------
+  - name: Architecture / Construction
+    soc: "17-1011"
+    titles: [Architect, Project Architect, Design Architect, Construction Project Manager,
+             Construction Manager, Estimator, Civil Engineer, Superintendent, Project Engineer]
+    query: architect
+    manage: false
+    skills: [architecture, autocad, revit, construction, design development, drawings,
+             permitting, bim, building codes, estimating, structural, site,
+             specifications, construction management, schematic design]
+    categories: [Construction, Project and Program Management]
+
+  # --------------------------------------- Transportation / supply chain -------
+  - name: Supply Chain / Logistics
+    soc: "13-1081"
+    titles: [Supply Chain Analyst, Logistics Manager, Supply Chain Manager, Logistician,
+             Procurement Manager, Demand Planner, Operations Analyst, Warehouse Manager,
+             Fulfillment Manager]
+    query: supply chain analyst
+    manage: false
+    skills: [supply chain, logistics, procurement, inventory, demand planning,
+             warehouse, fulfillment, sourcing, vendor management, distribution,
+             erp, sap, forecasting, freight, transportation]
+    categories: [Business Operations, Project and Program Management]
+
+  # --------------------------------------- Nonprofit / social services ---------
+  - name: Nonprofit / Social Services
+    soc: "11-9151"
+    titles: [Program Manager - Nonprofit, Program Director, Development Manager,
+             Director of Development, Grant Writer, Case Manager, Program Coordinator,
+             Community Outreach Manager, Social Worker]
+    query: nonprofit program manager
+    manage: false
+    skills: [nonprofit, program management, fundraising, grant writing, development,
+             donor relations, community outreach, volunteers, social services,
+             advocacy, case management, stakeholders, impact, programming, grants]
+    categories: [Nonprofit, Business Operations]
+
+  # --------------------------------------- Government / public policy ----------
+  - name: Public Policy / Government
+    soc: "13-1111"
+    titles: [Policy Analyst, Program Analyst, Management Analyst, Budget Analyst,
+             Public Affairs Manager, Government Affairs Manager, Legislative Aide,
+             Urban Planner, Policy Advisor]
+    query: policy analyst
+    manage: false
+    skills: [public policy, policy analysis, government, legislation, research,
+             stakeholders, advocacy, regulatory, public affairs, program evaluation,
+             budget, constituents, briefings, compliance, intergovernmental]
+    categories: [Business Operations]
