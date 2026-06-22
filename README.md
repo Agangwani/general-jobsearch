@@ -27,6 +27,15 @@ The default search targets senior software engineering roles in NYC — edit
 `config/settings.yaml` (title/location filters, remote-pay policy) and
 `config/companies.yaml` (which boards to pull) to retarget it.
 
+## Understanding the codebase
+
+This README is the quick tour. For a thorough, current-state map of the repo,
+read **[`docs/`](docs/README.md)** — start with
+**[`docs/architecture.md`](docs/architecture.md)** (the whole system on one
+page) and branch into the pipeline deep dive, the web app deep dive, end-to-end
+user flows, known limitations, and refactoring notes. The summary below is the
+condensed version of that.
+
 ## How it works
 
 1. **Company registry** — `config/companies.yaml` holds ~60 curated

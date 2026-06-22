@@ -2,7 +2,7 @@
 
 > **Status (2026-06-12): shipped.** Every `python -m jobsearch run` writes
 > `reports/validation-request.md` (top 15 jobs + top 5 near-misses with
-> claims). The repo ships `.claude/commands/validate-jobs.md` — run
+> claims). The repo ships the `.claude/skills/validate-jobs/` skill — run
 > `/validate-jobs` in Claude Code once a day; it web-verifies each posting
 > and writes `data/validation.json`. The next run merges verdicts into the
 > report as a **Conf** column (✓/⚠/✗), drops verdicts older than 3 days, and
@@ -135,8 +135,8 @@ which is exactly the kind of thing Tier 2 catches and Tier 1 can't.)
 
 ### Ship it as a repo slash command
 
-`.claude/commands/validate-jobs.md` — checked into the repo so the workflow is
-one keystroke (`/validate-jobs`) in any Claude Code session. The command
+`.claude/skills/validate-jobs/SKILL.md` — checked into the repo so the workflow
+is one keystroke (`/validate-jobs`) in any Claude Code session. The skill
 instructs Claude to: read `reports/validation-request.md`, verify each posting
 via web search (posting page live? title/level/location as claimed? any
 "no longer accepting applications" banner?), then write `data/validation.json`
