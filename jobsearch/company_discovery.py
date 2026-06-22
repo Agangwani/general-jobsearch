@@ -56,6 +56,8 @@ MENTION_BONUS = 0.08  # relevance multiplier step per doubling of mentions
 def merge_leads(leads: list[CompanyLead]) -> list[CompanyLead]:
     """Collapse per-posting leads into one per company (normalized name),
     summing mentions and unioning evidence. First-seen spelling wins."""
+    from .startups import merge_meta
+
     merged: dict[str, CompanyLead] = {}
     for lead in leads:
         key = normalize_company_name(lead.name)
@@ -70,6 +72,8 @@ def merge_leads(leads: list[CompanyLead]) -> list[CompanyLead]:
                 if value and value not in seen and len(values) < cap:
                     values.append(value)
                     seen.add(value)
+        if lead.meta:
+            target.meta = merge_meta(target.meta, lead.meta)
     return list(merged.values())
 
 
@@ -282,14 +286,58 @@ def emit_registry(
 
 # --------------------------------------------------------------- CLI entry ---
 
-def discover_companies(root: Path, limit: int = 0, dry_run: bool = False) -> int:
+def enrich_meta(lead: CompanyLead) -> dict:
+    """The metadata record for one lead: whatever a structured source supplied
+    (`lead.meta`, e.g. Y Combinator) folded together with funding/people facts
+    mined from its free-text evidence (HN blurbs, descriptions). Always carries
+    a name and a source so the UI has something to show."""
+    from .startups import extract_funding, extract_people, merge_meta
+
+    blurb = "\n".join(lead.titles + lead.snippets)
+    text_meta: dict = {"name": lead.name, "source": "+".join(lead.sources)}
+    text_meta.update(extract_funding(blurb))
+    people = extract_people(blurb)
+    if people:
+        text_meta["notable_people"] = people
+    meta = merge_meta(lead.meta, text_meta)
+    meta.setdefault("name", lead.name)
+    if not meta.get("source"):
+        meta["source"] = "+".join(lead.sources)
+    return meta
+
+
+def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | None = None) -> None:
+    """Write data/startup_meta.json: normalized company name → metadata, read by
+    the tracker ingest to populate the startup_companies table."""
+    import json
+
+    now = now or datetime.now(timezone.utc)
+    companies = {}
+    for lead in leads:
+        key = normalize_company_name(lead.name)
+        if key:
+            companies[key] = enrich_meta(lead)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(
+        {"generated": now.isoformat(), "companies": companies}, indent=2) + "\n")
+
+
+def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
+                       track_name: str = "main") -> int:
     from .http import make_session
     from .resume import extract_keywords, load_resume_text
     from .sources import SOURCES, SourceSkip
+    from .tracks import build_track
 
     settings = load_settings(root / "config" / "settings.yaml")
-    discovery = settings.get("discovery", {}) or {}
-    companies, manual = load_companies(root / "config" / "companies.yaml")
+    track = build_track(root, settings, track_name)
+    discovery = track.discovery
+    # Dedupe new leads against this track's curated seed (companies.yaml for the
+    # main track, the optional config/startups.yaml for the startup track).
+    if track.curated_file and track.curated_file.exists():
+        companies, manual = load_companies(track.curated_file)
+    else:
+        companies, manual = [], []
 
     resume_text, is_sample = load_resume_text(root, settings)
     if is_sample:
@@ -314,26 +362,29 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False) -> int
             extract_keywords(resume_text), query)
     ctx = {
         "query": query,
-        "location": discovery.get("location", "New York, NY"),
-        "location_subs": [loc.lower() for loc in
-                          settings.get("search", {}).get("locations") or DEFAULT_LOCATIONS],
+        "location": track.location,
+        "location_subs": track.locations or [loc.lower() for loc in DEFAULT_LOCATIONS],
         "categories": categories,
         "max_pages": int(discovery.get("max_pages", 8)),
+        "ycombinator": discovery.get("ycombinator", {}) or {},
     }
-    print(f"Mining boards for companies hiring '{query}' near {ctx['location']} "
+    universe = "startup companies" if track.is_startup else "companies"
+    default_sources = (["ycombinator", "hn_hiring", "themuse"]
+                       if track.is_startup else list(SOURCES))
+    print(f"Mining sources for {universe} hiring '{query}' near {ctx['location']} "
           f"(categories: {', '.join(categories)})")
 
     timeout = settings.get("fetch", {}).get("timeout_seconds", 30)
     session = make_session(timeout)
     leads: list[CompanyLead] = []
-    for name in discovery.get("sources") or list(SOURCES):
+    for name in discovery.get("sources") or default_sources:
         fetch = SOURCES.get(name)
         if not fetch:
             print(f"  {name}: unknown source (available: {', '.join(SOURCES)})")
             continue
         try:
             batch = fetch(session, ctx)
-            print(f"  {name}: {len(batch)} location-matching postings")
+            print(f"  {name}: {len(batch)} location-matching leads")
             leads.extend(batch)
         except SourceSkip as exc:
             print(f"  {name}: skipped — {exc}")
@@ -343,8 +394,7 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False) -> int
     merged = merge_leads(leads)
     known = {normalize_company_name(c.name) for c in companies}
     known |= {normalize_company_name(str(entry.get("name", ""))) for entry in manual}
-    exclude = {normalize_company_name(x)
-               for x in discovery.get("exclude_companies") or []}
+    exclude = {normalize_company_name(x) for x in track.exclude}
     fresh = filter_known(merged, known, exclude)
     print(f"{len(merged)} distinct companies seen; "
           f"{len(fresh)} not already in the registry")
@@ -372,12 +422,21 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False) -> int
     if dry_run:
         print("\n--- generated registry (dry run, not written) ---\n")
         print(text)
+        if track.is_startup:
+            print("(startup metadata sidecar would be written to "
+                  f"{track.meta_file})")
         return 0
-    out_path = root / discovery.get("output_file", "data/companies.discovered.yaml")
+    out_path = track.registry_file
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text)
     print(f"\nWrote {out_path} — {len(resolved)} boards, "
           f"{len(unresolved)} manual-check entries.")
-    print("Next: python -m jobsearch verify   (catch wrong/dead boards)")
-    print("      python -m jobsearch run      (they're merged into the daily run)")
+    if track.is_startup and track.meta_file:
+        write_meta_sidecar(track.meta_file, top)
+        print(f"Wrote {track.meta_file} — metadata for {len(top)} startups.")
+        print("Next: python -m jobsearch verify --startups   (catch wrong/dead boards)")
+        print("      python -m jobsearch run-startups          (fetch + score them)")
+    else:
+        print("Next: python -m jobsearch verify   (catch wrong/dead boards)")
+        print("      python -m jobsearch run      (they're merged into the daily run)")
     return 0

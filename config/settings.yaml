@@ -108,6 +108,51 @@ discovery:
   # resume). Delete the file to fall back to the curated registry alone.
   output_file: data/companies.discovered.yaml
 
+# Startup pipeline (`python -m jobsearch discover-startups` + `run-startups`):
+# a parallel, second pipeline that searches *startups* in a given city, scores
+# them against your resume with the same TF-IDF + K-means fit map, and tracks
+# startup-specific facts (employees, funding, investors, notable people). Its
+# jobs flow into the same tracker UI tagged as startups, with a toggle to show
+# only startups, hide startups, or show everything. See docs/design-startup-
+# pipeline.md.
+startups:
+  # The "given city" the startup search targets. `location` is sent to the
+  # aggregator APIs; `locations` are the client-side substrings a posting's
+  # location must contain. Both default to the main search's city when unset,
+  # so you can point startups at a different city than the main pipeline.
+  location: New York, NY
+  locations: [new york, nyc, brooklyn, manhattan]
+  # Lead sources for the startup universe. ycombinator (the YC company
+  # directory — keyless, the canonical "all startups" list) is startup-specific;
+  # hn_hiring and themuse add startups posting right now. adzuna also works if
+  # you have a key, but it isn't startup-aware so it's off by default.
+  sources: [ycombinator, hn_hiring, themuse]
+  # How many startups one discovery run may add to the startup registry. The
+  # startup universe is large, so this is higher than the main default.
+  max_companies: 60
+  max_pages: 8
+  # Muse categories; empty = inferred from your resume (same as discovery).
+  categories: []
+  # Y Combinator source knobs.
+  ycombinator:
+    # Which OSS-API slice to read: `hiring` (companies marked hiring, smaller)
+    # or `all` (the entire directory). hiring is the sane default for a job hunt.
+    slice: hiring
+    # Company statuses to keep (lowercased): active | acquired | public | inactive.
+    statuses: [active]
+    # Require the company be flagged hiring even within the chosen slice.
+    require_hiring: false
+  # Startups never auto-added (e.g. your current employer).
+  exclude_companies: []
+  # Generated startup registry + metadata sidecar (gitignored, resume-derived).
+  output_file: data/companies.startups.yaml
+  meta_file: data/startup_meta.json
+  # Separate report dir + seen-state so the two pipelines never overwrite each
+  # other. The UI reads reports/startups/clustering.json for the startup Fit map.
+  reports_dir: reports/startups
+  state_file: data/seen_jobs.startups.tsv
+  corpus_dir: data/corpus-startups
+
 fetch:
   timeout_seconds: 30
   # Per-page timeout for browser-scraped boards (headless Chromium).

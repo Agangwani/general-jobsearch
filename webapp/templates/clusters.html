@@ -13,17 +13,36 @@
     </div>
   </div>
   <div class="actions">
+    {% if has_startups %}
+    <div class="segmented" role="tablist" aria-label="Fit map track">
+      <a class="seg {{ 'is-active' if track != 'startups' }}" href="/clusters" role="tab"
+         aria-selected="{{ 'true' if track != 'startups' else 'false' }}">All jobs</a>
+      <a class="seg {{ 'is-active' if track == 'startups' }}" href="/clusters?track=startups" role="tab"
+         aria-selected="{{ 'true' if track == 'startups' else 'false' }}">🚀 Startups</a>
+    </div>
+    {% endif %}
     <a class="btn btn-ghost" href="/">← Back to jobs</a>
   </div>
 </header>
+{% if track == 'startups' %}
+<div class="banner">Showing the <strong>startup</strong> run's fit map — startups
+  scored against your resume. <a href="/clusters">Switch to all jobs →</a></div>
+{% endif %}
 
 {% if not clustering or not clustering.jobs %}
   <div class="setup-box">
-    <h3 style="margin-top:0">No fit map yet</h3>
+    <h3 style="margin-top:0">No {{ 'startup ' if track == 'startups' }}fit map yet</h3>
     <p class="muted">The map is built every time the pipeline scores a batch of
       postings against your resume. Run it, then come back here.</p>
+    {% if track == 'startups' %}
+    <p class="muted">Run <code>python -m jobsearch discover-startups</code> then
+      <code>python -m jobsearch run-startups</code> (or <strong>▶ Run startup
+      pipeline</strong> on the <a href="/startups">Startups page</a>), then
+      <strong>⟳ Ingest</strong>.</p>
+    {% else %}
     <p class="muted">Hit <strong>▶ Run pipeline</strong> in the top bar (or
       <code>python -m jobsearch run</code>), then <strong>⟳ Ingest</strong>.</p>
+    {% endif %}
   </div>
 {% else %}
   {% set p = clustering.params %}

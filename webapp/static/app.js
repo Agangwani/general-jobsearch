@@ -216,41 +216,57 @@ document.addEventListener("change", (e) => {
 
 // Run-pipeline button: kick off a run and stream its log into the panel.
 // The log is the pipeline's own stderr — per-company fetch counts included.
-const runBtn = document.getElementById("run-pipeline");
-if (runBtn) {
+// Track-aware: the main "Run pipeline" button drives the "main" track; the
+// Startups page drives "startups". Both share the one run panel + ingest.
+(function runPanel() {
   const panel = document.getElementById("run-panel");
   const logEl = document.getElementById("run-log");
   const status = document.getElementById("run-status");
+  const runBtn = document.getElementById("run-pipeline");
+  if (!panel) return;
   let cursor = 0;
-  document.getElementById("run-hide").addEventListener("click", () => panel.hidden = true);
+  const hideBtn = document.getElementById("run-hide");
+  if (hideBtn) hideBtn.addEventListener("click", () => panel.hidden = true);
 
-  async function poll() {
-    const snap = await (await fetch(`/run/log?since=${cursor}`)).json();
+  const label = (t) => t === "startups" ? "startup pipeline" : "pipeline";
+
+  async function poll(track) {
+    const snap = await (await fetch(`/run/log?since=${cursor}&track=${track}`)).json();
     if (snap.lines.length) {
       logEl.textContent += snap.lines.join("\n") + "\n";
       logEl.scrollTop = logEl.scrollHeight;
     }
     cursor = snap.next;
     if (snap.running) {
-      setTimeout(poll, 1000);
+      setTimeout(() => poll(track), 1000);
     } else if (snap.exit_code !== null) {
       const ok = snap.exit_code === 0;
-      status.textContent = ok ? "✓ Run finished — results ingested" : `✗ Run failed (exit ${snap.exit_code})`;
-      runBtn.disabled = false;
-      runBtn.textContent = "▶ Run pipeline";
+      status.textContent = ok ? `✓ ${label(track)} finished — results ingested`
+                              : `✗ ${label(track)} failed (exit ${snap.exit_code})`;
+      if (runBtn) { runBtn.disabled = false; runBtn.textContent = "▶ Run pipeline"; }
     }
   }
 
-  runBtn.addEventListener("click", async () => {
-    const resp = await fetch("/run", { method: "POST" });
+  // Exposed so any page (e.g. the Startups page) can launch a tracked run.
+  window.startRunPolling = async function (track) {
+    track = track || "main";
+    const resp = await fetch(`/run?track=${track}`, { method: "POST" });
     panel.hidden = false;
-    status.textContent = resp.status === 409 ? "A run is already in progress — attaching to its log…" : "Running pipeline…";
+    status.textContent = resp.status === 409
+      ? `A ${label(track)} run is already in progress — attaching to its log…`
+      : `Running ${label(track)}…`;
     if (resp.status !== 409) { logEl.textContent = ""; cursor = 0; }
-    runBtn.disabled = true;
-    runBtn.textContent = "Running…";
-    poll();
-  });
-}
+    poll(track);
+  };
+
+  if (runBtn) {
+    runBtn.addEventListener("click", () => {
+      runBtn.disabled = true;
+      runBtn.textContent = "Running…";
+      window.startRunPolling("main");
+    });
+  }
+})();
 
 
 // ===========================================================================

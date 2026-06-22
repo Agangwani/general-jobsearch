@@ -116,7 +116,12 @@ python -m jobsearch discover "Warby Parker"   # auto-detect a company's ATS boar
 python -m jobsearch discover-companies        # mine generalized boards for companies
                                               # matching YOUR resume; --dry-run to preview
 
-python -m jobsearch ingest   # pull the latest run into the application database
+python -m jobsearch discover-startups         # mine the YC directory (+HN, Muse) for
+                                              # STARTUPS matching your resume, with metadata
+python -m jobsearch run-startups              # run the parallel startup pipeline
+                                              # → reports/startups/
+
+python -m jobsearch ingest   # pull the latest runs (main + startups) into the database
 python -m jobsearch ui       # application-tracking UI → http://127.0.0.1:8484
 ```
 
@@ -131,6 +136,38 @@ yourself.
 
 If Chromium isn't installed the run still works — browser-scraped boards are
 skipped with an actionable note in the report instead of failing the run.
+
+### Startup pipeline (a second, startup-only search)
+
+A parallel pipeline searches **startups in a given city** (New York by default)
+and scores them with the *same* TF-IDF + K-means fit map as the main run, while
+tracking the facts you weigh for a startup — **employees, funding stage + round
+size, investors, notable people, industry**:
+
+```bash
+python -m jobsearch discover-startups   # build the startup registry + metadata
+python -m jobsearch run-startups        # fetch + score their roles → reports/startups/
+python -m jobsearch ingest              # load BOTH pipelines into the tracker
+```
+
+The startup universe comes from the **Y Combinator company directory** (a
+keyless public JSON mirror — the canonical "all startups" list), plus HN "Who is
+hiring?" and The Muse for startups posting right now, all ranked against your
+resume. Each resolves to its own ATS board, so applications still go to the
+company's own site. Everything is configured under `startups:` in
+`config/settings.yaml` (city, sources, YC slice/status filters); generated files
+are gitignored, like the main pipeline's.
+
+In the UI, startup and non-startup jobs share **one tracker** with a three-way
+toggle — **all companies · 🚀 startups only · 🏢 hide startups** — and the home
+page's big numbers split startup vs. established. Startup rows carry a 🚀 badge
+with employees/stage inline; the **Startups** tab (`/startups`) is a directory of
+tracked startups with their facts and open roles (editable — your edits survive
+re-ingest), and the Fit map has a startup track. Honest caveat: employees/batch/
+stage come straight from YC, but **funding amounts, investors, and notable
+people are best-effort** (mined from public blurbs) — precise cap-table data
+needs a paid source, so those fields are editable by hand. Full design:
+`docs/design-startup-pipeline.md`.
 
 ### Company interview questions (LeetCode)
 

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Startups — jobsearch{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <div>
+    <h1>🚀 Startups <span class="muted">({{ startups|length }})</span></h1>
+    <div class="subtitle muted">
+      Startup companies matching your resume, found by the parallel startup
+      pipeline (Y Combinator directory + HN + The Muse), scored with the same
+      fit map. Each carries the helpful facts — employees, funding, investors,
+      notable people — and links to its open roles.
+    </div>
+  </div>
+  <div class="actions">
+    {% if has_startup_fitmap %}
+    <a class="btn btn-ghost" href="/clusters?track=startups" title="The startup run's fit map">📊 Startup fit map</a>
+    {% endif %}
+    <a class="btn btn-ghost" href="/?startup_scope=only" title="Show only startup jobs in the tracker">See startup jobs →</a>
+    <button class="btn btn-primary" id="run-startups-btn"
+            title="Run the startup pipeline: discover startups, fetch + score their jobs, ingest.">▶ Run startup pipeline</button>
+  </div>
+</header>
+
+<section class="stat-row">
+  <div class="stat-card" data-accent="violet">
+    <span class="stat-label">Startup jobs tracked</span>
+    <span class="stat-num">{{ counts_startup.startup_total }}</span>
+    <span class="stat-foot">🚀 across every run</span>
+  </div>
+  <div class="stat-card" data-accent="blue">
+    <span class="stat-label">To apply</span>
+    <span class="stat-num">{{ counts_startup.startup.to_apply }}</span>
+    <span class="stat-foot">startup roles ready</span>
+  </div>
+  <div class="stat-card" data-accent="green">
+    <span class="stat-label">Applied</span>
+    <span class="stat-num">{{ counts_startup.startup.applied }}</span>
+    <span class="stat-foot">startup roles submitted</span>
+  </div>
+  <div class="stat-card" data-accent="brand">
+    <span class="stat-label">Companies</span>
+    <span class="stat-num">{{ startups|length }}</span>
+    <span class="stat-foot">with tracked facts</span>
+  </div>
+</section>
+
+<form class="filters" method="get" action="/startups">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search name, industry, investor…">
+  <button class="btn btn-primary">Search</button>
+  {% if q %}<a class="btn btn-ghost" href="/startups">Clear</a>{% endif %}
+</form>
+
+{% if startups %}
+<div class="table-wrap">
+<table class="jobs">
+  <thead>
+    <tr>
+      <th>Company</th>
+      <th>Employees</th>
+      <th>Stage / last round</th>
+      <th>Investors</th>
+      <th>Industry</th>
+      <th>Open roles</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in startups %}
+    <tr>
+      <td>
+        <a href="/startups/{{ s.company_key|qp }}"><strong>{{ s.name }}</strong></a>
+        {% if s.top_company %}<span class="tag tag-amber" title="YC top company">⭐</span>{% endif %}
+        {% if s.batch %}<span class="tag" title="YC batch">{{ s.batch }}</span>{% endif %}
+        {% if s.one_liner %}<div class="muted startup-mini">{{ s.one_liner[:90] }}</div>{% endif %}
+      </td>
+      <td class="muted">{{ s.employees or '—' }}</td>
+      <td class="muted">{{ s.stage or '—' }}{% if s.last_round_amount %} · {{ s.last_round_amount }}{% endif %}</td>
+      <td class="muted">{{ (s.investors|join(', '))[:48] or '—' }}</td>
+      <td class="muted">{{ s.industry or '—' }}</td>
+      <td>
+        {% if s.job_count %}
+          <a href="/?company={{ s.name|qp }}&startup_scope=only">{{ s.open_count }} open / {{ s.job_count }}</a>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">
+  No startups tracked yet. Run
+  <code>python -m jobsearch discover-startups</code> then
+  <code>python -m jobsearch run-startups</code> (or hit
+  <strong>▶ Run startup pipeline</strong> above), then <strong>⟳ Ingest</strong>.
+</p>
+{% endif %}
+
+<script>
+  document.getElementById("run-startups-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("run-startups-btn");
+    btn.disabled = true; btn.textContent = "Starting…";
+    try {
+      const r = await fetch("/run?track=startups", {method: "POST"});
+      btn.textContent = r.ok ? "Running… (watch the run panel)" : "Already running";
+      // surface the shared run panel + poll the startup runner
+      if (window.startRunPolling) window.startRunPolling("startups");
+    } catch (e) { btn.textContent = "Failed — see console"; }
+  });
+</script>
+
+{% endblock %}
