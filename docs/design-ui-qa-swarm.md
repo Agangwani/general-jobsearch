@@ -2,11 +2,12 @@
 
 > **Status (2026-06-22): shipped (v1).** The `uiqa` harness drives the live app
 > with a real headless Chromium; `python -m uiqa explore` does a deterministic
-> crawl (40 routes, ~1.9k actions indexed on the seeded app) and a curated
+> crawl (~50 routes, ~2.2k actions indexed on the seeded app) and a curated
 > combination battery; three Claude sub-agent types (`ui-explorer`,
 > `ui-validator`, `ui-fixer`) layer human-like exploration, triage, and fixes on
-> top; `/ui-qa` orchestrates the whole swarm. The first run found a real
-> dashboard 500 (`/?min_fit=abc`) end-to-end and Stage 3 opened a fix PR for it.
+> top; `/ui-qa` orchestrates the whole swarm. The first swarm run found two real
+> server-500s (`/?min_fit=abc` and an out-of-range `/jobs/<huge-int>`) *and* a
+> bug in the harness itself (see below); Stage 3 opened a fix PR.
 
 ## The question this answers
 
@@ -143,13 +144,30 @@ irreversible without a human" stance as the apply flow that never clicks submit.
 
 ## First-run evidence (2026-06-22)
 
-The deterministic floor alone indexed ~1,942 actions across 40 routes and — once
-off-origin CDN noise was down-ranked — surfaced exactly one real defect, as three
-facets of the same crash: `/?min_fit=abc` returns **HTTP 500** because the
-dashboard handler does `float(min_fit)` on raw query input without a guard
-(`webapp/app.py`), unlike its sibling handlers which parse user input
-defensively. Validation confirmed it; Stage 3 shipped a guard + a `TestClient`
-regression test and opened a draft PR.
+The deterministic floor indexed ~2,200 actions across ~50 routes; once off-origin
+CDN noise was down-ranked it surfaced the dashboard `/?min_fit=abc` **HTTP 500**
+(unguarded `float(min_fit)` on raw query input — `webapp/app.py` — unlike sibling
+handlers that parse defensively). Three explorer sub-agents (dashboard / jobs /
+resume) then ran in parallel and added genuine human-like judgment:
+
+- the **dashboard** explorer reproduced the `min_fit` 500 *and* extended it
+  (also fires on whitespace-only and malformed floats like `12.5.6`), while
+  correctly ruling the allow-list-guarded sort/status params and the
+  intentionally-hidden bulk bar as working-as-intended;
+- the **jobs** explorer found a *new* high-severity bug the fixed battery never
+  tried — `/jobs/<huge-int>` → **HTTP 500** (`OverflowError` converting the id to
+  a SQLite INTEGER), affecting every `{job_id:int}` route — and flagged a 422-vs-
+  redirect UX inconsistency for bad ids;
+- the **resume** explorer filed nothing and was right to: every bad upload was
+  rejected with a friendly message, not a crash.
+
+Most tellingly, the jobs explorer caught a bug in **the harness itself** by
+reading its code: `appserver` launched the app without `--root`, so it served the
+repo's real DB instead of the seeded temp one — data-backed pages redirected and,
+on a real machine, the run would have touched the user's actual data. That was
+fixed first (the run above is post-fix). Validation triaged all findings; Stage 3
+shipped a guard + a `TestClient` regression test for the `min_fit` 500 and opened
+a draft PR, with the other confirmed bugs queued for their own fixers.
 
 ## Future work
 
