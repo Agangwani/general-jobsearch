@@ -62,10 +62,11 @@ The default search targets senior software engineering roles in NYC — edit
    regexes instead. Location matching stays in `config/settings.yaml`.
 4. **Rank by fit** — all postings are embedded in a shared TF-IDF token
    space and clustered with **K-means**; the resume is projected into the
-   same space. A posting's fit = 0.7 × cosine similarity to the resume +
-   0.3 × the resume's affinity to the posting's cluster, scaled so the best
+   same space. A posting's fit = 0.85 × cosine similarity to the resume +
+   0.15 × the resume's affinity to the posting's cluster, scaled so the best
    match of the day is 100. Company fit = mean of its top-3 postings, which
-   is how the company list in the report is sorted.
+   is how the company list in the report is sorted. The **Fit map** tab in the
+   UI visualizes this whole space and breaks down any single score (see below).
 5. **Prioritize recency** — job order uses
    `rank_score = fit × 0.5^(age_days / 7)`: a posting loses half its weight
    every week, so fresh postings rise to the top. Jobs the pipeline has
@@ -150,6 +151,29 @@ UI. Point it at a different dataset or time window under `company_questions:`
 in `config/settings.yaml`. Bundled content lives in
 `jobsearch/company_questions/` (curated set + the refresh loader).
 
+### Fit map — why a job scored what it did
+
+Fit scores are easy to distrust when they're just a number. The **Fit map**
+tab (`/clusters`) opens up the TF-IDF + K-means model:
+
+- A **high-level view**: every scored posting plotted as a 2-D scatter (LSA
+  projection of the TF-IDF space), coloured by the K-means cluster it landed
+  in, with **your resume** drawn in the same space — closer means more similar
+  wording. Each cluster is labelled with its topic terms and how strongly your
+  resume matches it (the "home" cluster is the one feeding the cluster-fit term
+  of every score). Hover a cluster to highlight its postings; click any point
+  to drill in.
+- A **per-job view** (`/clusters/job/{id}`, also the "📊 Why this fit?" button
+  on every job page): the exact arithmetic behind one posting's score — the
+  `0.85 × cosine + 0.15 × cluster-affinity` split shown as a stacked bar, the
+  overlapping keywords that earned the cosine (each literally a term in the
+  similarity sum), and where the posting sits relative to your resume on the
+  map.
+
+Each run writes the model snapshot to `reports/clustering.json` (local-only,
+like the other reports), and the scorer emits it straight from the vectors it
+already computed, so the numbers shown always match the assigned `fit_score`.
+
 > **Note:** ATS board slugs in `companies.yaml` are best-effort and companies
 > migrate ATS vendors over time. Run `python -m jobsearch verify` (or just
 > read the "needs attention" section of the daily report) and fix or remove
@@ -212,9 +236,11 @@ jobsearch/company_questions/  curated company→LeetCode sets + the refresh load
 jobsearch/role_profile.py       resume → occupation matching (TF-IDF / MiniLM)
 jobsearch/company_discovery.py  resume-tailored registry generation
 tools/build_occupations.py      expand config/occupations.yaml from O*NET
-jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting
+jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting, the /clusters explanation
 jobsearch/pipeline.py    orchestration
+webapp/clusters.py       loads reports/clustering.json for the Fit map views
 reports/                 daily output (markdown, CSV, JSON, run-log)
 reports/run-log.json     per-run diagnostics: what was targeted, board results, funnel
+reports/clustering.json  per-run fit map: 2-D projection + per-job score breakdown
 tests/                   offline tests (no network needed)
 ```

@@ -25,6 +25,12 @@
   </div>
   <div class="actions">
     <span class="status status-{{ job.status }}">{{ job.status.replace('_',' ') }}</span>
+    {% if job.fit_score is not none %}
+    <a class="btn btn-ghost" href="/clusters/job/{{ job.id }}"
+       title="See exactly how this posting's fit score was computed — the resume-similarity and cluster terms behind it.">
+      📊 Why this fit?
+    </a>
+    {% endif %}
     <button class="btn btn-primary" data-apply-btn
             data-job-id="{{ job.id }}" data-application-id="{{ job.application_id }}"
             title="Opens a tab in the integrated browser and auto-fills your profile into the form. Never submits — you review and click submit.">

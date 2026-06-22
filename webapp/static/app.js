@@ -304,3 +304,156 @@ if (themeToggle) {
   onScroll();
   window.addEventListener("scroll", onScroll, { passive: true });
 })();
+
+
+// ===========================================================================
+// Cluster fit map (/clusters and /clusters/job/{id}). Renders the 2-D TF-IDF
+// projection emitted by the pipeline (reports/clustering.json) as an SVG
+// scatter: postings coloured by K-means cluster, the resume as a ★, cluster
+// centres as rings. On the per-job page one posting is focused (highlight).
+// Pure progressive enhancement — the page is fully useful without it.
+// ===========================================================================
+(function clusterMap() {
+  const host = document.getElementById("cluster-map");
+  const dataEl = document.getElementById("cluster-map-data");
+  if (!host || !dataEl) return;
+  let data;
+  try { data = JSON.parse(dataEl.textContent); } catch { return; }
+  const points = data.points || [];
+  const clusters = data.clusters || [];
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  // Distinct, theme-agnostic hue per cluster (golden-angle spacing). The same
+  // function colours the legend swatches in the page, keeping them in sync.
+  const colorFor = (id) => `hsl(${(((id * 137.508) % 360) + 360) % 360}, 66%, 52%)`;
+  document.querySelectorAll("[data-cluster-swatch]").forEach((sw) => {
+    sw.style.background = colorFor(parseInt(sw.dataset.clusterSwatch, 10) || 0);
+  });
+  if (!points.length) return;
+
+  const css = (name, fallback) =>
+    (getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback);
+  const accent = css("--accent", "#0a84ff");
+  const inkMuted = css("--muted", "#8e8e93");
+
+  const W = 1000, H = 600, PAD = 46;
+  const centroids = clusters.filter((c) => c.centroid).map((c) => ({ id: c.id, ...c.centroid }));
+  const resume = (data.resume && data.resume.x != null) ? data.resume : null;
+  const all = points.concat(centroids, resume ? [resume] : []);
+  const xs = all.map((p) => p.x), ys = all.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const spanX = (maxX - minX) || 1, spanY = (maxY - minY) || 1;
+  const scale = Math.min((W - 2 * PAD) / spanX, (H - 2 * PAD) / spanY);
+  const offX = PAD + (W - 2 * PAD - spanX * scale) / 2;
+  const offY = PAD + (H - 2 * PAD - spanY * scale) / 2;
+  const sx = (x) => offX + (x - minX) * scale;
+  const sy = (y) => H - (offY + (y - minY) * scale);  // flip: data-up → screen-up
+
+  const el = (tag, attrs) => {
+    const n = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  };
+  const star = (cx, cy, r) => {
+    let d = "";
+    for (let i = 0; i < 10; i++) {
+      const rad = (i % 2 ? r * 0.45 : r), a = (Math.PI / 5) * i - Math.PI / 2;
+      d += (i ? "L" : "M") + (cx + rad * Math.cos(a)).toFixed(1) + "," + (cy + rad * Math.sin(a)).toFixed(1);
+    }
+    return d + "Z";
+  };
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, class: "cluster-svg",
+                          preserveAspectRatio: "xMidYMid meet", role: "img",
+                          "aria-label": "Scatter map of job postings clustered by resume fit" });
+  const focusKey = data.highlight || null;
+  const focusPoint = focusKey ? points.find((p) => p.key === focusKey) : null;
+  const focusCluster = focusPoint ? focusPoint.cluster : null;
+
+  // --- postings ------------------------------------------------------------
+  const dots = [];
+  points.forEach((p) => {
+    const dimmed = focusPoint && p.cluster !== focusCluster;
+    const c = colorFor(p.cluster);
+    const node = el("circle", {
+      cx: sx(p.x).toFixed(1), cy: sy(p.y).toFixed(1),
+      r: 5, class: "cmap-dot" + (p.near_miss ? " is-near" : "") + (dimmed ? " is-dim" : ""),
+      fill: p.near_miss ? "transparent" : c, stroke: c,
+    });
+    if (p.id) node.classList.add("is-link");
+    node.__p = p;
+    svg.appendChild(node);
+    dots.push(node);
+  });
+
+  // --- cluster centres -----------------------------------------------------
+  centroids.forEach((c) => {
+    svg.appendChild(el("circle", { cx: sx(c.x).toFixed(1), cy: sy(c.y).toFixed(1),
+      r: 13, class: "cmap-centroid", stroke: colorFor(c.id), fill: "none" }));
+    const lbl = el("text", { x: sx(c.x).toFixed(1), y: (sy(c.y) + 4).toFixed(1),
+      class: "cmap-centroid-num", fill: colorFor(c.id), "text-anchor": "middle" });
+    lbl.textContent = c.id;
+    svg.appendChild(lbl);
+  });
+
+  // --- resume marker (+ optional link to the focused posting) --------------
+  if (resume) {
+    if (focusPoint) {
+      svg.appendChild(el("line", { x1: sx(resume.x).toFixed(1), y1: sy(resume.y).toFixed(1),
+        x2: sx(focusPoint.x).toFixed(1), y2: sy(focusPoint.y).toFixed(1), class: "cmap-link" }));
+    }
+    // stroke comes from CSS (.cmap-resume) — var() can't resolve as an SVG attr.
+    svg.appendChild(el("path", { d: star(sx(resume.x), sy(resume.y), 13),
+      class: "cmap-resume", fill: accent }));
+    const you = el("text", { x: (sx(resume.x) + 16).toFixed(1), y: (sy(resume.y) + 4).toFixed(1),
+      class: "cmap-you", fill: accent });
+    you.textContent = "your resume";
+    svg.appendChild(you);
+  }
+
+  // --- focused posting (drawn last, on top) --------------------------------
+  if (focusPoint) {
+    // stroke comes from CSS (.cmap-focus).
+    svg.appendChild(el("circle", { cx: sx(focusPoint.x).toFixed(1), cy: sy(focusPoint.y).toFixed(1),
+      r: 9, class: "cmap-focus", fill: colorFor(focusPoint.cluster) }));
+  }
+  host.appendChild(svg);
+
+  // --- tooltip -------------------------------------------------------------
+  const tip = document.createElement("div");
+  tip.className = "cluster-tip";
+  tip.hidden = true;
+  host.appendChild(tip);
+  const showTip = (p, evt) => {
+    tip.innerHTML = `<strong>${p.company}</strong><br>${p.title}` +
+      `<br><span class="muted">fit ${Math.round(p.fit)} · cluster ${p.cluster}` +
+      `${p.near_miss ? " · near-miss" : ""}</span>` +
+      (p.id ? `<br><span class="tip-cta">click for the breakdown →</span>` : "");
+    tip.hidden = false;
+    const r = host.getBoundingClientRect();
+    let x = evt.clientX - r.left + 14, y = evt.clientY - r.top + 14;
+    x = Math.min(x, r.width - tip.offsetWidth - 8);
+    tip.style.left = Math.max(4, x) + "px";
+    tip.style.top = Math.max(4, y) + "px";
+  };
+  dots.forEach((node) => {
+    node.addEventListener("mouseenter", (e) => showTip(node.__p, e));
+    node.addEventListener("mousemove", (e) => showTip(node.__p, e));
+    node.addEventListener("mouseleave", () => { tip.hidden = true; });
+    if (node.__p.id) node.addEventListener("click", () => {
+      window.location.href = `/clusters/job/${node.__p.id}`;
+    });
+  });
+
+  // --- legend hover emphasis (cluster cards highlight their points) --------
+  document.querySelectorAll("[data-cluster-legend]").forEach((card) => {
+    const id = parseInt(card.dataset.clusterLegend, 10);
+    const setEmphasis = (on) => dots.forEach((d) => {
+      d.classList.toggle("is-dim", on && d.__p.cluster !== id);
+      d.classList.toggle("is-hot", on && d.__p.cluster === id);
+    });
+    card.addEventListener("mouseenter", () => setEmphasis(true));
+    card.addEventListener("mouseleave", () => setEmphasis(false));
+  });
+})();

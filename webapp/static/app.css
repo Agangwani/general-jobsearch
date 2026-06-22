@@ -1342,6 +1342,167 @@ details > summary:focus-visible { outline: 2px solid var(--accent); outline-offs
 .referral-table tr:hover td { background: var(--bg-soft); }
 .referral-banner { margin: var(--sp-1) 0 var(--sp-4); }
 
+/* =====================================================  FIT CLUSTER MAP  ====
+   The /clusters visualization: a 2-D scatter of the TF-IDF space plus a
+   per-job breakdown of the cosine + cluster math behind each fit score.
+   ========================================================================== */
+
+/* formula + param chips under the page title */
+.formula-strip { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-2) 0 var(--sp-4); }
+.fchip {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 6px 14px;
+  font-size: var(--fs-sm);
+  color: var(--text-soft);
+  box-shadow: var(--shadow-xs);
+}
+.fchip b { color: var(--accent-text); font-variant-numeric: tabular-nums; }
+
+/* map key (the little legend above the scatter) */
+.map-legend-key { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: center; margin-bottom: var(--sp-3); font-size: var(--fs-sm); }
+.map-legend-key > span { display: inline-flex; align-items: center; gap: 7px; }
+.key-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; flex: none; }
+.key-dot.key-job { background: var(--muted); }
+.key-dot.key-near { background: transparent; border: 1.5px solid var(--muted); }
+.key-dot.key-centroid { background: transparent; border: 2px solid var(--text-soft); width: 13px; height: 13px; }
+.key-dot.key-resume { background: var(--accent); clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); border-radius: 0; width: 14px; height: 14px; }
+.map-hint { color: var(--faint); font-size: var(--fs-xs); margin-left: auto; }
+
+/* the scatter container + svg */
+.cluster-map {
+  position: relative;
+  max-width: 1000px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--sp-3);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: var(--sp-5);
+}
+.cluster-map-mini { max-width: 760px; }
+.cluster-svg { width: 100%; height: auto; display: block; overflow: visible; }
+
+.cmap-dot {
+  stroke-width: 1.2;
+  fill-opacity: 0.82;
+  transition: r var(--t-fast) ease, fill-opacity var(--t-fast) ease, opacity var(--t-fast) ease;
+}
+.cmap-dot.is-near { fill-opacity: 0; stroke-width: 1.5; stroke-dasharray: 2 2; }
+.cmap-dot.is-link { cursor: pointer; }
+.cmap-dot.is-link:hover { r: 8; fill-opacity: 1; }
+.cmap-dot.is-dim { opacity: 0.14; }
+.cmap-dot.is-hot { r: 7; fill-opacity: 1; }
+
+.cmap-centroid { stroke-width: 2.5; stroke-dasharray: 4 3; opacity: 0.9; }
+.cmap-centroid-num { font: 700 13px var(--font-mono); opacity: 0.9; }
+.cmap-link { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.5; }
+.cmap-resume { stroke: var(--bg-card); stroke-width: 2; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); }
+.cmap-you { font: 600 14px var(--font-sans); }
+.cmap-focus { stroke: var(--text); stroke-width: 3; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4)); }
+
+.cluster-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: var(--bg-glass);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  backdrop-filter: saturate(180%) blur(14px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  max-width: 280px;
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+}
+.cluster-tip .muted { font-size: var(--fs-xs); }
+.cluster-tip .tip-cta { color: var(--accent-text); font-size: var(--fs-xs); font-weight: 600; }
+
+/* cluster cards (also the legend — hover one to highlight its points) */
+.cluster-grid { margin-bottom: var(--sp-4); }
+.cluster-card { transition: border-color var(--t-fast) ease, box-shadow var(--t-med) ease, transform var(--t-fast) ease; }
+.cluster-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-md); transform: translateY(-2px); cursor: default; }
+.cluster-card.is-home { border-color: var(--accent-ring); background: var(--grad-brand-soft), var(--bg-card); }
+.cluster-card-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-1); }
+.cluster-card-head h3 { margin: 0; display: flex; align-items: center; gap: var(--sp-2); }
+.cl-swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12); }
+.affinity-row { display: flex; align-items: center; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.affinity-row .freq-bar { flex: 1; width: auto; }
+.affinity-val { font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* "how a score is built" prose */
+.explainer {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) var(--sp-6);
+  box-shadow: var(--shadow-xs);
+  max-width: 90ch;
+}
+.explainer ol { margin: 0; padding-left: var(--sp-5); }
+.explainer li { margin: var(--sp-2) 0; line-height: var(--lh-snug); color: var(--text-soft); }
+.explainer code { font-size: 0.82em; }
+
+/* ---- per-job breakdown (/clusters/job/{id}) ------------------------------- */
+.score-build { margin-bottom: var(--sp-6); }
+.contrib-bar {
+  display: flex;
+  height: 46px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-xs);
+  margin: var(--sp-3) 0;
+  max-width: 760px;
+  background: var(--bg-inset);
+}
+.contrib { display: flex; align-items: center; justify-content: center; min-width: 0; transition: width var(--t-slow) var(--ease-out); }
+.contrib-lab { font-size: var(--fs-xs); font-weight: 600; color: #fff; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.contrib-cos { background: var(--accent); }
+.contrib-clu { background: linear-gradient(135deg, #6e6cf0, #bf5af2); }
+
+.formula-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin: var(--sp-3) 0 var(--sp-5); }
+.formula-line code { font-size: var(--fs-sm); background: var(--bg-soft); padding: 6px 10px; }
+.formula-line code b { color: var(--accent-text); font-size: var(--fs-md); }
+.formula-arrow { color: var(--muted); font-size: var(--fs-lg); }
+
+.metric-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); max-width: 760px; }
+.metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) var(--sp-5);
+  box-shadow: var(--shadow-sm);
+}
+.metric-label { display: block; font-size: var(--fs-sm); color: var(--muted); font-weight: 550; }
+.metric-num { display: block; margin: var(--sp-1) 0 var(--sp-2); font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.metric-foot { display: block; font-size: var(--fs-xs); color: var(--muted); line-height: var(--lh-snug); }
+.metric-foot b { color: var(--text-soft); font-variant-numeric: tabular-nums; }
+
+/* overlapping-keyword chips, each with a weight bar */
+.term-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.term-chip {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 5px 13px;
+  font-size: var(--fs-sm);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+}
+.term-chip-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-soft); z-index: 0; }
+.term-chip-text { position: relative; z-index: 1; font-weight: 550; color: var(--text); }
+
+@media (max-width: 720px) {
+  .metric-cards { grid-template-columns: 1fr; }
+  .map-hint { margin-left: 0; flex-basis: 100%; }
+}
+
 /* --------------------------------------------------------------- motion ---- */
 /* Cross-page view transitions: native-app-style fades between pages where the
    browser supports it (Chromium / Safari TP). Pure progressive enhancement. */

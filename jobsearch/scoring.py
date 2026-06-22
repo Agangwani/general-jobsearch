@@ -24,6 +24,7 @@ from collections import Counter, defaultdict
 
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 from sklearn.preprocessing import normalize
 
@@ -120,6 +121,172 @@ def cluster_topics(vectorizer: TfidfVectorizer, centroids: np.ndarray, n_terms: 
     return topics
 
 
+# --------------------------------------------------------------- explanation ---
+# Everything below powers the "how was this fit scored?" visualization
+# (webapp /clusters): a 2-D map of the TF-IDF space plus a per-job breakdown of
+# the cosine + cluster terms that produced each score. It re-uses the exact
+# vectors score_jobs already computed, so the numbers shown always match the
+# fit_score the pipeline assigned.
+
+def _empty_explanation() -> dict:
+    """Shape returned for an empty job set, so callers can unpack unconditionally."""
+    from datetime import datetime, timezone
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "params": {"n_clusters": 0, "cosine_weight": 0.0, "cluster_weight": 0.0,
+                   "corpus_size": 0, "scored": 0, "scale": 0.0, "top_raw": 0.0,
+                   "has_map": False},
+        "resume": {"x": None, "y": None, "cluster": 0},
+        "clusters": [],
+        "jobs": [],
+    }
+
+
+def _top_terms_from_centroid(centroid: np.ndarray, terms: np.ndarray, n: int = 8) -> list[str]:
+    order = np.argsort(centroid)[::-1][:n]
+    return [str(terms[i]) for i in order if centroid[i] > 0]
+
+
+def _doc_top_terms(row, terms: np.ndarray, n: int = 8) -> list[str]:
+    """The heaviest TF-IDF terms in one posting's own vector — what the model
+    'reads' the posting as being about."""
+    if row.nnz == 0:
+        return []
+    order = np.argsort(row.data)[::-1][:n]
+    return [str(terms[row.indices[i]]) for i in order]
+
+
+def _match_terms(row, resume_vec: np.ndarray, terms: np.ndarray, n: int = 8) -> list[list]:
+    """Terms shared by the posting and the resume, ranked by how much each
+    contributed to the cosine similarity (posting_weight × resume_weight). The
+    sum of all such products *is* the cosine, so these are literally the words
+    that earned the match."""
+    if row.nnz == 0:
+        return []
+    contrib = row.data * resume_vec[row.indices]
+    order = np.argsort(contrib)[::-1][:n]
+    out = []
+    for i in order:
+        if contrib[i] <= 0:
+            break
+        out.append([str(terms[row.indices[i]]), round(float(contrib[i]), 4)])
+    return out
+
+
+def _project_2d(X_corpus, X_jobs, resume_vec: np.ndarray, centroids):
+    """Project the TF-IDF space onto 2 dimensions (LSA) so the corpus can be
+    drawn as a scatter. Fit on the corpus, then transform the things we plot:
+    the scored jobs, the resume, and the cluster centroids. Returns None when
+    the corpus is too small to decompose (the views then skip the map)."""
+    n_samples, n_features = X_corpus.shape
+    if n_samples <= 2 or n_features <= 2:
+        return None
+    svd = TruncatedSVD(n_components=2, random_state=0)
+    # On degenerate tiny corpora sklearn divides by a zero total variance while
+    # computing explained_variance_ratio_ (unused here) — quiet that warning.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        svd.fit(X_corpus)
+    jobs_xy = svd.transform(X_jobs)
+    resume_xy = svd.transform(resume_vec.reshape(1, -1))[0]
+    centroids_xy = svd.transform(centroids) if centroids is not None else None
+    return {"jobs": jobs_xy, "resume": resume_xy, "centroids": centroids_xy}
+
+
+def _xy(point) -> dict | None:
+    return None if point is None else {"x": round(float(point[0]), 4),
+                                       "y": round(float(point[1]), 4)}
+
+
+def _build_explanation(*, jobs, X_jobs, labels, cosine, raw, scale, resume_vec,
+                       cosine_weight, cluster_weight, cluster_affinity, topics,
+                       corpus, corpus_labels, centroids, n_clusters, vectorizer,
+                       X_corpus) -> dict:
+    """Assemble the per-run clustering record consumed by the visualization."""
+    from datetime import datetime, timezone
+
+    terms = vectorizer.get_feature_names_out()
+    coords = _project_2d(X_corpus, X_jobs, resume_vec, centroids)
+    job_xy = coords["jobs"] if coords else None
+    resume_point = _xy(coords["resume"]) if coords else None
+
+    scored_sizes = Counter(int(c) for c in labels)
+    corpus_sizes = Counter(int(c) for c in corpus_labels)
+    resume_cluster = int(np.argmax(cluster_affinity)) if len(cluster_affinity) else 0
+
+    clusters = []
+    for c in range(n_clusters):
+        if coords and coords["centroids"] is not None:
+            centroid_xy = _xy(coords["centroids"][c])
+        elif coords and job_xy is not None and scored_sizes.get(c):
+            # Single-cluster runs have no centroid — sit it at its members' mean.
+            members = [job_xy[i] for i in range(len(jobs)) if int(labels[i]) == c]
+            centroid_xy = _xy(np.mean(members, axis=0)) if members else None
+        else:
+            centroid_xy = None
+        clusters.append({
+            "id": c,
+            "label": topics.get(c) or "all postings",
+            "terms": (_top_terms_from_centroid(centroids[c], terms)
+                      if centroids is not None else []),
+            "size": scored_sizes.get(c, 0),
+            "corpus_size": corpus_sizes.get(c, 0),
+            "affinity": round(float(cluster_affinity[c]), 4),
+            "is_resume_cluster": c == resume_cluster,
+            "centroid": centroid_xy,
+        })
+
+    order = sorted(range(len(jobs)), key=lambda i: -jobs[i].fit_score)
+    rank_of = {i: r + 1 for r, i in enumerate(order)}
+    jobs_out = []
+    for i, job in enumerate(jobs):
+        c = int(labels[i])
+        cos = float(cosine[i])
+        aff = float(cluster_affinity[c])
+        # Round the two parts, then derive raw from them so the breakdown adds
+        # up exactly on the per-job page (it differs from the true raw only in
+        # the 4th decimal; the displayed fit comes from the true fit_score).
+        cos_contribution = round(cosine_weight * cos, 4)
+        cluster_contribution = round(cluster_weight * aff, 4)
+        jobs_out.append({
+            "key": job.key,
+            "company": job.company,
+            "title": job.title,
+            "location": job.location,
+            "cluster": c,
+            "cosine": round(cos, 4),
+            "affinity": round(aff, 4),
+            "cosine_contribution": cos_contribution,
+            "cluster_contribution": cluster_contribution,
+            "raw": round(cos_contribution + cluster_contribution, 4),
+            "fit": job.fit_score,
+            "rank": rank_of[i],
+            "near_miss": bool(job.filter_reason),
+            "filter_reason": job.filter_reason,
+            "match_terms": _match_terms(X_jobs[i], resume_vec, terms),
+            "top_terms": _doc_top_terms(X_jobs[i], terms),
+            # Map coords; None on corpora too small to project (params.has_map).
+            **((_xy(job_xy[i]) if job_xy is not None else None) or {"x": None, "y": None}),
+        })
+
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "params": {
+            "n_clusters": n_clusters,
+            "cosine_weight": round(float(cosine_weight), 3),
+            "cluster_weight": round(float(cluster_weight), 3),
+            "corpus_size": len(corpus),
+            "scored": len(jobs),
+            "scale": round(float(scale), 4),
+            "top_raw": round(float(raw.max()), 4) if len(raw) else 0.0,
+            "has_map": coords is not None,
+        },
+        "resume": {**(resume_point or {"x": None, "y": None}),
+                   "cluster": resume_cluster},
+        "clusters": clusters,
+        "jobs": jobs_out,
+    }
+
+
 def score_jobs(
     resume_text: str,
     jobs: list[JobPosting],
@@ -127,6 +294,7 @@ def score_jobs(
     corpus: list[JobPosting] | None = None,
     cluster_weight: float = CLUSTER_WEIGHT,
     return_topics: bool = False,
+    return_explanation: bool = False,
 ):
     """Assign fit_score (0-100) and cluster labels to every job in `jobs`,
     in place.
@@ -135,9 +303,23 @@ def score_jobs(
     pass the full fetched corpus so IDF and clusters are estimated from
     thousands of postings rather than the filtered few. `jobs` must be a
     subset of `corpus` (or corpus=None to fit on `jobs` themselves).
+
+    Return shape grows with the optional flags (jobs are always mutated in
+    place): `jobs`, then `topics` if `return_topics`, then a clustering
+    `explanation` dict if `return_explanation` — the latter powering the
+    /clusters visualization (a 2-D map + a per-job score breakdown).
     """
+    def _result(explanation=None):
+        out = [jobs]
+        if return_topics:
+            out.append(topics)
+        if return_explanation:
+            out.append(explanation if explanation is not None else _empty_explanation())
+        return tuple(out) if len(out) > 1 else jobs
+
     if not jobs:
-        return (jobs, {}) if return_topics else jobs
+        topics = {}
+        return _result()
     corpus = corpus if corpus else jobs
 
     descriptions = strip_company_boilerplate(corpus)
@@ -153,6 +335,7 @@ def score_jobs(
     resume_vec = normalize(vectorizer.transform([resume_text])).toarray().ravel()
 
     n_clusters = pick_cluster_count(len(corpus), clusters)
+    centroids = None
     if n_clusters > 1:
         km = KMeans(
             n_clusters=n_clusters,
@@ -186,7 +369,17 @@ def score_jobs(
     for job, score, label in zip(jobs, raw, labels):
         job.fit_score = round(float(score) * scale, 1)
         job.cluster = int(label)
-    return (jobs, topics) if return_topics else jobs
+
+    explanation = None
+    if return_explanation:
+        explanation = _build_explanation(
+            jobs=jobs, X_jobs=X_jobs, labels=labels, cosine=cosine, raw=raw,
+            scale=scale, resume_vec=resume_vec, cosine_weight=cosine_weight,
+            cluster_weight=cluster_weight, cluster_affinity=cluster_affinity,
+            topics=topics, corpus=corpus, corpus_labels=corpus_labels,
+            centroids=centroids, n_clusters=n_clusters, vectorizer=vectorizer,
+            X_corpus=X_corpus)
+    return _result(explanation)
 
 
 def apply_recency(jobs: list[JobPosting], half_life_days: float = 7.0, unknown_age_days: float = 14.0) -> list[JobPosting]:

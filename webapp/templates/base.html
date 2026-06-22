@@ -28,6 +28,7 @@
   <a href="/?stack=applied">Applied <span class="pill pill-green">{{ counts.applied }}</span></a>
   <span class="nav-divider" aria-hidden="true"></span>
   <a href="/prep" class="{{ 'is-active' if path.startswith('/prep') }}">Prep <span class="pill pill-amber">{{ prep_counts.lessons_done }}/{{ prep_counts.lessons_total }}</span></a>
+  <a href="/clusters" class="{{ 'is-active' if path.startswith('/clusters') }}" title="See how K-means + TF-IDF scores each job's fit to your resume">Fit map</a>
   <a href="/resume" class="{{ 'is-active' if path == '/resume' }}">Resume</a>
   <a href="/profile" class="{{ 'is-active' if path == '/profile' }}">Profile</a>
   <a href="/settings" class="{{ 'is-active' if path == '/settings' }}">Search config</a>

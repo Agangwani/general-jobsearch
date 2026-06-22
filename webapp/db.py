@@ -467,6 +467,24 @@ def application_by_url(conn: sqlite3.Connection, url: str) -> sqlite3.Row | None
     ).fetchone()
 
 
+def job_ids_by_key(conn: sqlite3.Connection, keys) -> dict[str, int]:
+    """Map pipeline keys (source:company:job_id) → DB job ids, for the keys
+    present. Used to make cluster-map points link to their tracked job."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    out: dict[str, int] = {}
+    # Chunk to stay under SQLite's variable limit on very large reports.
+    for start in range(0, len(keys), 400):
+        chunk = keys[start:start + 400]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT id, key FROM jobs WHERE key IN ({placeholders})", chunk
+        ).fetchall()
+        out.update({r["key"]: r["id"] for r in rows})
+    return out
+
+
 def active_application_urls(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """(application_id, url) for every active job — the caller fuzzy-matches an
     open tab's URL against these (e.g. by canonical apply form / ATS job id)."""

@@ -11,7 +11,7 @@ from .fetchers import BROWSER_FETCHERS, FETCHERS
 from .filters import MATCH, NEAR_LOCATION, NEAR_TITLE, JobFilter, build_funnel
 from .http import make_session
 from .models import Company, FetchError, JobPosting
-from .report import render_markdown, write_reports, write_run_log
+from .report import render_markdown, write_clustering, write_reports, write_run_log
 from .scoring import apply_recency, rank_companies, score_jobs
 from .state import load_seen, mark_new, update_seen
 from .validation import (
@@ -226,13 +226,15 @@ def run(root: Path) -> int:
 
     # Vectorizer + K-means are fit on the full fetched corpus; matched and
     # near-miss jobs are scored inside that space (docs/analysis-scoring-skew.md).
-    _, cluster_names = score_jobs(
+    # The explanation captures the same vectors for the /clusters visualization.
+    _, cluster_names, clustering = score_jobs(
         resume_text,
         jobs + near_miss,
         clusters=ranking.get("clusters", "auto"),
         corpus=all_jobs,
         cluster_weight=ranking.get("cluster_weight", 0.15),
         return_topics=True,
+        return_explanation=True,
     )
     apply_recency(
         jobs,
@@ -267,6 +269,10 @@ def run(root: Path) -> int:
     )
     out_dir = root / settings["output"].get("reports_dir", "reports")
     written = write_reports(out_dir, markdown, jobs, company_fit, near_miss=near_miss, funnel=funnel)
+
+    clustering_path = write_clustering(out_dir, clustering)
+    if clustering_path:
+        written.append(clustering_path)
 
     runlog = _build_runlog(
         targeting, resume_text, is_sample, settings, companies, all_jobs,
