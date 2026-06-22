@@ -108,9 +108,15 @@ class AppServer:
         # exercises it; harmless otherwise.
         env.setdefault("PLAYWRIGHT_BROWSERS_PATH",
                        str(_default_browsers_path()) if _default_browsers_path() else "0")
+        # `--root <temp>` is essential: without it the app defaults to the repo
+        # root and serves the *real* data/jobsearch.db — the run would test an
+        # empty/foreign DB (job detail pages redirect) and, worse, could mutate
+        # the user's actual data. `--root` is a global flag, so it precedes the
+        # `ui` subcommand. cwd stays the repo so the jobsearch/webapp packages
+        # still import. (Bug caught by the jobs explorer on the first run.)
         self._proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "jobsearch", "ui",
-             "--host", self.host, "--port", str(self.port)],
+            [sys.executable, "-u", "-m", "jobsearch", "--root", str(self.root),
+             "ui", "--host", self.host, "--port", str(self.port)],
             cwd=self.repo_root, env=env,
             stdout=self._log_fh, stderr=subprocess.STDOUT, text=False)
 
