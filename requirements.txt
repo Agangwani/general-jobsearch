@@ -9,6 +9,11 @@ jinja2>=3.1
 python-multipart>=0.0.9
 pypdf>=4.0
 
+# Postgres backend for hosted/multi-user deployments (webapp/pgcompat.py),
+# selected at runtime by JOBSEARCH_DATABASE_URL. Harmless locally, where the
+# app defaults to SQLite and never imports it. See docs/design-hosting.md.
+psycopg[binary]>=3.1
+
 # Optional: enables the MiniLM backend for resume → occupation matching
 # (role_match_backend: minilm/auto). Without it, matching falls back to TF-IDF.
 # sentence-transformers>=2.2

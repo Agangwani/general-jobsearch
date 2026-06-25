@@ -214,7 +214,8 @@ def ensure_seeded(conn, root: Path) -> None:
     now = db.utcnow()
     for field in STANDARD_FIELDS:
         conn.execute(
-            "INSERT OR IGNORE INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(field) DO NOTHING",
             (field, seeded.get(field, ""), now),
         )
     conn.commit()
@@ -226,7 +227,8 @@ def ensure_fields(conn) -> None:
     now = db.utcnow()
     for field in STANDARD_FIELDS:
         conn.execute(
-            "INSERT OR IGNORE INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?)",
+            "INSERT INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(field) DO NOTHING",
             (field, "", now),
         )
     conn.commit()

@@ -22,6 +22,7 @@ application history).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -174,7 +175,7 @@ CREATE TABLE IF NOT EXISTS referral_candidates (
     name              TEXT NOT NULL,
     headline          TEXT DEFAULT '',
     linkedin_url      TEXT UNIQUE NOT NULL,
-    current_role      TEXT DEFAULT '',
+    "current_role"    TEXT DEFAULT '',   -- quoted: reserved keyword in Postgres
     current_company   TEXT DEFAULT '',
     location          TEXT DEFAULT '',
     summary           TEXT DEFAULT '',
@@ -386,7 +387,24 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(path: Path):
+    """Open the application database.
+
+    Defaults to local SQLite at ``path`` (the single-user, on-your-machine
+    product). When ``JOBSEARCH_DATABASE_URL`` is set — hosted deployments, see
+    ``docs/design-hosting.md`` — it connects to that Postgres database instead
+    and ``path`` is ignored. Both backends expose the same connection API to the
+    rest of the app (see ``webapp/pgcompat.py``)."""
+    url = os.environ.get("JOBSEARCH_DATABASE_URL")
+    if url:
+        from .pgcompat import connect_postgres, sqlite_schema_to_postgres
+        conn = connect_postgres(url)
+        conn.executescript(sqlite_schema_to_postgres(SCHEMA))
+        return conn
+    return _connect_sqlite(path)
+
+
+def _connect_sqlite(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -1056,7 +1074,7 @@ def companies_overview(conn: sqlite3.Connection) -> list[dict]:
         FROM company_problems cp
         LEFT JOIN company_problem_progress pr ON pr.company_problem_id = cp.id
         GROUP BY cp.company_key
-        ORDER BY problem_count DESC, company COLLATE NOCASE
+        ORDER BY problem_count DESC, LOWER(MIN(cp.company))
     """).fetchall()
     return [dict(r) for r in rows]
 
@@ -1141,11 +1159,13 @@ def company_overall_counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 # --- company question refresh runs (mirror referral_runs) -------------------
 def start_company_refresh(conn: sqlite3.Connection, company_key: str = "") -> int:
-    cur = conn.execute(
+    # RETURNING id works on both SQLite (3.35+) and Postgres; psycopg has no
+    # cursor.lastrowid, so the new id is read back explicitly instead.
+    row = conn.execute(
         "INSERT INTO company_refresh_runs (company_key, state, started_at) "
-        "VALUES (?, 'running', ?)", (company_key, utcnow()))
+        "VALUES (?, 'running', ?) RETURNING id", (company_key, utcnow())).fetchone()
     conn.commit()
-    return cur.lastrowid
+    return row["id"]
 
 
 def finish_company_refresh(conn: sqlite3.Connection, run_id: int, *,
@@ -1320,7 +1340,7 @@ def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
         counts[normalize_company_name(r["company"])] = (r["n"], r["open_n"] or 0)
     out = []
     for row in conn.execute(
-            "SELECT * FROM startup_companies ORDER BY name COLLATE NOCASE").fetchall():
+            "SELECT * FROM startup_companies ORDER BY LOWER(name)").fetchall():
         meta = decode_startup_row(row)
         if q:
             hay = " ".join([meta["name"], meta["industry"],
