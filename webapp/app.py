@@ -104,7 +104,13 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                   near_miss: str = "1", sort_by: str = "", sort_dir: str = "",
                   min_fit: str = "", status_filter: str = "", run_scope: str = "latest",
                   startup_scope: str = ""):
-        min_fit_val = float(min_fit) if min_fit else None
+        # Parse the user-supplied min-fit defensively: blank, whitespace, or
+        # malformed input (e.g. "abc", "12.5.6") means "no min-fit filter"
+        # rather than a 500.
+        try:
+            min_fit_val = float(min_fit) if min_fit.strip() else None
+        except (ValueError, TypeError):
+            min_fit_val = None
         # Default to the latest run so stale to-apply jobs from earlier,
         # differently-targeted runs don't pile up; run_scope=all shows everything.
         latest_at = db.latest_run_ingested_at(conn)
@@ -273,11 +279,44 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         db.upsert_startup_company(conn, meta, from_user=True)
         return RedirectResponse(f"/startups/{quote_plus(company_key)}", status_code=303)
 
-    # ------------------------------------------------- software interview prep
+    # ------------------------------------------------- interview prep
+    def _resume_disciplines() -> list[str]:
+        """The prep disciplines the current resume maps to, used to highlight
+        relevant tracks on /prep. Best-effort and offline — returns [] when
+        there's no resume or no confident occupation match (then the page shows
+        the full catalog without singling anything out)."""
+        try:
+            from jobsearch.config import load_settings
+            from jobsearch.prep.disciplines import disciplines_for_occupations
+            from jobsearch.resume import load_resume_text
+            from jobsearch.role_profile import resolve_profile
+            settings = load_settings(root / "config" / "settings.yaml")
+            resume_text, _ = load_resume_text(root, settings)
+            profile = resolve_profile(root, settings, resume_text)
+            return disciplines_for_occupations(profile.occupations) if profile else []
+        except Exception:  # noqa: BLE001 — prep must render even if matching hiccups
+            return []
+
+    def _split_prep_tracks(tracks: list[dict], disciplines: list[str]):
+        """Attach each track's disciplines (from the authored content) and split
+        into (recommended_for_resume, other)."""
+        from jobsearch.prep import ALL_TRACKS
+        from jobsearch.prep.disciplines import split_tracks
+        by_slug = {t["slug"]: (t.get("disciplines") or []) for t in ALL_TRACKS}
+        for row in tracks:
+            row["disciplines"] = by_slug.get(row["slug"], [])
+        return split_tracks(tracks, disciplines)
+
     @app.get("/prep", response_class=HTMLResponse)
     def prep_home(request: Request):
+        tracks = db.prep_tracks_overview(conn)
+        disciplines = _resume_disciplines()
+        recommended, other = _split_prep_tracks(tracks, disciplines)
         return render(request, "prep.html",
-                      tracks=db.prep_tracks_overview(conn),
+                      tracks=tracks,
+                      recommended_tracks=recommended,
+                      other_tracks=other,
+                      resume_disciplines=disciplines,
                       resume_target=db.prep_resume_target(conn),
                       overall=db.prep_overall_counts(conn),
                       companies=db.companies_overview(conn))
