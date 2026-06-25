@@ -1,0 +1,29 @@
+Daniel Okafor
+Senior Software Engineer, Brooklyn, NY
+daniel.okafor@example.com | 555-201-3003 | github.com/danokafor
+
+SUMMARY
+Senior software engineer with 9 years building distributed backend systems and
+APIs at scale. Deep experience with event-driven architecture, microservices,
+and cloud infrastructure. Comfortable owning services end to end from design
+through on-call.
+
+EXPERIENCE
+Senior Software Engineer — StreamScale (2020–present)
+- Designed and operated event-driven microservices in Go and Python processing
+  80M events/day on Kafka and AWS, with exactly-once delivery semantics.
+- Led the migration of a monolith to Kubernetes, cutting p99 latency 35% and
+  halving deploy times; introduced distributed tracing and SLOs.
+- Built internal platform tooling and CI/CD pipelines adopted by 12 teams.
+
+Software Engineer — DataForge (2016–2020)
+- Built REST and gRPC APIs in Java and Python backing a B2B analytics product.
+- Implemented Terraform infrastructure-as-code and PostgreSQL data models.
+
+SKILLS
+Python, Go, Java, distributed systems, microservices, REST, gRPC, APIs, Kafka,
+AWS, Kubernetes, Docker, Terraform, PostgreSQL, Redis, system design, CI/CD,
+observability, scalability
+
+EDUCATION
+B.S. Computer Science, Columbia University, 2016

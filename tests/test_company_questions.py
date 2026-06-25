@@ -236,8 +236,11 @@ def test_company_routes(tmp_path):
     status = client.get("/api/companies/amazon/refresh-status").json()
     assert status["problem_count"] > 0 and status["running"] is False
 
-    # nav badge counts render on every page
-    assert "Companies" in client.get("/").text
+    # the nav renders on every page (the Prep badge is present on the dashboard)
+    assert "Prep" in client.get("/").text
+    # company LeetCode prep is reachable from the /prep page's widget
+    prep = client.get("/prep").text
+    assert "Company LeetCode" in prep and "Amazon" in prep
 
     # a job at Amazon surfaces its company questions on the detail page
     db.upsert_job(app.state.conn, {

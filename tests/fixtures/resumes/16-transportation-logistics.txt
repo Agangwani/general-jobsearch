@@ -1,0 +1,29 @@
+Grace Adeyemi
+Supply Chain Analyst, New York, NY
+grace.adeyemi@example.com | 555-201-3016 | linkedin.com/in/grace-adeyemi-scm
+
+SUMMARY
+Supply chain analyst with 5 years optimizing demand planning, inventory, and
+logistics for a national retailer. Strong in forecasting, procurement, and ERP
+analytics to cut cost and improve service levels.
+
+EXPERIENCE
+Supply Chain Analyst — National Goods Co (2021–present)
+- Own demand planning and forecasting for 1,200 SKUs, reducing stockouts 28%
+  while cutting excess inventory through improved replenishment models.
+- Analyze logistics and distribution performance in SAP, optimizing freight,
+  warehouse throughput, and fulfillment across three distribution centers.
+- Partner with procurement and sourcing to negotiate vendor lead times and manage
+  purchase orders.
+
+Logistics Coordinator — Eastport Distribution (2019–2021)
+- Coordinated inbound and outbound shipments, carrier scheduling, and warehouse
+  inventory; tracked KPIs on on-time delivery and fill rate.
+
+SKILLS
+Supply chain, logistics, demand planning, forecasting, inventory, procurement,
+sourcing, SAP, ERP, distribution, warehouse, fulfillment, freight, vendor
+management, replenishment, transportation
+
+EDUCATION
+B.S. Supply Chain Management, Rutgers University, 2019

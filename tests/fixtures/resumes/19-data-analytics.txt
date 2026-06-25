@@ -1,0 +1,29 @@
+Wei Zhang
+Senior Data Analyst — Business Intelligence, New York, NY
+wei.zhang@example.com | 555-201-3019 | linkedin.com/in/wei-zhang-analytics
+
+SUMMARY
+Senior data analyst with 6 years turning data into decisions for product and
+business teams. Strong SQL and BI skills, building dashboards and reporting that
+track KPIs and surface actionable insights.
+
+EXPERIENCE
+Senior Data Analyst — Beacon Commerce (2021–present)
+- Build and own executive dashboards in Tableau and Looker, tracking revenue,
+  retention, and funnel KPIs across the business.
+- Write complex SQL to model data from the warehouse, define metrics, and deliver
+  self-serve reporting that cut ad-hoc requests 40%.
+- Partner with product and operations on A/B test readouts and business
+  intelligence analyses that inform roadmap decisions.
+
+Data Analyst — Harborline Retail (2018–2021)
+- Built reporting and dashboards in SQL and Excel; analyzed sales and marketing
+  performance and automated weekly KPI reporting.
+
+SKILLS
+Data analysis, SQL, Tableau, Looker, dashboards, reporting, business
+intelligence, KPIs, metrics, Excel, data visualization, ETL, A/B testing, data
+warehouse, analytics
+
+EDUCATION
+B.S. Statistics & Economics, University of Chicago, 2018

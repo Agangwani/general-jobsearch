@@ -132,6 +132,25 @@ yourself.
 If Chromium isn't installed the run still works — browser-scraped boards are
 skipped with an actionable note in the report instead of failing the run.
 
+### Interview prep curriculum
+
+The **Prep** tab is a resumable, cited curriculum that now spans disciplines, not
+just software. A universal **Behavioral Interviews** track (STAR / Nugget-First,
+a 50+ question bank by competency, Amazon's Leadership Principles, "tell me about
+yourself"/weakness/salary) sits alongside the original software tracks (coding,
+system design, distributed systems) and new discipline tracks: **Case Interviews**
+(consulting/strategy/ops), **Finance & Investment Banking**, **Product
+Management**, **Data & Analytics**, **Sales/CS/Account Management**, **Marketing**,
+**Design**, and **Industry-Specific** (healthcare, legal, education, HR). Content
+is authored in `jobsearch/prep/` and each lesson cites its source.
+
+Prep is the one part of the flow that is *not specific to your resume's role* —
+every track is available to everyone — but the `/prep` page now **recommends**
+the tracks relevant to your resume: Behavioral for every resume, plus the
+discipline track(s) for your matched occupation (a consultant sees Case
+Interviews first; a nurse sees Industry-Specific). The occupation→discipline
+mapping lives in `jobsearch/prep/disciplines.py`.
+
 ### Company interview questions (LeetCode)
 
 The **Companies** tab tracks *what each company actually asks* on LeetCode.
@@ -242,5 +261,8 @@ webapp/clusters.py       loads reports/clustering.json for the Fit map views
 reports/                 daily output (markdown, CSV, JSON, run-log)
 reports/run-log.json     per-run diagnostics: what was targeted, board results, funnel
 reports/clustering.json  per-run fit map: 2-D projection + per-job score breakdown
+jobsearch/prep/          multi-discipline interview-prep curriculum (behavioral, case, finance, …)
 tests/                   offline tests (no network needed)
+tests/fixtures/resumes/  20 industry resumes (one per top NYC industry) for the suite
+tests/industry_fixtures.py  manifest behind tests/test_industry_resumes.py
 ```

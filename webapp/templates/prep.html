@@ -4,11 +4,12 @@
 
 <header class="page-head">
   <div>
-    <h1>Software Interview Prep</h1>
+    <h1>Interview Prep</h1>
     <div class="subtitle muted">
-      A daily, resumable curriculum distilled from <em>Cracking the Coding Interview</em>,
-      <em>System Design Interview</em> (Alex Xu), <em>Designing Data-Intensive Applications</em>
-      (Kleppmann), and Grokking the Modern System Design Interview. Every lesson cites its source.
+      A daily, resumable curriculum across disciplines — a universal
+      <em>Behavioral</em> track plus software (coding, system design),
+      case/consulting, finance, product, data, sales, marketing, design, and
+      industry-specific tracks. Every lesson cites its source.
     </div>
   </div>
   <div class="actions">
@@ -66,10 +67,8 @@
 </section>
 {% endif %}
 
-<h2>Tracks</h2>
-<div class="prep-grid">
-  {% for t in tracks %}
-  <a class="card" href="/prep/track/{{ t.slug }}" style="--i:{{ loop.index0 }}">
+{% macro track_card(t, i) %}
+  <a class="card" href="/prep/track/{{ t.slug }}" style="--i:{{ i }}">
     <h3>{{ t.title }}</h3>
     <p class="desc">{{ t.description }}</p>
     <div class="prog"><span style="width: {{ (t.lessons_done / t.lesson_count * 100) if t.lesson_count else 0 }}%"></span></div>
@@ -80,7 +79,28 @@
       {% if t.ctci_count %}<span><b>{{ t.ctci_done }}/{{ t.ctci_count }}</b> CtCI</span>{% endif %}
     </div>
   </a>
-  {% endfor %}
+{% endmacro %}
+
+{% if recommended_tracks %}
+<h2>Recommended for your resume</h2>
+<p class="muted" style="margin-top:-10px">
+  Tailored to the roles your resume targets. <strong>Behavioral</strong> applies to
+  every interview, so it's always here.
+</p>
+<div class="prep-grid">
+  {% for t in recommended_tracks %}{{ track_card(t, loop.index0) }}{% endfor %}
 </div>
+{% if other_tracks %}
+<h2>All other tracks</h2>
+<div class="prep-grid">
+  {% for t in other_tracks %}{{ track_card(t, loop.index0) }}{% endfor %}
+</div>
+{% endif %}
+{% else %}
+<h2>Tracks</h2>
+<div class="prep-grid">
+  {% for t in tracks %}{{ track_card(t, loop.index0) }}{% endfor %}
+</div>
+{% endif %}
 
 {% endblock %}
