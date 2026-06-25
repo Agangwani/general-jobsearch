@@ -26,6 +26,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from jobsearch.utils import normalize_company_name
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id              INTEGER PRIMARY KEY,
@@ -45,10 +47,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     validation_note TEXT DEFAULT '',
     first_seen_at   TEXT NOT NULL,
     last_seen_at    TEXT NOT NULL,
-    is_active       INTEGER NOT NULL DEFAULT 1
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    -- 1 when this job's company is a known startup (in startup_companies); set
+    -- by ingest so the dashboard can show only / hide / mix startup jobs.
+    is_startup      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_startup ON jobs(is_startup);
 
 CREATE TABLE IF NOT EXISTS job_events (
     id          INTEGER PRIMARY KEY,
@@ -94,6 +100,42 @@ CREATE TABLE IF NOT EXISTS runs (
     jobs_updated  INTEGER NOT NULL DEFAULT 0,
     jobs_total    INTEGER NOT NULL DEFAULT 0
 );
+
+-- --------------------------------------------------- startup company facts ---
+-- The "helpful info" the startup pipeline tracks per company (employees,
+-- funding stage/amount, investors, notable people, …). Populated by ingest
+-- from data/startup_meta.json (written by `discover-startups`) and editable in
+-- the UI; user_edited=1 protects manual edits from being clobbered on re-ingest.
+-- Keyed by normalized company name so it joins jobs.company across spellings.
+CREATE TABLE IF NOT EXISTS startup_companies (
+    id                INTEGER PRIMARY KEY,
+    company_key       TEXT UNIQUE NOT NULL,
+    name              TEXT NOT NULL,
+    employees         TEXT DEFAULT '',
+    founded           TEXT DEFAULT '',
+    batch             TEXT DEFAULT '',
+    status            TEXT DEFAULT '',
+    stage             TEXT DEFAULT '',
+    last_round        TEXT DEFAULT '',
+    last_round_amount TEXT DEFAULT '',
+    total_raised      TEXT DEFAULT '',
+    investors         TEXT DEFAULT '',   -- JSON array
+    notable_people    TEXT DEFAULT '',   -- JSON array
+    industry          TEXT DEFAULT '',
+    tags              TEXT DEFAULT '',   -- JSON array
+    location          TEXT DEFAULT '',
+    website           TEXT DEFAULT '',
+    one_liner         TEXT DEFAULT '',
+    description       TEXT DEFAULT '',
+    top_company       INTEGER NOT NULL DEFAULT 0,
+    is_hiring         INTEGER NOT NULL DEFAULT 0,
+    yc_url            TEXT DEFAULT '',
+    source            TEXT DEFAULT '',
+    notes             TEXT DEFAULT '',
+    user_edited       INTEGER NOT NULL DEFAULT 0,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_startup_companies_key ON startup_companies(company_key);
 
 -- ------------------------------------------------- email module scaffold ---
 CREATE TABLE IF NOT EXISTS email_accounts (
@@ -351,7 +393,18 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive, idempotent column top-ups for DBs created before a column
+    existed (CREATE TABLE IF NOT EXISTS won't add columns to an existing table).
+    Same philosophy as profile.ensure_fields — never destructive."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "is_startup" not in cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN is_startup INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
 
 
 def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -> str:
@@ -518,6 +571,7 @@ def search_jobs(
     min_fit: float | None = None,
     status_filter: str = "",    # exact application status value
     since: str = "",            # show not-applied jobs only if last_seen_at >= this
+    startup_scope: str = "",    # "" | "all" (both) | "only" (startups) | "hide"
     limit: int = 500,
 ) -> list[sqlite3.Row]:
     sql = [
@@ -525,6 +579,10 @@ def search_jobs(
            FROM jobs j JOIN applications a ON a.job_id = j.id WHERE 1=1"""
     ]
     args: list = []
+    if startup_scope == "only":
+        sql.append("AND j.is_startup = 1")
+    elif startup_scope == "hide":
+        sql.append("AND j.is_startup = 0")
     if q:
         sql.append("AND (j.title LIKE ? OR j.description LIKE ? OR j.company LIKE ? OR j.location LIKE ?)")
         args += [f"%{q}%"] * 4
@@ -611,18 +669,36 @@ def latest_run_ingested_at(conn: sqlite3.Connection) -> str:
     return row["t"] if row and row["t"] else ""
 
 
-def stack_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def _stack_of(status: str) -> str:
+    if status in APPLIED_SET:
+        return "applied"
+    if status == "in_progress":
+        return "in_progress"
+    return "to_apply"
+
+
+def stack_counts(conn: sqlite3.Connection) -> dict:
+    """Per-stack counts (to_apply / in_progress / applied), split into startup
+    vs. non-startup so the home page's big numbers can distinguish the two.
+    Keeps the flat to_apply/in_progress/applied keys for backward compatibility;
+    adds `startup` and `other` sub-dicts and their totals."""
     rows = conn.execute(
-        "SELECT a.status, COUNT(*) AS n FROM applications a "
-        "JOIN jobs j ON j.id = a.job_id WHERE j.is_active = 1 GROUP BY a.status"
+        "SELECT a.status, j.is_startup AS su, COUNT(*) AS n FROM applications a "
+        "JOIN jobs j ON j.id = a.job_id WHERE j.is_active = 1 "
+        "GROUP BY a.status, j.is_startup"
     ).fetchall()
-    by_status = {r["status"]: r["n"] for r in rows}
-    applied = sum(n for s, n in by_status.items() if s in APPLIED_SET)
-    in_progress = by_status.get("in_progress", 0)
-    to_apply = sum(n for s, n in by_status.items()
-                   if s not in APPLIED_SET and s != "in_progress")
-    return {"to_apply": to_apply, "in_progress": in_progress, "applied": applied,
-            "by_status": by_status}
+    zero = {"to_apply": 0, "in_progress": 0, "applied": 0}
+    out: dict = {**zero, "by_status": {},
+                 "startup": dict(zero), "other": dict(zero)}
+    for r in rows:
+        stack = _stack_of(r["status"])
+        side = "startup" if r["su"] else "other"
+        out[stack] += r["n"]
+        out[side][stack] += r["n"]
+        out["by_status"][r["status"]] = out["by_status"].get(r["status"], 0) + r["n"]
+    out["startup_total"] = sum(out["startup"].values())
+    out["other_total"] = sum(out["other"].values())
+    return out
 
 
 # ---------------------------------------------------------- prep queries ---
@@ -1103,3 +1179,171 @@ def company_refresh_running(conn: sqlite3.Connection, company_key: str) -> bool:
     """True if a refresh covering this company (specific or all) is in flight."""
     row = latest_company_refresh(conn, company_key)
     return bool(row and row["state"] == "running")
+
+
+# ----------------------------------------------------- startup company facts ---
+# Columns in startup_companies, grouped by how they encode at the DB boundary.
+STARTUP_SCALAR = (
+    "employees", "founded", "batch", "status", "stage", "last_round",
+    "last_round_amount", "total_raised", "industry", "location", "website",
+    "one_liner", "description", "yc_url", "source", "notes",
+)
+STARTUP_LIST = ("investors", "notable_people", "tags")
+STARTUP_BOOL = ("top_company", "is_hiring")
+
+
+def decode_startup_row(row: sqlite3.Row | None) -> dict | None:
+    """A startup_companies row → a StartupMeta-shaped dict (JSON lists decoded,
+    bools as Python bools). None passes through."""
+    if row is None:
+        return None
+    out = {"company_key": row["company_key"], "name": row["name"],
+           "user_edited": bool(row["user_edited"]), "updated_at": row["updated_at"]}
+    for col in STARTUP_SCALAR:
+        out[col] = row[col] or ""
+    for col in STARTUP_LIST:
+        try:
+            out[col] = json.loads(row[col]) if row[col] else []
+        except (ValueError, TypeError):
+            out[col] = []
+    for col in STARTUP_BOOL:
+        out[col] = bool(row[col])
+    return out
+
+
+def _encode_startup(meta: dict) -> dict:
+    """A StartupMeta-shaped dict → column values for the DB (lists→JSON,
+    bools→int), keeping only known columns."""
+    enc: dict = {}
+    for col in STARTUP_SCALAR:
+        enc[col] = str(meta.get(col) or "")
+    for col in STARTUP_LIST:
+        value = meta.get(col) or []
+        enc[col] = json.dumps(value if isinstance(value, list) else [])
+    for col in STARTUP_BOOL:
+        enc[col] = 1 if meta.get(col) else 0
+    return enc
+
+
+def _merge_startup(existing: dict, fresh: dict) -> dict:
+    """Fold a freshly-discovered metadata dict into the stored one: fresh
+    non-empty scalars win (keep data current), list fields are unioned so a
+    previously-known investor is never lost."""
+    out = dict(existing)
+    for col in STARTUP_SCALAR:
+        if fresh.get(col):
+            out[col] = fresh[col]
+    for col in STARTUP_LIST:
+        merged = list(existing.get(col) or [])
+        seen = {v.lower() for v in merged if isinstance(v, str)}
+        for value in fresh.get(col) or []:
+            if isinstance(value, str) and value.lower() not in seen:
+                merged.append(value)
+                seen.add(value.lower())
+        out[col] = merged
+    for col in STARTUP_BOOL:
+        out[col] = bool(existing.get(col)) or bool(fresh.get(col))
+    return out
+
+
+def upsert_startup_company(conn: sqlite3.Connection, meta: dict,
+                           now: str | None = None, from_user: bool = False) -> str:
+    """Insert or update one startup's facts. From ingest (from_user=False) a row
+    a user has edited is left untouched; otherwise fresh scalars win and lists
+    union. A user edit (from_user=True) overwrites with what was submitted and
+    sets the user_edited guard. Returns 'inserted' | 'updated' | 'skipped'."""
+    now = now or utcnow()
+    key = normalize_company_name(meta.get("name", ""))
+    if not key:
+        return "skipped"
+    row = conn.execute(
+        "SELECT * FROM startup_companies WHERE company_key = ?", (key,)).fetchone()
+    if row is not None and row["user_edited"] and not from_user:
+        return "skipped"
+
+    existing = decode_startup_row(row) or {}
+    record = ({**existing, **meta} if from_user
+              else _merge_startup(existing, meta))
+    enc = _encode_startup(record)
+    name = meta.get("name") or existing.get("name") or key
+    cols = ["name", *STARTUP_SCALAR, *STARTUP_LIST, *STARTUP_BOOL,
+            "user_edited", "updated_at"]
+    values = {"name": name, **enc,
+              "user_edited": 1 if (from_user or (row and row["user_edited"])) else 0,
+              "updated_at": now}
+    if row is None:
+        placeholders = ", ".join(["?"] * (len(cols) + 1))
+        conn.execute(
+            f"INSERT INTO startup_companies (company_key, {', '.join(cols)}) "
+            f"VALUES ({placeholders})",
+            [key, *(values[c] for c in cols)])
+        conn.commit()
+        return "inserted"
+    sets = ", ".join(f"{c} = ?" for c in cols)
+    conn.execute(f"UPDATE startup_companies SET {sets} WHERE company_key = ?",
+                 [*(values[c] for c in cols), key])
+    conn.commit()
+    return "updated"
+
+
+def startup_company(conn: sqlite3.Connection, company_key: str) -> dict | None:
+    return decode_startup_row(conn.execute(
+        "SELECT * FROM startup_companies WHERE company_key = ?",
+        (company_key,)).fetchone())
+
+
+def startup_company_for(conn: sqlite3.Connection, company_name: str) -> dict | None:
+    """The startup facts for a display company name (normalized to the key)."""
+    key = normalize_company_name(company_name)
+    return startup_company(conn, key) if key else None
+
+
+def startup_keys(conn: sqlite3.Connection) -> set[str]:
+    """Every normalized company name we hold startup facts for."""
+    return {r["company_key"] for r in
+            conn.execute("SELECT company_key FROM startup_companies").fetchall()}
+
+
+def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
+    """All tracked startups (decoded), each annotated with how many active jobs
+    and how many are still to-apply, ordered by open jobs then name. `q` filters
+    on name / industry / investors substring."""
+    counts = {}
+    for r in conn.execute(
+            """SELECT j.company, COUNT(*) AS n,
+                      SUM(CASE WHEN a.status NOT IN
+                          ('applied','confirmed','interviewing','offer','rejected',
+                           'withdrawn','in_progress') THEN 1 ELSE 0 END) AS open_n
+               FROM jobs j JOIN applications a ON a.job_id = j.id
+               WHERE j.is_active = 1 AND j.is_startup = 1
+               GROUP BY j.company""").fetchall():
+        counts[normalize_company_name(r["company"])] = (r["n"], r["open_n"] or 0)
+    out = []
+    for row in conn.execute(
+            "SELECT * FROM startup_companies ORDER BY name COLLATE NOCASE").fetchall():
+        meta = decode_startup_row(row)
+        if q:
+            hay = " ".join([meta["name"], meta["industry"],
+                            " ".join(meta["investors"])]).lower()
+            if q.lower() not in hay:
+                continue
+        meta["job_count"], meta["open_count"] = counts.get(meta["company_key"], (0, 0))
+        out.append(meta)
+    out.sort(key=lambda m: (-m["job_count"], m["name"].lower()))
+    return out
+
+
+def refresh_startup_flags(conn: sqlite3.Connection) -> int:
+    """Set jobs.is_startup for every job whose company is a known startup
+    (matched on normalized name), clearing it otherwise. Returns rows changed.
+    Idempotent — safe to call after every ingest."""
+    keys = startup_keys(conn)
+    changed = 0
+    for r in conn.execute("SELECT DISTINCT company FROM jobs").fetchall():
+        want = 1 if normalize_company_name(r["company"]) in keys else 0
+        cur = conn.execute(
+            "UPDATE jobs SET is_startup = ? WHERE company = ? AND is_startup != ?",
+            (want, r["company"], want))
+        changed += cur.rowcount
+    conn.commit()
+    return changed

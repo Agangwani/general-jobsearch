@@ -39,8 +39,8 @@ linked to the **company's own** board.
 | **The Muse public API** | ✅ `sources/themuse.py` | Documented, free, keyless; location + category filters; NYC-heavy inventory with employer names and descriptions. |
 | **HN "Who is hiring?" via Algolia API** | ✅ `sources/hn_hiring.py` | Keyless, monthly, the densest startup signal; comments often link the company's ATS board directly, which makes resolution free and reliable. |
 | **Adzuna search API** | ✅ `sources/adzuna.py` (opt-in) | Broadest employer coverage (enterprises that never post on HN); free API key required, so it skips cleanly when `ADZUNA_APP_ID`/`ADZUNA_APP_KEY` are unset. |
+| **YC company directory** | ✅ `sources/ycombinator.py` | Keyless OSS JSON mirror of YC's public directory; the canonical startup universe with employee/funding metadata. Powers the **startup pipeline** (docs/design-startup-pipeline.md). |
 | Built In NYC directory | ◻ future | The canonical NYC tech-company directory, but no public API — needs a browser-survey source (Playwright, like the browser fetchers). |
-| YC company directory | ◻ future | Public site backed by an Algolia index, filterable by region/industry; quasi-public credentials make it fragile. |
 | Wellfound (AngelList), Otta, levels.fyi | ✗ | Bot-protected / no public API; scraping would violate ToS — same policy as LinkedIn in `manual_check`. |
 | LinkedIn / Indeed / Google Jobs | ✗ | No usable public APIs; aggressive bot defense; explicitly out of scope already. |
 | Tech:NYC member list, "awesome NYC startups" repos | ◻ manual | Good one-time seed material for companies.yaml, not worth automating. |

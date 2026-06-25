@@ -72,8 +72,13 @@ def test_patch_never_erases_description(conn):
 def test_status_lifecycle_and_stacks(conn):
     db.upsert_job(conn, record("greenhouse:Acme:1"))
     db.upsert_job(conn, record("greenhouse:Beta:2", company="Beta"))
-    assert db.stack_counts(conn) == {"to_apply": 2, "in_progress": 0, "applied": 0,
-                                     "by_status": {"not_applied": 2}}
+    # stack_counts splits startup vs. non-startup; with no startups all land in `other`.
+    assert db.stack_counts(conn) == {
+        "to_apply": 2, "in_progress": 0, "applied": 0,
+        "by_status": {"not_applied": 2},
+        "startup": {"to_apply": 0, "in_progress": 0, "applied": 0},
+        "other": {"to_apply": 2, "in_progress": 0, "applied": 0},
+        "startup_total": 0, "other_total": 2}
     app_id = conn.execute("SELECT id FROM applications LIMIT 1").fetchone()["id"]
     db.set_application_status(conn, app_id, "applied", via="integrated_browser")
     counts = db.stack_counts(conn)

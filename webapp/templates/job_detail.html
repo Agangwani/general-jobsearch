@@ -109,6 +109,32 @@
   </section>
 
   <aside class="col-side">
+    {% if startup %}
+    <details class="startup-panel" open>
+      <summary><h2 style="display:inline">🚀 Startup facts</h2></summary>
+      <p class="muted">{{ startup.one_liner }}</p>
+      <dl class="facts">
+        {% if startup.employees %}<dt>Employees</dt><dd>{{ startup.employees }}</dd>{% endif %}
+        {% if startup.founded %}<dt>Founded</dt><dd>{{ startup.founded }}</dd>{% endif %}
+        {% if startup.batch %}<dt>YC batch</dt><dd>{{ startup.batch }}</dd>{% endif %}
+        {% if startup.stage %}<dt>Stage</dt><dd>{{ startup.stage }}</dd>{% endif %}
+        {% if startup.last_round %}<dt>Last round</dt><dd>{{ startup.last_round }}{% if startup.last_round_amount %} ({{ startup.last_round_amount }}){% endif %}</dd>{% endif %}
+        {% if startup.total_raised %}<dt>Total raised</dt><dd>{{ startup.total_raised }}</dd>{% endif %}
+        {% if startup.investors %}<dt>Investors</dt><dd>{{ startup.investors|join(', ') }}</dd>{% endif %}
+        {% if startup.notable_people %}<dt>Notable people</dt><dd>{{ startup.notable_people|join('; ') }}</dd>{% endif %}
+        {% if startup.industry %}<dt>Industry</dt><dd>{{ startup.industry }}</dd>{% endif %}
+        {% if startup.status %}<dt>Status</dt><dd>{{ startup.status }}{% if startup.top_company %} · ⭐ top company{% endif %}</dd>{% endif %}
+      </dl>
+      <div class="startup-links">
+        {% if startup.website %}<a class="btn btn-ghost" href="{{ startup.website }}" target="_blank" rel="noopener">Website ↗</a>{% endif %}
+        {% if startup.yc_url %}<a class="btn btn-ghost" href="{{ startup.yc_url }}" target="_blank" rel="noopener">YC profile ↗</a>{% endif %}
+        <a class="btn btn-ghost" href="/startups/{{ startup.company_key|qp }}">Edit / full page →</a>
+      </div>
+      {% if startup.notes %}<p class="muted"><strong>Notes:</strong> {{ startup.notes }}</p>{% endif %}
+      <p class="muted source-note">source: {{ startup.source or 'unknown' }}{% if not startup.user_edited %} · funding/people are best-effort; edit on the <a href="/startups/{{ startup.company_key|qp }}">startup page</a>{% endif %}</p>
+    </details>
+    {% endif %}
+
     <h2>Update status</h2>
     <form method="post" action="/applications/{{ job.application_id }}/status" class="stack-form">
       <select name="status">

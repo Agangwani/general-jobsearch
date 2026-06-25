@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ startup.name }} — Startup{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <div>
+    <h1>🚀 {{ startup.name }}
+      {% if startup.top_company %}<span class="tag tag-amber" title="YC top company">⭐ top company</span>{% endif %}
+      {% if startup.batch %}<span class="tag">{{ startup.batch }}</span>{% endif %}
+    </h1>
+    <div class="subtitle muted">{{ startup.one_liner }}</div>
+  </div>
+  <div class="actions">
+    {% if startup.website %}<a class="btn btn-ghost" href="{{ startup.website }}" target="_blank" rel="noopener">Website ↗</a>{% endif %}
+    {% if startup.yc_url %}<a class="btn btn-ghost" href="{{ startup.yc_url }}" target="_blank" rel="noopener">YC profile ↗</a>{% endif %}
+    <a class="btn btn-ghost" href="/?company={{ startup.name|qp }}&startup_scope=only">See roles →</a>
+  </div>
+</header>
+
+<div class="columns">
+  <section class="col-main">
+    <h2>Facts</h2>
+    <dl class="facts facts-wide">
+      <dt>Employees</dt><dd>{{ startup.employees or '—' }}</dd>
+      <dt>Founded</dt><dd>{{ startup.founded or '—' }}</dd>
+      <dt>Stage</dt><dd>{{ startup.stage or '—' }}</dd>
+      <dt>Last round</dt><dd>{{ startup.last_round or '—' }}{% if startup.last_round_amount %} ({{ startup.last_round_amount }}){% endif %}</dd>
+      <dt>Total raised</dt><dd>{{ startup.total_raised or '—' }}</dd>
+      <dt>Investors</dt><dd>{{ startup.investors|join(', ') or '—' }}</dd>
+      <dt>Notable people</dt><dd>{{ startup.notable_people|join('; ') or '—' }}</dd>
+      <dt>Industry</dt><dd>{{ startup.industry or '—' }}</dd>
+      <dt>Status</dt><dd>{{ startup.status or '—' }}</dd>
+      <dt>Location</dt><dd>{{ startup.location or '—' }}</dd>
+    </dl>
+    {% if startup.description %}
+    <h2>About</h2>
+    <p>{{ startup.description }}</p>
+    {% endif %}
+    {% if startup.notes %}<h2>Notes</h2><p>{{ startup.notes }}</p>{% endif %}
+    <p class="muted source-note">
+      source: {{ startup.source or 'unknown' }} ·
+      {% if startup.user_edited %}edited by you{% else %}auto-discovered — funding,
+      investors and people are best-effort from public text; correct them below{% endif %}
+      · updated {{ startup.updated_at[:10] }}
+    </p>
+
+    <h2>Open roles</h2>
+    {% if jobs %}
+    <table class="jobs">
+      <thead><tr><th>Fit</th><th>Title</th><th>Location</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for j in jobs %}
+        <tr>
+          <td>{% if j.fit_score is not none %}{{ '%.0f'|format(j.fit_score) }}{% else %}—{% endif %}</td>
+          <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
+          <td class="muted">{{ j.location[:36] }}</td>
+          <td><span class="status status-{{ j.status }}">{{ j.status.replace('_',' ') }}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No roles tracked yet for {{ startup.name }}. Run the startup
+       pipeline and ingest to pull its open roles.</p>
+    {% endif %}
+  </section>
+
+  <aside class="col-side">
+    <h2>Edit facts</h2>
+    <p class="muted">Saving marks these as yours — re-ingest won't overwrite them.
+       Lists are comma-separated.</p>
+    <form method="post" action="/startups/{{ startup.company_key|qp }}/edit" class="stack-form startup-edit">
+      <label>Employees<input type="text" name="employees" value="{{ startup.employees }}"></label>
+      <label>Founded<input type="text" name="founded" value="{{ startup.founded }}"></label>
+      <label>Stage<input type="text" name="stage" value="{{ startup.stage }}"></label>
+      <label>Last round<input type="text" name="last_round" value="{{ startup.last_round }}"></label>
+      <label>Last round amount<input type="text" name="last_round_amount" value="{{ startup.last_round_amount }}"></label>
+      <label>Total raised<input type="text" name="total_raised" value="{{ startup.total_raised }}"></label>
+      <label>Investors<input type="text" name="investors" value="{{ startup.investors|join(', ') }}"></label>
+      <label>Notable people<input type="text" name="notable_people" value="{{ startup.notable_people|join(', ') }}"></label>
+      <label>Industry<input type="text" name="industry" value="{{ startup.industry }}"></label>
+      <label>Status<input type="text" name="status" value="{{ startup.status }}"></label>
+      <label>Website<input type="text" name="website" value="{{ startup.website }}"></label>
+      <label class="check"><input type="checkbox" name="top_company" value="1" {{ 'checked' if startup.top_company }}> Top company</label>
+      <label>Notes<textarea name="notes" rows="3">{{ startup.notes }}</textarea></label>
+      <button class="btn btn-primary">Save facts</button>
+    </form>
+  </aside>
+</div>
+
+{% endblock %}

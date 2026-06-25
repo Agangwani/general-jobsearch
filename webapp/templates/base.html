@@ -27,6 +27,8 @@
   <a href="/?stack=in_progress">In progress <span class="pill pill-amber">{{ counts.in_progress }}</span></a>
   <a href="/?stack=applied">Applied <span class="pill pill-green">{{ counts.applied }}</span></a>
   <span class="nav-divider" aria-hidden="true"></span>
+  <a href="/startups" class="{{ 'is-active' if path.startswith('/startups') }}" title="Startup companies matching your resume — employees, funding, investors, and their open roles">Startups <span class="pill pill-violet">{{ counts.startup_total }}</span></a>
+  <a href="/companies" class="{{ 'is-active' if path.startswith('/companies') }}" title="What each company asks on LeetCode">Companies</a>
   <a href="/prep" class="{{ 'is-active' if path.startswith('/prep') }}">Prep <span class="pill pill-amber">{{ prep_counts.lessons_done }}/{{ prep_counts.lessons_total }}</span></a>
   <a href="/clusters" class="{{ 'is-active' if path.startswith('/clusters') }}" title="See how K-means + TF-IDF scores each job's fit to your resume">Fit map</a>
   <a href="/resume" class="{{ 'is-active' if path == '/resume' }}">Resume</a>

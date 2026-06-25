@@ -4,7 +4,7 @@
 
 {#-- Build a sort URL for a column, toggling direction if already active --#}
 {%- macro sort_href(col) -%}
-/?sort_by={{ col }}&sort_dir={{ 'asc' if sort_by == col and sort_dir != 'asc' else 'desc' if sort_by == col else 'desc' }}&q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&run_scope={{ run_scope }}
+/?sort_by={{ col }}&sort_dir={{ 'asc' if sort_by == col and sort_dir != 'asc' else 'desc' if sort_by == col else 'desc' }}&q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&run_scope={{ run_scope }}&startup_scope={{ startup_scope }}
 {%- endmacro -%}
 
 {%- macro sort_icon(col) -%}
@@ -17,10 +17,13 @@
 
 {#-- Switch the stack while preserving the rest of the active filters --#}
 {%- macro stack_href(s) -%}
-/?stack={{ s }}&q={{ q|qp }}&company={{ company|qp }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&run_scope={{ run_scope }}
+/?stack={{ s }}&q={{ q|qp }}&company={{ company|qp }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&run_scope={{ run_scope }}&startup_scope={{ startup_scope }}
 {%- endmacro -%}
 
-{% set tracked = counts.by_status.values()|sum %}
+{#-- Switch the startup scope (all / only / hide) preserving the active filters --#}
+{%- macro startup_href(s) -%}
+/?startup_scope={{ s }}&stack={{ stack }}&q={{ q|qp }}&company={{ company|qp }}&near_miss={{ near_miss }}&min_fit={{ min_fit }}&status_filter={{ status_filter|qp }}&sort_by={{ sort_by }}&sort_dir={{ sort_dir }}&run_scope={{ run_scope }}
+{%- endmacro -%}
 
 <header class="page-head">
   <div>
@@ -39,29 +42,50 @@
   </div>
 </header>
 
-{#-- At-a-glance overview: clickable, animated counters that filter the table --#}
+{#-- At-a-glance overview: clickable, animated counters that filter the table.
+     Each stack splits into 🚀 startups vs 🏢 established so the headline numbers
+     distinguish the two company kinds. --#}
+{%- macro split_foot(bucket) -%}
+  <span class="stat-split" title="{{ counts.startup[bucket] }} startup · {{ counts.other[bucket] }} established">
+    <span class="su">🚀 {{ counts.startup[bucket] }}</span> ·
+    <span class="ot">🏢 {{ counts.other[bucket] }}</span>
+  </span>
+{%- endmacro -%}
 <section class="stat-row">
   <a class="stat-card" data-accent="blue" style="--i:0" href="{{ stack_href('to_apply') }}">
     <span class="stat-label">To apply</span>
     <span class="stat-num" data-count="{{ counts.to_apply }}">{{ counts.to_apply }}</span>
-    <span class="stat-foot">ready for you</span>
+    <span class="stat-foot">{{ split_foot('to_apply') }}</span>
   </a>
   <a class="stat-card" data-accent="amber" style="--i:1" href="{{ stack_href('in_progress') }}">
     <span class="stat-label">In progress</span>
     <span class="stat-num" data-count="{{ counts.in_progress }}">{{ counts.in_progress }}</span>
-    <span class="stat-foot">started, not submitted</span>
+    <span class="stat-foot">{{ split_foot('in_progress') }}</span>
   </a>
   <a class="stat-card" data-accent="green" style="--i:2" href="{{ stack_href('applied') }}">
     <span class="stat-label">Applied</span>
     <span class="stat-num" data-count="{{ counts.applied }}">{{ counts.applied }}</span>
-    <span class="stat-foot">submitted</span>
+    <span class="stat-foot">{{ split_foot('applied') }}</span>
   </a>
-  <a class="stat-card" data-accent="brand" style="--i:3" href="/?run_scope=all">
-    <span class="stat-label">Tracked</span>
-    <span class="stat-num" data-count="{{ tracked }}">{{ tracked }}</span>
-    <span class="stat-foot">across every run</span>
+  <a class="stat-card" data-accent="violet" style="--i:3" href="{{ startup_href('only') }}">
+    <span class="stat-label">🚀 Startups</span>
+    <span class="stat-num" data-count="{{ counts.startup_total }}">{{ counts.startup_total }}</span>
+    <span class="stat-foot">vs 🏢 {{ counts.other_total }} established</span>
   </a>
 </section>
+
+{#-- Startup scope: the user-requested three-way toggle. --#}
+<div class="segmented startup-toggle" role="tablist" aria-label="Filter startups">
+  <a class="seg {{ 'is-active' if startup_scope in ('', 'all') }}" href="{{ startup_href('') }}" role="tab"
+     aria-selected="{{ 'true' if startup_scope in ('', 'all') else 'false' }}"
+     title="Show startups and established companies">All companies</a>
+  <a class="seg {{ 'is-active' if startup_scope == 'only' }}" href="{{ startup_href('only') }}" role="tab"
+     aria-selected="{{ 'true' if startup_scope == 'only' else 'false' }}"
+     title="Show only startups">🚀 Startups only <span class="pill pill-violet">{{ counts.startup_total }}</span></a>
+  <a class="seg {{ 'is-active' if startup_scope == 'hide' }}" href="{{ startup_href('hide') }}" role="tab"
+     aria-selected="{{ 'true' if startup_scope == 'hide' else 'false' }}"
+     title="Hide startups">🏢 Hide startups <span class="pill">{{ counts.other_total }}</span></a>
+</div>
 
 <div class="apply-all-bar">
   <button class="btn btn-primary" id="prepare-top-btn"
@@ -101,6 +125,7 @@
   <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
   <input type="hidden" name="run_scope" value="{{ run_scope }}">
   <input type="hidden" name="stack" value="{{ stack }}">
+  <input type="hidden" name="startup_scope" value="{{ startup_scope }}">
   <input type="search" name="q" value="{{ q }}" placeholder="Search title, description, company, location…">
   <select name="company">
     <option value="">All companies</option>
@@ -114,7 +139,7 @@
   </select>
   <button class="btn btn-primary">Filter</button>
   {% if sort_by or min_fit or status_filter %}
-  <a class="btn btn-ghost" href="/?q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&run_scope={{ run_scope }}">Reset sort</a>
+  <a class="btn btn-ghost" href="/?q={{ q|qp }}&company={{ company|qp }}&stack={{ stack }}&near_miss={{ near_miss }}&run_scope={{ run_scope }}&startup_scope={{ startup_scope }}">Reset sort</a>
   {% endif %}
 </form>
 
@@ -155,7 +180,20 @@
         </span>
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
-      <td>{{ j.company }}</td>
+      <td>
+        {{ j.company }}
+        {% if j.is_startup %}
+          {% set su = startups.get(j.company|normalize_company) %}
+          <span class="tag tag-violet" title="Startup{% if su %} — {% if su.employees %}{{ su.employees }} employees{% endif %}{% if su.stage %} · {{ su.stage }}{% endif %}{% endif %}">🚀 startup</span>
+          {% if su and (su.employees or su.stage) %}
+          <div class="muted startup-mini">
+            {%- if su.employees %}👥 {{ su.employees }}{% endif -%}
+            {%- if su.stage %} · {{ su.stage }}{% endif -%}
+            {%- if su.last_round_amount %} · {{ su.last_round_amount }}{% endif -%}
+          </div>
+          {% endif %}
+        {% endif %}
+      </td>
       <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
       <td class="muted">{{ j.location[:42] }}</td>
       <td class="muted">{{ j.posted_at or '—' }}</td>

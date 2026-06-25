@@ -61,7 +61,11 @@ class CompanyLead:
     """A company spotted on a generalized job board (jobsearch/sources/),
     before it has a resolved ATS entry. Evidence (titles, snippets) is what
     relevance ranking scores against the resume; urls are ATS/careers links
-    seen alongside the company, which make resolution free when present."""
+    seen alongside the company, which make resolution free when present.
+
+    `meta` carries source-supplied facts about the company itself (employees,
+    funding stage, investors, …) — the startup sources fill it, and it flows
+    through merge/emit into the startup metadata sidecar the UI displays."""
 
     name: str
     sources: list[str] = field(default_factory=list)
@@ -71,3 +75,4 @@ class CompanyLead:
     snippets: list[str] = field(default_factory=list)
     mentions: int = 1
     relevance: float = 0.0
+    meta: dict = field(default_factory=dict)

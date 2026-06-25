@@ -154,11 +154,20 @@ def _write_role_profile(root: Path, settings: dict, profile) -> None:
     path.write_text(json.dumps(profile.to_dict(), indent=2))
 
 
-def run(root: Path) -> int:
+def run(root: Path, track_name: str = "main") -> int:
+    from .tracks import build_track
+
     settings = load_settings(root / "config" / "settings.yaml")
-    # Curated companies.yaml + the resume-tailored generated registry, if a
-    # `discover-companies` run has produced one.
-    companies, manual_check = load_registry(root, settings)
+    track = build_track(root, settings, track_name)
+    # The startups track chases its own city; the role/ranking knobs are shared.
+    if track.is_startup and track.locations:
+        settings["search"]["locations"] = track.locations
+    # main: curated companies.yaml + the resume-tailored generated registry.
+    # startups: the startup registry built by `discover-startups`.
+    companies, manual_check = load_registry(root, settings, track)
+    if track.is_startup:
+        print(f"Startup track: {sum(c.enabled for c in companies)} startup "
+              f"companies in scope (from {track.registry_file.name}).", file=sys.stderr)
     from .resume import load_resume_text
     resume_text, is_sample = load_resume_text(root, settings)
     if is_sample:
@@ -200,8 +209,7 @@ def run(root: Path) -> int:
     print(f"Fetched {len(all_jobs)} postings; filtering...", file=sys.stderr)
 
     output = settings.get("output", {})
-    corpus_dir = root / output.get("corpus_dir", "data/corpus")
-    snapshot = write_snapshot(all_jobs, corpus_dir, output.get("corpus_retention_days", 14))
+    snapshot = write_snapshot(all_jobs, track.corpus_dir, output.get("corpus_retention_days", 14))
     print(f"Corpus snapshot: {snapshot}", file=sys.stderr)
 
     job_filter = JobFilter(settings["search"])
@@ -245,17 +253,23 @@ def run(root: Path) -> int:
     near_miss = near_miss[: ranking.get("near_miss_count", 20)]
     company_fit = rank_companies(jobs, top_n=ranking.get("company_top_n", 3))
 
-    state_path = root / settings["output"].get("state_file", "data/seen_jobs.tsv")
+    state_path = track.state_file
     seen = load_seen(state_path)
     mark_new(jobs, seen)
     update_seen(jobs, seen, state_path)
 
     # Merge any fresh Claude verdicts (data/validation.json, written by the
     # /validate-jobs command) and archive them for the precision time series.
-    validation_path = root / output.get("validation_file", "data/validation.json")
+    # The startups track keeps its own verdict file so the two never collide.
+    if track.is_startup:
+        validation_path = root / "data" / "validation.startups.json"
+        validation_history = root / "data" / "validation-history-startups"
+    else:
+        validation_path = root / output.get("validation_file", "data/validation.json")
+        validation_history = root / output.get("validation_history_dir", "data/validation-history")
     verdicts = load_verdicts(validation_path)
     tally = apply_verdicts(jobs + near_miss, verdicts)
-    archive_validation(validation_path, root / output.get("validation_history_dir", "data/validation-history"))
+    archive_validation(validation_path, validation_history)
     if verdicts:
         print(f"Validation: {tally}", file=sys.stderr)
 
@@ -267,7 +281,7 @@ def run(root: Path) -> int:
         cluster_names=cluster_names,
         targeting=targeting,
     )
-    out_dir = root / settings["output"].get("reports_dir", "reports")
+    out_dir = track.reports_dir
     written = write_reports(out_dir, markdown, jobs, company_fit, near_miss=near_miss, funnel=funnel)
 
     clustering_path = write_clustering(out_dir, clustering)
@@ -288,11 +302,14 @@ def run(root: Path) -> int:
     return 0
 
 
-def verify(root: Path) -> int:
+def verify(root: Path, track_name: str = "main") -> int:
     """Hit every enabled board once and report reachability — run this after
     editing companies.yaml to catch wrong board slugs."""
+    from .tracks import build_track
+
     settings = load_settings(root / "config" / "settings.yaml")
-    companies, _ = load_registry(root, settings)
+    track = build_track(root, settings, track_name)
+    companies, _ = load_registry(root, settings, track)
     jobs, errors = fetch_all(companies, settings)
     ok = {c.name for c in companies if c.enabled} - {e.company for e in errors}
     print(f"\nOK ({len(ok)}): {', '.join(sorted(ok))}")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -55,7 +56,14 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
                                data_dir=root / "data")
     runner = PipelineRunner(root)
+    # The startup pipeline runs the same way under its own subcommand; both
+    # share the one ingest pass (ingest_latest pulls every track), so whichever
+    # finishes triggers a full refresh.
+    startup_runner = PipelineRunner(
+        root, cmd=[sys.executable, "-u", "-m", "jobsearch", "run-startups"])
+    runners = {"main": runner, "startups": startup_runner}
     app.state.runner = runner
+    app.state.startup_runner = startup_runner
 
     # Lazy LinkedIn referral discoverer — Playwright doesn't start until the
     # first /referrals/discover request, so this adds no startup cost.
@@ -77,6 +85,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     templates.env.filters["qp"] = quote_plus
     templates.env.filters["description_html"] = description_html
     templates.env.filters["prep_markdown"] = prep_markdown
+    from jobsearch.utils import normalize_company_name
+    templates.env.filters["normalize_company"] = normalize_company_name
     # Cache-bust the stylesheet by file mtime so CSS edits show up without a
     # manual hard-refresh (StaticFiles otherwise lets browsers serve it stale).
     templates.env.globals["css_v"] = str(int((HERE / "static" / "app.css").stat().st_mtime))
@@ -92,7 +102,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, q: str = "", company: str = "", stack: str = "",
                   near_miss: str = "1", sort_by: str = "", sort_dir: str = "",
-                  min_fit: str = "", status_filter: str = "", run_scope: str = "latest"):
+                  min_fit: str = "", status_filter: str = "", run_scope: str = "latest",
+                  startup_scope: str = ""):
         # Parse the user-supplied min-fit defensively: blank, whitespace, or
         # malformed input (e.g. "abc", "12.5.6") means "no min-fit filter"
         # rather than a 500.
@@ -108,7 +119,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                               include_near_miss=near_miss == "1",
                               sort_by=sort_by, sort_dir=sort_dir,
                               min_fit=min_fit_val, status_filter=status_filter,
-                              since=since)
+                              since=since, startup_scope=startup_scope)
+        # Startup facts for the rows shown, so the table can badge a startup and
+        # surface its employees/stage inline. Only the startup rows are queried.
+        startups: dict = {}
+        for j in jobs:
+            if j["is_startup"]:
+                su = db.startup_company_for(conn, j["company"])
+                if su:
+                    startups[su["company_key"]] = su
         # Company filter scoped to the current section (To apply / Applied), so
         # it only lists companies with jobs there. Keep a stale selection visible.
         companies = db.companies_for_stack(conn, stack)
@@ -121,6 +140,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       last_run=last_run, sort_by=sort_by, sort_dir=sort_dir,
                       min_fit=min_fit, status_filter=status_filter,
                       run_scope=run_scope, has_runs=bool(latest_at),
+                      startup_scope=startup_scope, startups=startups,
                       all_statuses=db.APP_STATUSES)
 
     # ------------------------------------------------------------ job detail
@@ -145,11 +165,14 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         company_key = canonical_key(job["company"])
         lc_questions = db.company_problems_for(conn, company_key, limit=6)
         lc_total = db.company_problem_count(conn, company_key)
+        # Startup facts (employees, funding, investors, …) for this company when
+        # it's a known startup — shown and editable in a sidebar panel.
+        startup = db.startup_company_for(conn, job["company"]) if job["is_startup"] else None
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
                       profile_fields=profile.panel_fields(conn),
                       lc_questions=lc_questions, lc_total=lc_total,
-                      company_key=company_key)
+                      company_key=company_key, startup=startup)
 
     # ----------------------------------------------------------- referrals
     @app.get("/jobs/{job_id}/referrals", response_class=HTMLResponse)
@@ -184,32 +207,77 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     # ----------------------------------------------- fit clustering visualization
     @app.get("/clusters", response_class=HTMLResponse)
-    def clusters_home(request: Request):
+    def clusters_home(request: Request, track: str = "main"):
         """High-level view: a 2-D map of every scored posting, coloured by the
         K-means cluster it landed in, with the resume plotted in the same space
-        and each cluster's topic terms + resume-affinity called out."""
-        clustering = clusters.load_clustering(root)
+        and each cluster's topic terms + resume-affinity called out. `track`
+        switches between the main run and the startup run's fit map."""
+        track = "startups" if track == "startups" else "main"
+        clustering = clusters.load_clustering(root, track)
         ids_by_key = (db.job_ids_by_key(conn, (j["key"] for j in clustering["jobs"]))
                       if clustering else {})
-        return render(request, "clusters.html", clustering=clustering,
+        return render(request, "clusters.html", clustering=clustering, track=track,
+                      has_startups=bool(clusters.load_clustering(root, "startups")),
                       points=clusters.map_points(clustering, ids_by_key))
 
     @app.get("/clusters/job/{job_id}", response_class=HTMLResponse)
     def cluster_job(request: Request, job_id: int):
         """Per-job view: exactly how this posting's fit score was built — the
         cosine-similarity and cluster-affinity terms, the overlapping keywords
-        that drove the match, and where the posting sits on the map."""
+        that drove the match, and where the posting sits on the map. A startup
+        job is read from the startup run's fit map."""
         job = db.job_with_application(conn, job_id)
         if job is None:
             return RedirectResponse("/clusters", status_code=303)
-        clustering = clusters.load_clustering(root)
+        track = "startups" if job["is_startup"] else "main"
+        clustering = clusters.load_clustering(root, track)
         breakdown = clusters.job_breakdown(clustering, job["key"])
         cluster = clusters.cluster_by_id(clustering, breakdown["cluster"]) if breakdown else None
         ids_by_key = (db.job_ids_by_key(conn, (j["key"] for j in clustering["jobs"]))
                       if clustering else {})
         return render(request, "cluster_job.html", job=job, clustering=clustering,
-                      breakdown=breakdown, cluster=cluster,
+                      track=track, breakdown=breakdown, cluster=cluster,
                       points=clusters.map_points(clustering, ids_by_key))
+
+    # ------------------------------------------------------------ startups
+    @app.get("/startups", response_class=HTMLResponse)
+    def startups_directory(request: Request, q: str = ""):
+        """The startup directory: every tracked startup with its helpful facts
+        (employees, funding, investors, notable people) and open-job counts.
+        Editable per company; populated by `discover-startups` + ingest."""
+        rows = db.list_startups(conn, q=q)
+        startup_clustering = bool(clusters.load_clustering(root, "startups"))
+        return render(request, "startups.html", startups=rows, q=q,
+                      has_startup_fitmap=startup_clustering,
+                      counts_startup=db.stack_counts(conn))
+
+    @app.get("/startups/{company_key}", response_class=HTMLResponse)
+    def startup_detail(request: Request, company_key: str):
+        startup = db.startup_company(conn, company_key)
+        if startup is None:
+            return RedirectResponse("/startups", status_code=303)
+        jobs = db.search_jobs(conn, company=startup["name"], startup_scope="only")
+        return render(request, "startup_detail.html", startup=startup, jobs=jobs)
+
+    @app.post("/startups/{company_key}/edit")
+    async def edit_startup(company_key: str, request: Request):
+        """Save manual edits to a startup's facts. Sets the user_edited guard so
+        a later ingest never clobbers what you typed."""
+        form = await request.form()
+        existing = db.startup_company(conn, company_key)
+        if existing is None:
+            return RedirectResponse("/startups", status_code=303)
+        meta = {"name": existing["name"]}
+        for field in db.STARTUP_SCALAR:
+            meta[field] = (form.get(field) or "").strip()
+        for field in db.STARTUP_LIST:
+            # comma- or newline-separated → list
+            raw = (form.get(field) or "").replace("\n", ",")
+            meta[field] = [p.strip() for p in raw.split(",") if p.strip()]
+        for field in db.STARTUP_BOOL:
+            meta[field] = form.get(field) in ("1", "on", "true")
+        db.upsert_startup_company(conn, meta, from_user=True)
+        return RedirectResponse(f"/startups/{quote_plus(company_key)}", status_code=303)
 
     # ------------------------------------------------- interview prep
     def _resume_disciplines() -> list[str]:
@@ -500,31 +568,35 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return RedirectResponse(f"/jobs/{job['job_id']}" if job else "/", status_code=303)
 
     @app.post("/run")
-    def start_pipeline():
-        started = runner.start()
-        return JSONResponse({"started": started},
+    def start_pipeline(track: str = "main"):
+        active = runners.get(track, runner)
+        started = active.start()
+        return JSONResponse({"started": started, "track": track},
                             status_code=200 if started else 409)
 
     @app.get("/run/log")
-    def pipeline_log(since: int = 0):
-        # Seamless finish: first poll after a successful run ingests the
-        # fresh report so the dashboard fills without a separate click.
-        if runner.exit_code == 0 and not runner.running and not runner.ingested:
-            runner.ingested = True
+    def pipeline_log(since: int = 0, track: str = "main"):
+        active = runners.get(track, runner)
+        # Seamless finish: first poll after a successful run ingests the fresh
+        # reports (every track) so the dashboard fills without a separate click.
+        if active.exit_code == 0 and not active.running and not active.ingested:
+            active.ingested = True
             try:
                 counts = ingest.ingest_latest(root, conn)
-                runner.lines.append(
-                    f"Ingested into UI: {counts['inserted']} new, "
-                    f"{counts['updated']} updated jobs. Refresh the dashboard.")
+                msg = (f"Ingested into UI: {counts['inserted']} new, "
+                       f"{counts['updated']} updated jobs.")
+                if counts.get("startups_loaded"):
+                    msg += f" {counts['startups_loaded']} startup profiles."
+                active.lines.append(msg + " Refresh the dashboard.")
                 stale = counts.get("stale_unapplied", 0)
                 if stale:
-                    runner.lines.append(
+                    active.lines.append(
                         f"Heads up: {stale} unapplied job(s) on the dashboard are "
                         "from earlier runs (not in this report) — likely a previous "
                         "role target. Filter or clear them to see only this run.")
             except Exception as exc:  # noqa: BLE001 — surface in the log panel
-                runner.lines.append(f"Ingest failed: {exc}")
-        return JSONResponse(runner.snapshot(since))
+                active.lines.append(f"Ingest failed: {exc}")
+        return JSONResponse(active.snapshot(since))
 
     @app.post("/ingest")
     def do_ingest():

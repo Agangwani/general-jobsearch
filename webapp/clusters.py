@@ -13,8 +13,12 @@ import json
 from pathlib import Path
 
 
-def load_clustering(root: Path) -> dict | None:
-    path = root / "reports" / "clustering.json"
+def load_clustering(root: Path, track: str = "main") -> dict | None:
+    """The latest run's fit-map snapshot for a track. The main pipeline writes
+    reports/clustering.json; the startup pipeline writes
+    reports/startups/clustering.json."""
+    path = (root / "reports" / "startups" / "clustering.json" if track == "startups"
+            else root / "reports" / "clustering.json")
     if not path.exists():
         return None
     try:
