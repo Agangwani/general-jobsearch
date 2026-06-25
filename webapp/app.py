@@ -93,7 +93,13 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     def dashboard(request: Request, q: str = "", company: str = "", stack: str = "",
                   near_miss: str = "1", sort_by: str = "", sort_dir: str = "",
                   min_fit: str = "", status_filter: str = "", run_scope: str = "latest"):
-        min_fit_val = float(min_fit) if min_fit else None
+        # Parse the user-supplied min-fit defensively: blank, whitespace, or
+        # malformed input (e.g. "abc", "12.5.6") means "no min-fit filter"
+        # rather than a 500.
+        try:
+            min_fit_val = float(min_fit) if min_fit.strip() else None
+        except (ValueError, TypeError):
+            min_fit_val = None
         # Default to the latest run so stale to-apply jobs from earlier,
         # differently-targeted runs don't pile up; run_scope=all shows everything.
         latest_at = db.latest_run_ingested_at(conn)

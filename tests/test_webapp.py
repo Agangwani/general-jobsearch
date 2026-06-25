@@ -488,6 +488,41 @@ def test_routes(tmp_path):
     assert fields["email"] == "t@x.com"
 
 
+def test_dashboard_tolerates_malformed_min_fit(tmp_path):
+    """The dashboard's min_fit query param comes straight from the URL, so
+    non-numeric/whitespace/malformed values must fall back to "no filter"
+    (HTTP 200) instead of crashing the float parse with a 500. A valid value
+    still filters."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    db.upsert_job(app.state.conn, record("k1", fit_score=80.0))
+    db.upsert_job(app.state.conn, record("k2", company="Beta", fit_score=60.0))
+
+    # Malformed values must NOT 500; they degrade to no min-fit filter (200).
+    for bad in ("abc", "%20%20%20", "12.5.6"):
+        resp = client.get(f"/?min_fit={bad}")
+        assert resp.status_code == 200, f"min_fit={bad!r} should be 200, got {resp.status_code}"
+
+    # A valid threshold still returns 200 and still filters out the 60-fit job.
+    ok = client.get("/?min_fit=70")
+    assert ok.status_code == 200
+    assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
+
+
 def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
     """The /resume page shows the resume's target roles, and the run button
     triggers the pipeline (mocked) in the background."""
