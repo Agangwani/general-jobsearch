@@ -7,6 +7,7 @@ design: the database holds profile PII and application history.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from jobsearch.prep.seed import seed_into_db
 from jobsearch.referrals import discover as referrals_discover
@@ -26,7 +28,7 @@ from jobsearch.resume import extract_keywords, pdf_to_text
 
 from jobsearch.company_questions import canonical_key
 
-from . import clusters, company_questions, db, emailmod, gmail, ingest, prep_sources, profile
+from . import auth, clusters, company_questions, db, emailmod, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -42,6 +44,28 @@ def _safe_next(value: str) -> str:
 
 def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="jobsearch UI")
+
+    # Auth (webapp/auth.py). Hosted mode (Supabase Auth configured) puts the app
+    # behind a login wall; local mode leaves it open and the wall is inert. The
+    # wall reads request.session, so SessionMiddleware is added *after* it
+    # (Starlette runs the last-added middleware outermost).
+    @app.middleware("http")
+    async def _auth_wall(request: Request, call_next):
+        if (auth.is_hosted() and not auth.is_open_path(request.url.path)
+                and not auth.session_user(request)):
+            return RedirectResponse("/login", status_code=303)
+        return await call_next(request)
+
+    if auth.is_hosted() and not os.environ.get("JOBSEARCH_SESSION_SECRET"):
+        print("WARNING: JOBSEARCH_SESSION_SECRET unset — using an insecure "
+              "default. Set a long random value before exposing this publicly.")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=os.environ.get("JOBSEARCH_SESSION_SECRET", "dev-insecure-session-key"),
+        same_site="lax",
+        https_only=bool(os.environ.get("JOBSEARCH_HTTPS_ONLY")),
+    )
+
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
@@ -96,7 +120,66 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         ctx.setdefault("counts", db.stack_counts(conn))
         ctx.setdefault("prep_counts", db.prep_overall_counts(conn))
         ctx.setdefault("company_counts", db.company_overall_counts(conn))
+        ctx.setdefault("current_user", auth.session_user(request))
+        ctx.setdefault("hosted", auth.is_hosted())
         return templates.TemplateResponse(request, template, ctx)
+
+    # ----------------------------------------------------------------- auth
+    # These routes are reachable without a session (the wall allows them); they
+    # are inert in local mode, where there is no login.
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(request: Request, error: str = "", msg: str = ""):
+        return templates.TemplateResponse(request, "login.html",
+                                          {"error": error, "msg": msg})
+
+    @app.post("/login")
+    def login_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+        try:
+            user = auth.sign_in(email.strip(), password)
+        except auth.AuthError as exc:
+            return templates.TemplateResponse(
+                request, "login.html", {"error": str(exc)}, status_code=400)
+        request.session["user"] = user
+        # First account to log in becomes the owner/admin.
+        db.upsert_app_user(conn, user["id"], user["email"],
+                           is_admin=db.count_app_users(conn) == 0)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/signup", response_class=HTMLResponse)
+    def signup_form(request: Request, error: str = ""):
+        return templates.TemplateResponse(
+            request, "signup.html", {"error": error, "open": auth.signups_open(conn)})
+
+    @app.post("/signup")
+    def signup_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+        if not auth.signups_open(conn):
+            return templates.TemplateResponse(
+                request, "signup.html",
+                {"error": "Signups are currently closed.", "open": False},
+                status_code=403)
+        try:
+            user, needs_confirmation = auth.sign_up(email.strip(), password)
+        except auth.AuthError as exc:
+            return templates.TemplateResponse(
+                request, "signup.html", {"error": str(exc), "open": True},
+                status_code=400)
+        if needs_confirmation:
+            return templates.TemplateResponse(request, "login.html", {
+                "msg": "Account created — check your email to confirm, then log in."})
+        request.session["user"] = user
+        db.upsert_app_user(conn, user["id"], user["email"],
+                           is_admin=db.count_app_users(conn) == 0)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/logout")
+    @app.post("/logout")
+    def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    @app.get("/healthz")
+    def healthz():
+        return JSONResponse({"ok": True})
 
     # ------------------------------------------------------------ dashboard
     @app.get("/", response_class=HTMLResponse)

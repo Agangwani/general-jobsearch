@@ -7,6 +7,8 @@ fastapi>=0.110
 uvicorn>=0.29
 jinja2>=3.1
 python-multipart>=0.0.9
+# Signed-cookie sessions for hosted-mode auth (Starlette SessionMiddleware).
+itsdangerous>=2.0
 pypdf>=4.0
 
 # Postgres backend for hosted/multi-user deployments (webapp/pgcompat.py),

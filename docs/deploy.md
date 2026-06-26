@@ -6,12 +6,13 @@ host below. Companion to [`design-hosting-progress.md`](design-hosting-progress.
 (the staged plan) and [`design-deployment.md`](design-deployment.md) (cost
 analysis).
 
-> ## ⚠️ Read this first — do not deploy publicly yet
-> The UI has **no login today**. Anything you host is readable by anyone who
-> finds the URL: your résumé, profile PII, and application history. Add
-> authentication (Stage 2 in `design-hosting-progress.md`) — or at least a
-> single shared password — **before** exposing it. These files let you build
-> the image and test it privately; treat public deploy as gated on auth.
+> ## ⚠️ Auth status — safe to host privately, not yet open to the public
+> Hosted mode now sits behind a **Supabase Auth login wall** (Stage 2a), and
+> signups are gated to the first (owner) account — so deploying for **yourself**
+> is safe: set the `SUPABASE_*` vars below and only you can get in. Opening it to
+> **public signups** waits on per-user data isolation (Stage 2b in
+> `design-hosting-progress.md`); until then every account shares one dataset, so
+> keep signups owner-only.
 
 ## What you need
 
@@ -26,7 +27,16 @@ analysis).
 
    (Your project ref `wbbkehjknmjvzshmsfby` is already filled in; paste your real
    DB password.) The app reads this env var and connects to Postgres; the schema
-   is already applied (migration `supabase/migrations/0001_initial_schema.sql`).
+   is already applied (migrations under `supabase/migrations/`).
+
+   **Set these environment variables on the host** (hosted mode):
+   - `JOBSEARCH_DATABASE_URL` — the pooler string above.
+   - `SUPABASE_URL` — `https://wbbkehjknmjvzshmsfby.supabase.co`
+   - `SUPABASE_ANON_KEY` — your publishable/anon key (Supabase → Settings → API).
+     Turns on the login wall (Supabase Auth); without it the app runs open, so
+     **always set it when hosting**.
+   - `JOBSEARCH_SESSION_SECRET` — a long random string (signs session cookies).
+   - `JOBSEARCH_HTTPS_ONLY=1` — once you're on HTTPS, marks the cookie `Secure`.
 
 2. **A host account** (Render or Google Cloud Run below). Both are free at this
    scale. This is the one-time step nobody can do for you.

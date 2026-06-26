@@ -25,7 +25,8 @@ plan; the app host and the code changes are the rest.
 |---|---|---|
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
-| **2. Auth + multi-tenancy** | `users`, login, `user_id` scoping, admin | ⬜ Not started (the bulk) |
+| **2a. Auth (login wall)** | Supabase Auth, signed sessions, `app_users`, owner-gated signups | ✅ **Done, tested** |
+| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | ⬜ Next (the bulk) |
 | **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
 | **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
@@ -88,30 +89,58 @@ they were left for a focused follow-up. Port them (compute the interval in
 Python, or use `AGE()`/`EXTRACT` on Postgres) before enabling those features
 on the hosted backend.
 
-## Stage 2 — auth + multi-tenancy (the bulk)
+## Stage 2a — auth (login wall) (DONE)
 
-Per `design-hosting.md`: add a `users` table; add a `user_id` column + index to
-the per-user tables (`applications`, `application_events`, `profile_fields`,
-`runs`, `prep_*_progress`, `company_problem_progress`) while `jobs`/`job_events`,
-the prep **content** tables, and `company_problems` stay global; move per-user
-fit into a `user_job_fit` table. Signup / login / logout; every query scoped by
-the session's user id via one `current_user` dependency. Admin page behind
-`is_admin`.
+Supabase Auth chosen over app-native passwords (you never store credentials).
+**Architecture:** the app verifies email/password against Supabase Auth (GoTrue)
+over its REST API, then keeps its *own* signed-cookie session. Because the app
+reaches Postgres through a direct connection (not PostgREST), it never needs the
+user's JWT after login — so this layer stays small: no JWT verification, no
+refresh dance.
 
-**Two decisions to make before writing Stage 2:**
+**What shipped**
 
-1. **Auth provider — Supabase Auth vs app-native sessions.** Recommended:
-   **Supabase Auth** (hosted login, email verification, password reset, "Sign
-   in with Google"). It removes the riskiest security surface — you never store
-   passwords — and you're already on Supabase. App-native (argon2id + signed
-   cookies) is more code and more ways to get it wrong.
-2. **Row-Level Security (RLS).** Supabase enabled RLS on all 24 tables by
-   default (they're currently locked to the service role). If the FastAPI app
-   connects with a **direct Postgres role** and enforces `user_id` in its own
-   queries (the plan in `design-hosting.md`), RLS is a defense-in-depth backstop
-   and we add policies later. If instead the browser talks to Supabase
-   **directly** (PostgREST), RLS policies become the *primary* authorization
-   and must be written first. The current architecture is the former.
+- `webapp/auth.py` — hosted-mode detection (env-gated on `SUPABASE_URL` + a
+  Supabase key), GoTrue signup/login, the `session_user` helper.
+- `webapp/app.py` — a login-wall middleware (redirects unauthenticated requests
+  to `/login` in hosted mode; **inert in local mode**), `SessionMiddleware` for
+  signed cookies, and `/login` `/signup` `/logout` `/healthz` routes with
+  server-rendered `login.html` / `signup.html`.
+- `app_users` table (migration `0002`, applied to Supabase) — keyed by the
+  Supabase auth UUID; the first account to log in becomes the owner/admin.
+- **Signups are gated to the first (owner) account** until 2b, so hosting is a
+  private login wall — safe to deploy — not yet an open multi-user product.
+
+**Local mode is untouched:** with no `SUPABASE_URL` the wall is inert, there is
+no login, and the full existing suite stays green. New tests in
+`tests/test_auth.py` cover the wall, login/session, owner-gating, the
+email-confirmation message, and error handling (GoTrue stubbed).
+
+> **Verification note:** the auth flow is tested against a *stubbed* GoTrue. The
+> live round-trip to real Supabase Auth could not be exercised from the dev
+> sandbox (its network policy blocks outbound to `supabase.co`); the response
+> parsing follows the documented GoTrue contract and will be confirmed on the
+> first real signup once deployed.
+
+**Config (hosted):** `SUPABASE_URL`, `SUPABASE_ANON_KEY` (or
+`SUPABASE_PUBLISHABLE_KEY`), and a long random `JOBSEARCH_SESSION_SECRET`.
+
+## Stage 2b — per-user data isolation (NEXT, the bulk)
+
+Add a `user_id` column + index to the per-user tables (`applications`,
+`application_events`, `profile_fields`, `runs`, `prep_*_progress`,
+`company_problem_progress`) while `jobs`/`job_events`, the prep **content**
+tables, and `company_problems` stay global; move per-user fit into a
+`user_job_fit` table (today `jobs.fit_score/rank_score/cluster` are single-user
+columns). Scope every per-user query by the session's user id. Then open public
+signups. This is the larger refactor — it touches scoring, ingest, and the
+dashboard queries.
+
+**RLS note:** Supabase enabled Row-Level Security on every table by default.
+The app connects with a **direct Postgres role** and enforces `user_id` in its
+own queries, so RLS is a defense-in-depth backstop (add policies later) rather
+than the primary authorization. If the browser ever talked to Supabase directly
+(PostgREST), RLS policies would become primary and must come first.
 
 ## Stage 3 — deploy the app
 

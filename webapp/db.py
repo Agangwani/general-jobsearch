@@ -362,6 +362,19 @@ CREATE TABLE IF NOT EXISTS company_refresh_runs (
     finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_company_refresh_key ON company_refresh_runs(company_key);
+
+-- ------------------------------------------------------- hosted-mode accounts ---
+-- Only used when the app runs behind Supabase Auth (hosted mode; webapp/auth.py).
+-- `id` is the Supabase auth user UUID. Local single-user mode never writes here.
+-- Until per-user data isolation (Stage 2b) every account would share one dataset,
+-- so signups are gated to the first (owner) account.
+CREATE TABLE IF NOT EXISTS app_users (
+    id            TEXT PRIMARY KEY,            -- Supabase auth user id (UUID)
+    email         TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL,
+    last_login_at TEXT
+);
 """
 
 LESSON_STATES = ("not_started", "in_progress", "completed")
@@ -1367,3 +1380,35 @@ def refresh_startup_flags(conn: sqlite3.Connection) -> int:
         changed += cur.rowcount
     conn.commit()
     return changed
+
+
+# ------------------------------------------------------------ hosted accounts ---
+# Used only in hosted mode (Supabase Auth); see webapp/auth.py. Local single-user
+# mode never touches these.
+def count_app_users(conn) -> int:
+    """Number of accounts on record. 0 in local mode / before the first login."""
+    return conn.execute("SELECT COUNT(*) AS n FROM app_users").fetchone()["n"]
+
+
+def get_app_user(conn, user_id: str):
+    return conn.execute("SELECT * FROM app_users WHERE id = ?", (user_id,)).fetchone()
+
+
+def upsert_app_user(conn, user_id: str, email: str,
+                    *, is_admin: bool | None = None) -> None:
+    """Record or refresh an account (called on login). ``is_admin`` is applied
+    only when explicitly passed — the first account to log in becomes the owner."""
+    now = utcnow()
+    if get_app_user(conn, user_id) is None:
+        conn.execute(
+            "INSERT INTO app_users (id, email, is_admin, created_at, last_login_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, email, 1 if is_admin else 0, now, now))
+    else:
+        conn.execute(
+            "UPDATE app_users SET email = ?, last_login_at = ? WHERE id = ?",
+            (email, now, user_id))
+        if is_admin is not None:
+            conn.execute("UPDATE app_users SET is_admin = ? WHERE id = ?",
+                         (1 if is_admin else 0, user_id))
+    conn.commit()
