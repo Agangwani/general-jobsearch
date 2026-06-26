@@ -26,7 +26,7 @@ plan; the app host and the code changes are the rest.
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
 | **2. Auth + multi-tenancy** | `users`, login, `user_id` scoping, admin | ⬜ Not started (the bulk) |
-| **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | ⬜ Not started |
+| **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
 | **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
 
@@ -115,12 +115,19 @@ the session's user id via one `current_user` dependency. Admin page behind
 
 ## Stage 3 — deploy the app
 
-Containerize the FastAPI app (lean image: no Chromium, sklearn/numpy off the
-request path) and run it on Fly.io / Railway / Cloud Run with platform-
-terminated HTTPS. Config via env vars: `JOBSEARCH_DATABASE_URL` (the Supabase
-connection string — use the **pooler** endpoint for serverless/multi-worker),
-a session signing secret, etc. See `design-deployment.md` for host comparison
-and cost (~$0–5/mo to start).
+The container artifacts exist now: a host-agnostic [`Dockerfile`](../Dockerfile)
+(runs `python -m jobsearch ui` bound to `0.0.0.0:$PORT`, reads
+`JOBSEARCH_DATABASE_URL`) and a step-by-step [`docs/deploy.md`](deploy.md). They
+are **not wired to auto-deploy** — going live is deliberately gated on Stage 2
+auth, so nothing exposes PII before there's a login.
+
+Recommended **free** hosts (verified mid-2026): **Render** free web service
+(simplest, native GitHub auto-deploy, sleeps when idle) or **Google Cloud Run**
+(scales to $0 at idle, more setup). **Fly.io is no longer free** for new
+accounts. The database stays on Supabase's free Postgres (pooler endpoint), and
+the daily worker stays on free GitHub Actions. Net ~$0/mo. A later optimization
+splits a lean web image (no Chromium, sklearn off the request path) from the
+worker image; see `design-deployment.md`.
 
 ## Stage 4 — repoint the daily worker
 
