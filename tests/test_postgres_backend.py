@@ -154,3 +154,34 @@ def test_prep_seed_named_params(pgconn):
     assert db.prep_overall_counts(pgconn)["lessons_total"] > 0
     # Idempotent re-seed (content hash short-circuits) must not error.
     seed_into_db(pgconn)
+
+
+def test_applications_are_per_user_on_postgres(pgconn):
+    """Stage 2b lazy-application isolation, on Postgres: the LEFT JOIN +
+    COALESCE(status,'not_applied') read path, the composite UNIQUE(user_id,
+    job_id), and get_or_create_application all behave as on SQLite."""
+    from webapp import db
+
+    db.upsert_job(pgconn, _job())
+    jid = pgconn.execute(
+        "SELECT id FROM jobs WHERE key = ?", ("greenhouse:Acme:1",)).fetchone()["id"]
+
+    # u1 engages; u2 never does.
+    a1 = db.get_or_create_application(pgconn, jid, "u1")
+    assert a1 == db.get_or_create_application(pgconn, jid, "u1")  # idempotent
+    db.set_application_status(pgconn, a1, "applied")
+
+    assert db.job_with_application(pgconn, jid, "u1")["status"] == "applied"
+    u2 = db.job_with_application(pgconn, jid, "u2")
+    assert u2["status"] == "not_applied" and u2["application_id"] is None
+
+    # Per-user stacks and counts.
+    assert [r["company"] for r in db.search_jobs(pgconn, stack="applied", user_id="u1")] == ["Acme"]
+    assert db.search_jobs(pgconn, stack="applied", user_id="u2") == []
+    assert [r["company"] for r in db.search_jobs(pgconn, stack="to_apply", user_id="u2")] == ["Acme"]
+    assert db.stack_counts(pgconn, "u1")["applied"] == 1
+    assert db.stack_counts(pgconn, "u2")["to_apply"] == 1
+
+    # An unknown/out-of-range job id never violates the FK — returns None.
+    assert db.get_or_create_application(pgconn, 999999, "u1") is None
+    assert db.get_or_create_application(pgconn, 2 ** 63, "u1") is None

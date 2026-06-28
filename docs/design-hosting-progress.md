@@ -26,7 +26,7 @@ plan; the app host and the code changes are the rest.
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
 | **2a. Auth (login wall)** | Supabase Auth, signed sessions, `app_users`, owner-gated signups | ✅ **Done, tested** |
-| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile + prep/company progress** done; jobs/fit next |
+| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile, prep/company progress, applications** done; per-user fit next |
 | **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
 | **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
@@ -144,11 +144,19 @@ functions take `user_id=db.LOCAL_USER_ID` and scope by it. Routes pass
 - [x] **Prep & company progress** (`prep_*_progress`, `company_problem_progress`)
   — setters + all overview/detail/count reads scoped by user (migration `0004`).
   Verified: `tests/test_user_scoping.py`.
-- [ ] **Application tracking** (`applications`, `application_events`, `runs`) —
-  the harder piece: today `upsert_job` auto-creates one application per job
-  (1:1, single-user). Multi-user needs **lazy applications** (created when a
-  user first engages) so the to-apply pile is `jobs LEFT JOIN applications ON
-  job_id AND user_id`.
+- [x] **Application tracking** (`applications`) — **lazy per-user applications**
+  (migration `0005`; the unique key is now `(user_id, job_id)`). An application
+  is one user's engagement with one posting, created lazily by
+  `db.get_or_create_application` when a user first acts on a job (status change
+  or launching the apply browser). Every read is `jobs LEFT JOIN applications ON
+  job_id AND user_id` with `COALESCE(status,'not_applied')`, so a job a user
+  hasn't touched sits in *their* to-apply pile. State-change actions re-key on
+  `job_id` (the row may have no application yet). The local owner keeps an
+  auto-created application on insert, so single-user mode is byte-for-byte
+  unchanged. `application_events` inherit scoping through their `application_id`
+  FK; `runs` (global ingest metadata) stays global. Verified:
+  `tests/test_application_scoping.py` (SQLite) +
+  `test_postgres_backend.py::test_applications_are_per_user_on_postgres` (live PG).
 - [ ] **Per-user fit** — move `jobs.fit_score/rank_score/cluster` (single-user
   columns today) into `user_job_fit (user_id, job_id, …)`, and have the worker
   rescore each active user's resume against the global corpus. Touches

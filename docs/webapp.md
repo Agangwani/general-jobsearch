@@ -56,8 +56,8 @@ Grouped by area. `→ tmpl` = renders that template; `→ JSON`/`→ 303` otherw
 | POST | `/api/prepare-top` | launch+fill a tab for each of the top-N best-fit applyable jobs |
 | POST | `/api/apply-all` | fill every job tab the user already opened (`sessions.apply_all`) |
 | GET | `/api/apply-all-status` | all session statuses |
-| POST | `/applications/{application_id}/status` | set one application's status (+ note) → 303 |
-| POST | `/applications/bulk-status` | batch set status for checked rows → 303 |
+| POST | `/jobs/{job_id}/status` | set this user's status for a job (+ note); materializes the per-user application lazily → 303 |
+| POST | `/applications/bulk-status` | batch set status for checked rows (checkbox values are `job_id`) → 303 |
 
 ### Pipeline run / ingest
 | Method | Path | Purpose |

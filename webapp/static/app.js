@@ -39,7 +39,9 @@ async function startApply(btn, action = "apply") {
     show("Could not launch — is the job URL missing?"); short("⚡ error");
     btn.disabled = false; return;
   }
-  const appId = btn.dataset.applicationId;
+  // The server lazily creates this user's application and returns its id (an
+  // application is per-user, so the row may not have existed before this click).
+  const appId = (await res.json()).application_id;
   const poll = setInterval(async () => {
     const s = await (await fetch(`/api/apply-status/${appId}`)).json();
     const filled = s.fill && s.fill.filled;
@@ -186,15 +188,16 @@ if (bulkForm) {
   refresh();
 }
 
-// Per-row status change on the dashboard: POST to /applications/{id}/status and
-// reload so the row moves into the To apply / In progress / Applied tab. The
-// <select> has no name, so it never participates in the bulk-apply form submit.
+// Per-row status change on the dashboard: POST to /jobs/{id}/status and reload
+// so the row moves into the To apply / In progress / Applied tab. Keyed by job
+// id — an application is per-user and created lazily server-side. The <select>
+// has no name, so it never participates in the bulk-apply form submit.
 document.addEventListener("change", async (e) => {
   const sel = e.target.closest(".row-status");
   if (!sel) return;
   sel.disabled = true;
   try {
-    await fetch(`/applications/${sel.dataset.applicationId}/status`, {
+    await fetch(`/jobs/${sel.dataset.jobId}/status`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ status: sel.value }),

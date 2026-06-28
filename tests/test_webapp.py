@@ -464,24 +464,26 @@ def test_routes(tmp_path):
     declined = client.post("/api/apply-all").json()
     assert declined["requested"] is False and "browser" in declined["detail"]
 
-    app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
-    resp = client.post(f"/applications/{app_id}/status",
+    # Status is keyed by job id now (an application is per-user and lazy); the
+    # server materializes the current user's application and sets its status.
+    job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
+    resp = client.post(f"/jobs/{job_id}/status",
                        data={"status": "applied", "note": "done"}, follow_redirects=False)
     assert resp.status_code == 303
 
-    # bulk status: mark several applications applied in one post (checkbox values)
+    # bulk status: mark several jobs applied in one post (checkbox values are job ids)
     db.upsert_job(app.state.conn, record("k-bulk", company="Beta"))
-    aids = [str(r["id"]) for r in app.state.conn.execute("SELECT id FROM applications").fetchall()]
-    assert len(aids) >= 2
+    jids = [str(r["id"]) for r in app.state.conn.execute("SELECT id FROM jobs").fetchall()]
+    assert len(jids) >= 2
     # A non-existent id and a non-integer must NOT 500 or abort the batch.
     rb = client.post("/applications/bulk-status",
-                     data={"application_id": aids + ["999999", "abc"], "status": "applied"},
+                     data={"job_id": jids + ["999999", "abc"], "status": "applied"},
                      follow_redirects=False)
     assert rb.status_code == 303
     rows = app.state.conn.execute("SELECT status FROM applications").fetchall()
     assert all(r["status"] == "applied" for r in rows)
     # An invalid status is rejected (no write).
-    client.post("/applications/bulk-status", data={"application_id": aids, "status": "bogus"})
+    client.post("/applications/bulk-status", data={"job_id": jids, "status": "bogus"})
     assert all(r["status"] == "applied" for r in
                app.state.conn.execute("SELECT status FROM applications").fetchall())
     assert app.state.conn.execute(

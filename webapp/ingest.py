@@ -157,8 +157,12 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
 
 def _count_stale_to_apply(conn, report_keys: set[str]) -> int:
     """Count not-applied jobs in the DB that are absent from the current
-    reports — i.e. carried over from earlier runs."""
+    reports — i.e. carried over from earlier runs. A diagnostic for the local
+    owner (ingest runs in the worker/owner context), so it's scoped to the
+    'local' user; a job with no application counts as not-applied."""
     rows = conn.execute(
-        "SELECT j.key FROM jobs j JOIN applications a ON a.job_id = j.id "
-        "WHERE a.status = 'not_applied'").fetchall()
+        "SELECT j.key FROM jobs j "
+        "LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = ? "
+        "WHERE COALESCE(a.status, 'not_applied') = 'not_applied'",
+        (db.LOCAL_USER_ID,)).fetchall()
     return sum(1 for r in rows if r["key"] not in report_keys)

@@ -73,13 +73,18 @@ CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id);
 
 CREATE TABLE IF NOT EXISTS applications (
     id            INTEGER PRIMARY KEY,
-    job_id        INTEGER UNIQUE NOT NULL REFERENCES jobs(id),
+    user_id       TEXT NOT NULL DEFAULT 'local',   -- owner (Stage 2b); 'local' = single-user
+    job_id        INTEGER NOT NULL REFERENCES jobs(id),
     status        TEXT NOT NULL DEFAULT 'not_applied',
     applied_at    TEXT,
     submitted_via TEXT DEFAULT '',
     notes         TEXT DEFAULT '',
     created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    -- An application is one user's engagement with one posting. Lazily created
+    -- when a user first acts on a job (status/apply), so the to-apply pile is
+    -- jobs LEFT JOIN applications scoped to the current user.
+    UNIQUE(user_id, job_id)
 );
 
 CREATE TABLE IF NOT EXISTS application_events (
@@ -456,7 +461,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # with one local user); the code scopes by (user_id, …) explicitly rather
     # than relying on them.
     for tbl in ("profile_fields", "prep_lesson_progress", "prep_problem_progress",
-                "prep_ctci_problem_progress", "company_problem_progress"):
+                "prep_ctci_problem_progress", "company_problem_progress",
+                "applications"):
         tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
         if "user_id" not in tcols:
             conn.execute(
@@ -486,9 +492,14 @@ def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -
             "INSERT INTO job_events (job_id, event_type, created_at) VALUES (?, 'inserted', ?)",
             (job_id, now),
         )
+        # Seed the local owner's application so single-user/local mode is wholly
+        # unchanged (every job has an application; the dashboard's to-apply pile
+        # is exactly today's). Hosted (non-local) users get their own application
+        # lazily via get_or_create_application on first engagement.
         conn.execute(
-            "INSERT INTO applications (job_id, created_at, updated_at) VALUES (?, ?, ?)",
-            (job_id, now, now),
+            "INSERT INTO applications (user_id, job_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (LOCAL_USER_ID, job_id, now, now),
         )
         conn.commit()
         return "inserted"
@@ -534,6 +545,37 @@ def _defaults(record: dict) -> dict:
     return base
 
 
+def get_or_create_application(
+    conn: sqlite3.Connection, job_id: int, user_id: str = LOCAL_USER_ID,
+) -> int | None:
+    """Return this user's application id for `job_id`, creating it if absent.
+
+    Applications are per-user and lazy: a user has none for a job until they
+    first act on it (set a status, launch the apply browser). Returns None for
+    a job id that doesn't exist (a stale/out-of-range id) so callers degrade to
+    a redirect rather than violating the applications->jobs foreign key."""
+    # job_id arrives straight from a path param / form field. Reject ids outside
+    # signed-64-bit before binding them (SQLite raises OverflowError otherwise).
+    if not isinstance(job_id, int) or not (-(2 ** 63) <= job_id < 2 ** 63):
+        return None
+    row = conn.execute(
+        "SELECT id FROM applications WHERE job_id = ? AND user_id = ?",
+        (job_id, user_id)).fetchone()
+    if row is not None:
+        return row["id"]
+    if conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone() is None:
+        return None
+    now = utcnow()
+    conn.execute(
+        "INSERT INTO applications (user_id, job_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, job_id, now, now))
+    conn.commit()
+    return conn.execute(
+        "SELECT id FROM applications WHERE job_id = ? AND user_id = ?",
+        (job_id, user_id)).fetchone()["id"]
+
+
 def set_application_status(
     conn: sqlite3.Connection, application_id: int, status: str,
     detail: str = "", via: str = "",
@@ -554,26 +596,35 @@ def set_application_status(
     conn.commit()
 
 
-def job_with_application(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+def job_with_application(conn: sqlite3.Connection, job_id: int,
+                         user_id: str = LOCAL_USER_ID) -> sqlite3.Row | None:
+    # LEFT JOIN scoped to this user: a job with no application for them still
+    # resolves (status COALESCEs to 'not_applied'), so it shows in the to-apply
+    # pile. application_id is NULL until they engage (get_or_create_application).
     return conn.execute(
-        """SELECT j.*, a.id AS application_id, a.status, a.applied_at,
-                  a.submitted_via, a.notes
-           FROM jobs j JOIN applications a ON a.job_id = j.id
+        """SELECT j.*, a.id AS application_id,
+                  COALESCE(a.status, 'not_applied') AS status,
+                  a.applied_at, a.submitted_via, a.notes
+           FROM jobs j LEFT JOIN applications a
+                ON a.job_id = j.id AND a.user_id = ?
            WHERE j.id = ?""",
-        (job_id,),
+        (user_id, job_id),
     ).fetchone()
 
 
-def application_by_url(conn: sqlite3.Connection, url: str) -> sqlite3.Row | None:
-    """Exact-URL lookup of an application — used to attribute an open browser
-    tab (in 'fill all open tabs') back to a tracked job."""
+def application_by_url(conn: sqlite3.Connection, url: str,
+                       user_id: str = LOCAL_USER_ID) -> sqlite3.Row | None:
+    """Exact-URL lookup of this user's application — used to attribute an open
+    browser tab (in 'fill all open tabs') back to a tracked job. Only matches
+    jobs the user already engaged (an application exists), which is exactly the
+    set the apply browser launched."""
     if not url:
         return None
     return conn.execute(
         """SELECT a.id AS application_id, j.id AS job_id, j.title, j.company
            FROM jobs j JOIN applications a ON a.job_id = j.id
-           WHERE j.url = ? LIMIT 1""",
-        (url,),
+           WHERE j.url = ? AND a.user_id = ? LIMIT 1""",
+        (url, user_id),
     ).fetchone()
 
 
@@ -595,17 +646,21 @@ def job_ids_by_key(conn: sqlite3.Connection, keys) -> dict[str, int]:
     return out
 
 
-def active_application_urls(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """(application_id, url) for every active job — the caller fuzzy-matches an
-    open tab's URL against these (e.g. by canonical apply form / ATS job id)."""
+def active_application_urls(conn: sqlite3.Connection,
+                            user_id: str = LOCAL_USER_ID) -> list[sqlite3.Row]:
+    """(application_id, url) for every active job this user has an application
+    for — the caller fuzzy-matches an open tab's URL against these (e.g. by
+    canonical apply form / ATS job id)."""
     return conn.execute(
         """SELECT a.id AS application_id, j.url
            FROM jobs j JOIN applications a ON a.job_id = j.id
-           WHERE j.is_active = 1 AND j.url != ''"""
+           WHERE a.user_id = ? AND j.is_active = 1 AND j.url != ''""",
+        (user_id,),
     ).fetchall()
 
 
-# Columns the user can sort by. Values are safe SQL column references.
+# Columns the user can sort by. Values are safe SQL column references. Status
+# COALESCEs the (possibly absent) per-user application to the to-apply default.
 SORTABLE = {
     "fit":        "j.fit_score",
     "company":    "j.company",
@@ -613,7 +668,7 @@ SORTABLE = {
     "location":   "j.location",
     "posted":     "j.posted_at",
     "first_seen": "j.first_seen_at",
-    "status":     "a.status",
+    "status":     "COALESCE(a.status, 'not_applied')",
 }
 
 
@@ -629,13 +684,19 @@ def search_jobs(
     status_filter: str = "",    # exact application status value
     since: str = "",            # show not-applied jobs only if last_seen_at >= this
     startup_scope: str = "",    # "" | "all" (both) | "only" (startups) | "hide"
+    user_id: str = LOCAL_USER_ID,
     limit: int = 500,
 ) -> list[sqlite3.Row]:
+    # LEFT JOIN the current user's applications: a job they haven't engaged has
+    # no row, so its status COALESCEs to 'not_applied' (the to-apply pile). The
+    # user_id placeholder lives in the JOIN, so it is the FIRST bound arg.
+    st = "COALESCE(a.status, 'not_applied')"
     sql = [
-        """SELECT j.*, a.id AS application_id, a.status, a.applied_at
-           FROM jobs j JOIN applications a ON a.job_id = j.id WHERE 1=1"""
+        f"""SELECT j.*, a.id AS application_id, {st} AS status, a.applied_at
+            FROM jobs j LEFT JOIN applications a
+                 ON a.job_id = j.id AND a.user_id = ? WHERE 1=1"""
     ]
-    args: list = []
+    args: list = [user_id]
     if startup_scope == "only":
         sql.append("AND j.is_startup = 1")
     elif startup_scope == "hide":
@@ -650,17 +711,17 @@ def search_jobs(
     # but never hide a job you've already engaged with (in_progress/applied/…)
     # just because a later run targeted different roles.
     if since:
-        sql.append("AND (j.last_seen_at >= ? OR a.status != 'not_applied')")
+        sql.append(f"AND (j.last_seen_at >= ? OR {st} != 'not_applied')")
         args.append(since)
     if stack == "applied":
-        sql.append(f"AND a.status IN ({','.join('?' * len(APPLIED_SET))})")
+        sql.append(f"AND {st} IN ({','.join('?' * len(APPLIED_SET))})")
         args += sorted(APPLIED_SET)
     elif stack == "in_progress":
-        sql.append("AND a.status = 'in_progress'")
+        sql.append(f"AND {st} = 'in_progress'")
     elif stack == "to_apply":
         # Fresh, not-yet-started jobs only — in_progress is its own stack now.
         not_to_apply = APPLIED_SET | {"in_progress"}
-        sql.append(f"AND a.status NOT IN ({','.join('?' * len(not_to_apply))})")
+        sql.append(f"AND {st} NOT IN ({','.join('?' * len(not_to_apply))})")
         args += sorted(not_to_apply)
     if not include_near_miss:
         sql.append("AND j.filter_reason = ''")
@@ -668,7 +729,7 @@ def search_jobs(
         sql.append("AND j.fit_score >= ?")
         args.append(min_fit)
     if status_filter and status_filter in APP_STATUSES:
-        sql.append("AND a.status = ?")
+        sql.append(f"AND {st} = ?")
         args.append(status_filter)
     if sort_by in SORTABLE:
         col = SORTABLE[sort_by]
@@ -676,43 +737,49 @@ def search_jobs(
         nulls = "NULLS LAST" if direction == "DESC" else "NULLS FIRST"
         sql.append(f"ORDER BY {col} {direction} {nulls}")
     else:
-        sql.append("ORDER BY a.status != 'in_progress', j.rank_score DESC NULLS LAST, j.first_seen_at DESC")
+        sql.append(f"ORDER BY {st} != 'in_progress', j.rank_score DESC NULLS LAST, j.first_seen_at DESC")
     sql.append("LIMIT ?")
     args.append(limit)
     return conn.execute(" ".join(sql), args).fetchall()
 
 
-def top_fit_to_apply(conn: sqlite3.Connection, n: int = 5) -> list[sqlite3.Row]:
-    """The n best-fit jobs that are applyable now: active, have a URL, and not
-    yet in an applied/closed state. Highest fit first, rank as tiebreak."""
+def top_fit_to_apply(conn: sqlite3.Connection, n: int = 5,
+                     user_id: str = LOCAL_USER_ID) -> list[sqlite3.Row]:
+    """The n best-fit jobs that are applyable now for this user: active, have a
+    URL, and not yet in an applied/closed state. Highest fit first, rank as
+    tiebreak. A job the user hasn't engaged counts as to-apply (no row)."""
     placeholders = ",".join("?" * len(APPLIED_SET))
     return conn.execute(
-        f"""SELECT j.*, a.id AS application_id, a.status
-            FROM jobs j JOIN applications a ON a.job_id = j.id
-            WHERE j.is_active = 1 AND j.url != '' AND a.status NOT IN ({placeholders})
+        f"""SELECT j.*, a.id AS application_id, COALESCE(a.status, 'not_applied') AS status
+            FROM jobs j LEFT JOIN applications a
+                 ON a.job_id = j.id AND a.user_id = ?
+            WHERE j.is_active = 1 AND j.url != ''
+              AND COALESCE(a.status, 'not_applied') NOT IN ({placeholders})
             ORDER BY j.fit_score DESC NULLS LAST, j.rank_score DESC NULLS LAST,
                      j.first_seen_at DESC
             LIMIT ?""",
-        (*sorted(APPLIED_SET), n),
+        (user_id, *sorted(APPLIED_SET), n),
     ).fetchall()
 
 
-def companies_for_stack(conn: sqlite3.Connection, stack: str = "") -> list[str]:
-    """Distinct companies, scoped to a stack (to_apply / applied) so each
-    section's company filter lists only the companies that actually have jobs
-    in it. Empty stack → every company."""
+def companies_for_stack(conn: sqlite3.Connection, stack: str = "",
+                        user_id: str = LOCAL_USER_ID) -> list[str]:
+    """Distinct companies, scoped to a stack (to_apply / applied) for this user
+    so each section's company filter lists only the companies that actually have
+    jobs in it. Empty stack → every company."""
+    st = "COALESCE(a.status, 'not_applied')"
     sql = ["SELECT DISTINCT j.company FROM jobs j "
-           "JOIN applications a ON a.job_id = j.id WHERE 1=1"]
-    args: list = []
+           "LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = ? WHERE 1=1"]
+    args: list = [user_id]
     if stack == "applied":
-        sql.append(f"AND a.status IN ({','.join('?' * len(APPLIED_SET))})")
+        sql.append(f"AND {st} IN ({','.join('?' * len(APPLIED_SET))})")
         args += sorted(APPLIED_SET)
     elif stack == "in_progress":
-        sql.append("AND a.status = 'in_progress'")
+        sql.append(f"AND {st} = 'in_progress'")
     elif stack == "to_apply":
         # Fresh, not-yet-started jobs only — in_progress is its own stack now.
         not_to_apply = APPLIED_SET | {"in_progress"}
-        sql.append(f"AND a.status NOT IN ({','.join('?' * len(not_to_apply))})")
+        sql.append(f"AND {st} NOT IN ({','.join('?' * len(not_to_apply))})")
         args += sorted(not_to_apply)
     sql.append("ORDER BY j.company")
     return [r["company"] for r in conn.execute(" ".join(sql), args).fetchall()]
@@ -734,15 +801,21 @@ def _stack_of(status: str) -> str:
     return "to_apply"
 
 
-def stack_counts(conn: sqlite3.Connection) -> dict:
-    """Per-stack counts (to_apply / in_progress / applied), split into startup
-    vs. non-startup so the home page's big numbers can distinguish the two.
-    Keeps the flat to_apply/in_progress/applied keys for backward compatibility;
-    adds `startup` and `other` sub-dicts and their totals."""
+def stack_counts(conn: sqlite3.Connection, user_id: str = LOCAL_USER_ID) -> dict:
+    """Per-stack counts (to_apply / in_progress / applied) for this user, split
+    into startup vs. non-startup so the home page's big numbers can distinguish
+    the two. Keeps the flat to_apply/in_progress/applied keys for backward
+    compatibility; adds `startup` and `other` sub-dicts and their totals.
+
+    Every active job is counted: one the user hasn't engaged has no application
+    row and COALESCEs to 'not_applied' (to-apply)."""
     rows = conn.execute(
-        "SELECT a.status, j.is_startup AS su, COUNT(*) AS n FROM applications a "
-        "JOIN jobs j ON j.id = a.job_id WHERE j.is_active = 1 "
-        "GROUP BY a.status, j.is_startup"
+        "SELECT COALESCE(a.status, 'not_applied') AS status, j.is_startup AS su, "
+        "COUNT(*) AS n FROM jobs j "
+        "LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = ? "
+        "WHERE j.is_active = 1 "
+        "GROUP BY COALESCE(a.status, 'not_applied'), j.is_startup",
+        (user_id,),
     ).fetchall()
     zero = {"to_apply": 0, "in_progress": 0, "applied": 0}
     out: dict = {**zero, "by_status": {},
@@ -1384,19 +1457,21 @@ def startup_keys(conn: sqlite3.Connection) -> set[str]:
             conn.execute("SELECT company_key FROM startup_companies").fetchall()}
 
 
-def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
+def list_startups(conn: sqlite3.Connection, q: str = "",
+                  user_id: str = LOCAL_USER_ID) -> list[dict]:
     """All tracked startups (decoded), each annotated with how many active jobs
-    and how many are still to-apply, ordered by open jobs then name. `q` filters
-    on name / industry / investors substring."""
+    and how many are still to-apply for this user, ordered by open jobs then
+    name. `q` filters on name / industry / investors substring."""
     counts = {}
     for r in conn.execute(
             """SELECT j.company, COUNT(*) AS n,
-                      SUM(CASE WHEN a.status NOT IN
+                      SUM(CASE WHEN COALESCE(a.status, 'not_applied') NOT IN
                           ('applied','confirmed','interviewing','offer','rejected',
                            'withdrawn','in_progress') THEN 1 ELSE 0 END) AS open_n
-               FROM jobs j JOIN applications a ON a.job_id = j.id
+               FROM jobs j LEFT JOIN applications a
+                    ON a.job_id = j.id AND a.user_id = ?
                WHERE j.is_active = 1 AND j.is_startup = 1
-               GROUP BY j.company""").fetchall():
+               GROUP BY j.company""", (user_id,)).fetchall():
         counts[normalize_company_name(r["company"])] = (r["n"], r["open_n"] or 0)
     out = []
     for row in conn.execute(

@@ -170,7 +170,7 @@
   {% for j in jobs %}
     <tr class="{{ 'row-applied' if j.status in ('applied','confirmed','interviewing','offer') }}{{ ' row-dead' if j.status in ('rejected','withdrawn') }}"
         style="--i:{{ loop.index0 if loop.index0 < 18 else 18 }}">
-      <td class="check-col"><input type="checkbox" class="row-check" name="application_id" value="{{ j.application_id }}"></td>
+      <td class="check-col"><input type="checkbox" class="row-check" name="job_id" value="{{ j.id }}"></td>
       <td class="fit-cell">
         {% if j.fit_score is not none %}
         <span class="fit-ring" style="--fit:{{ '%.0f'|format(j.fit_score) }}"
@@ -206,7 +206,7 @@
       </td>
       <td>
         <select class="row-status status-{{ j.status }}" aria-label="Change status"
-                data-application-id="{{ j.application_id }}" title="Change status">
+                data-job-id="{{ j.id }}" title="Change status">
           {% for s in all_statuses %}
           <option value="{{ s }}" {{ 'selected' if s == j.status }}>{{ s.replace('_',' ') }}</option>
           {% endfor %}
@@ -215,7 +215,7 @@
       <td class="apply-cell">
         {% if j.url and j.status not in ('applied','confirmed','interviewing','offer') %}
         <button type="button" class="btn btn-row" data-apply-btn data-compact="1"
-                data-job-id="{{ j.id }}" data-application-id="{{ j.application_id }}"
+                data-job-id="{{ j.id }}"
                 title="Open in the integrated browser and auto-fill — you review & submit">⚡ Auto-fill</button>
         {% endif %}
       </td>

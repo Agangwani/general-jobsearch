@@ -118,7 +118,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
         uid = auth.current_user_id(request)
-        ctx.setdefault("counts", db.stack_counts(conn))
+        ctx.setdefault("counts", db.stack_counts(conn, uid))
         ctx.setdefault("prep_counts", db.prep_overall_counts(conn, uid))
         ctx.setdefault("company_counts", db.company_overall_counts(conn, uid))
         ctx.setdefault("current_user", auth.session_user(request))
@@ -197,13 +197,14 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             min_fit_val = None
         # Default to the latest run so stale to-apply jobs from earlier,
         # differently-targeted runs don't pile up; run_scope=all shows everything.
+        uid = auth.current_user_id(request)
         latest_at = db.latest_run_ingested_at(conn)
         since = latest_at if (run_scope == "latest" and latest_at) else ""
         jobs = db.search_jobs(conn, q=q, company=company, stack=stack,
                               include_near_miss=near_miss == "1",
                               sort_by=sort_by, sort_dir=sort_dir,
                               min_fit=min_fit_val, status_filter=status_filter,
-                              since=since, startup_scope=startup_scope)
+                              since=since, startup_scope=startup_scope, user_id=uid)
         # Startup facts for the rows shown, so the table can badge a startup and
         # surface its employees/stage inline. Only the startup rows are queried.
         startups: dict = {}
@@ -214,7 +215,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                     startups[su["company_key"]] = su
         # Company filter scoped to the current section (To apply / Applied), so
         # it only lists companies with jobs there. Keep a stale selection visible.
-        companies = db.companies_for_stack(conn, stack)
+        companies = db.companies_for_stack(conn, stack, uid)
         if company and company not in companies:
             companies = sorted(set(companies) | {company})
         last_run = conn.execute(
@@ -230,7 +231,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     # ------------------------------------------------------------ job detail
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(request: Request, job_id: int):
-        job = db.job_with_application(conn, job_id)
+        uid = auth.current_user_id(request)
+        job = db.job_with_application(conn, job_id, uid)
         if job is None:
             return RedirectResponse("/", status_code=303)
         events = conn.execute(
@@ -247,22 +249,21 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # The LeetCode questions this company is known to ask (top few), plus a
         # link to the full company page. Empty for companies not in the registry.
         company_key = canonical_key(job["company"])
-        lc_questions = db.company_problems_for(conn, company_key, limit=6,
-                                               user_id=auth.current_user_id(request))
+        lc_questions = db.company_problems_for(conn, company_key, limit=6, user_id=uid)
         lc_total = db.company_problem_count(conn, company_key)
         # Startup facts (employees, funding, investors, …) for this company when
         # it's a known startup — shown and editable in a sidebar panel.
         startup = db.startup_company_for(conn, job["company"]) if job["is_startup"] else None
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
-                      profile_fields=profile.panel_fields(conn, auth.current_user_id(request)),
+                      profile_fields=profile.panel_fields(conn, uid),
                       lc_questions=lc_questions, lc_total=lc_total,
                       company_key=company_key, startup=startup)
 
     # ----------------------------------------------------------- referrals
     @app.get("/jobs/{job_id}/referrals", response_class=HTMLResponse)
     def job_referrals(request: Request, job_id: int):
-        job = db.job_with_application(conn, job_id)
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None:
             return RedirectResponse("/", status_code=303)
         candidates = referrals_store.candidates_for_job(conn, job_id)
@@ -311,7 +312,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         cosine-similarity and cluster-affinity terms, the overlapping keywords
         that drove the match, and where the posting sits on the map. A startup
         job is read from the startup run's fit map."""
-        job = db.job_with_application(conn, job_id)
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None:
             return RedirectResponse("/clusters", status_code=303)
         track = "startups" if job["is_startup"] else "main"
@@ -330,18 +331,20 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         """The startup directory: every tracked startup with its helpful facts
         (employees, funding, investors, notable people) and open-job counts.
         Editable per company; populated by `discover-startups` + ingest."""
-        rows = db.list_startups(conn, q=q)
+        uid = auth.current_user_id(request)
+        rows = db.list_startups(conn, q=q, user_id=uid)
         startup_clustering = bool(clusters.load_clustering(root, "startups"))
         return render(request, "startups.html", startups=rows, q=q,
                       has_startup_fitmap=startup_clustering,
-                      counts_startup=db.stack_counts(conn))
+                      counts_startup=db.stack_counts(conn, uid))
 
     @app.get("/startups/{company_key}", response_class=HTMLResponse)
     def startup_detail(request: Request, company_key: str):
         startup = db.startup_company(conn, company_key)
         if startup is None:
             return RedirectResponse("/startups", status_code=303)
-        jobs = db.search_jobs(conn, company=startup["name"], startup_scope="only")
+        jobs = db.search_jobs(conn, company=startup["name"], startup_scope="only",
+                              user_id=auth.current_user_id(request))
         return render(request, "startup_detail.html", startup=startup, jobs=jobs)
 
     @app.post("/startups/{company_key}/edit")
@@ -587,21 +590,29 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     # --------------------------------------------------------------- actions
     @app.post("/jobs/{job_id}/apply")
-    def apply(job_id: int):
-        job = db.job_with_application(conn, job_id)
+    def apply(request: Request, job_id: int):
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None or not job["url"]:
             return JSONResponse({"error": "job or url missing"}, status_code=404)
-        session = sessions.launch(job["application_id"], job["url"])
-        return JSONResponse({"state": session.state})
+        # Lazily materialize this user's application so the apply-browser session
+        # (keyed by application_id) and the status poller have a stable id.
+        app_id = db.get_or_create_application(conn, job_id, auth.current_user_id(request))
+        if app_id is None:
+            return JSONResponse({"error": "job missing"}, status_code=404)
+        session = sessions.launch(app_id, job["url"])
+        return JSONResponse({"state": session.state, "application_id": app_id})
 
     @app.post("/jobs/{job_id}/refill")
-    def refill(job_id: int):
+    def refill(request: Request, job_id: int):
         # Re-run auto-fill on this job's already-open tab (or open one if none).
-        job = db.job_with_application(conn, job_id)
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None or not job["url"]:
             return JSONResponse({"error": "job or url missing"}, status_code=404)
-        session = sessions.refill(job["application_id"], job["url"])
-        return JSONResponse({"state": session.state})
+        app_id = db.get_or_create_application(conn, job_id, auth.current_user_id(request))
+        if app_id is None:
+            return JSONResponse({"error": "job missing"}, status_code=404)
+        session = sessions.refill(app_id, job["url"])
+        return JSONResponse({"state": session.state, "application_id": app_id})
 
     @app.get("/api/apply-status/{application_id}")
     def apply_status(application_id: int):
@@ -621,12 +632,16 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return JSONResponse({"sessions": sessions.all_statuses()})
 
     @app.post("/api/prepare-top")
-    def prepare_top(n: int = 5):
+    def prepare_top(request: Request, n: int = 5):
         # Pick the n best-fit applyable jobs and open+auto-fill a tab for each.
+        uid = auth.current_user_id(request)
         launched = []
-        for job in db.top_fit_to_apply(conn, n):
-            session = sessions.launch(job["application_id"], job["url"])
-            launched.append({"application_id": job["application_id"],
+        for job in db.top_fit_to_apply(conn, n, uid):
+            app_id = db.get_or_create_application(conn, job["id"], uid)
+            if app_id is None:
+                continue
+            session = sessions.launch(app_id, job["url"])
+            launched.append({"application_id": app_id,
                              "company": job["company"], "title": job["title"],
                              "state": session.state})
         return JSONResponse({"count": len(launched), "launched": launched})
@@ -634,33 +649,43 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.post("/applications/bulk-status")
     async def bulk_status(request: Request):
         # Batch-set status (e.g. "applied") for the checked rows, then return to
-        # the same filtered view so the rows move into the right section.
+        # the same filtered view so the rows move into the right section. Rows
+        # carry job_id (an application is per-user and may not exist yet); we
+        # lazily materialize the current user's application for each.
+        uid = auth.current_user_id(request)
         form = await request.form()
         status = form.get("status", "applied")
-        ids = form.getlist("application_id")
+        ids = form.getlist("job_id")
         if status in db.APP_STATUSES:
             for raw in ids:
-                # Skip bad/stale ids (non-int, or an id with no application row →
-                # a FK IntegrityError) without aborting the rest of the batch.
+                # Skip bad/stale ids (non-int, or an id for a job that's gone)
+                # without aborting the rest of the batch.
                 try:
-                    db.set_application_status(conn, int(raw), status,
-                                              detail="bulk action", via="ui")
-                except (ValueError, TypeError, sqlite3.Error):
+                    app_id = db.get_or_create_application(conn, int(raw), uid)
+                except (ValueError, TypeError):
                     continue
+                if app_id is None:
+                    continue
+                db.set_application_status(conn, app_id, status,
+                                          detail="bulk action", via="ui")
         return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
-    @app.post("/applications/{application_id}/status")
-    def set_status(application_id: int, status: str = Form(...), note: str = Form("")):
-        if status in db.APP_STATUSES:
-            db.set_application_status(conn, application_id, status,
-                                      detail=note or "set manually", via="ui")
-        if note:
-            conn.execute("UPDATE applications SET notes = ? WHERE id = ?",
-                         (note, application_id))
-            conn.commit()
-        job = conn.execute("SELECT job_id FROM applications WHERE id = ?",
-                           (application_id,)).fetchone()
-        return RedirectResponse(f"/jobs/{job['job_id']}" if job else "/", status_code=303)
+    @app.post("/jobs/{job_id}/status")
+    def set_status(request: Request, job_id: int,
+                   status: str = Form(...), note: str = Form("")):
+        # Per-user, lazy: materialize this user's application for the job, then
+        # set its status. A stale/unknown job id is a no-op redirect, never a 500.
+        uid = auth.current_user_id(request)
+        app_id = db.get_or_create_application(conn, job_id, uid)
+        if app_id is not None:
+            if status in db.APP_STATUSES:
+                db.set_application_status(conn, app_id, status,
+                                          detail=note or "set manually", via="ui")
+            if note:
+                conn.execute("UPDATE applications SET notes = ? WHERE id = ?",
+                             (note, app_id))
+                conn.commit()
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
     @app.post("/run")
     def start_pipeline(track: str = "main"):
@@ -897,8 +922,9 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     # --------------------------------------------------------------- JSON API
     @app.get("/api/jobs")
-    def api_jobs(q: str = "", stack: str = ""):
-        rows = db.search_jobs(conn, q=q, stack=stack)
+    def api_jobs(request: Request, q: str = "", stack: str = ""):
+        rows = db.search_jobs(conn, q=q, stack=stack,
+                              user_id=auth.current_user_id(request))
         return JSONResponse([dict(r) for r in rows])
 
     @app.get("/api/jobs/{job_id}/history")
