@@ -117,9 +117,10 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
+        uid = auth.current_user_id(request)
         ctx.setdefault("counts", db.stack_counts(conn))
-        ctx.setdefault("prep_counts", db.prep_overall_counts(conn))
-        ctx.setdefault("company_counts", db.company_overall_counts(conn))
+        ctx.setdefault("prep_counts", db.prep_overall_counts(conn, uid))
+        ctx.setdefault("company_counts", db.company_overall_counts(conn, uid))
         ctx.setdefault("current_user", auth.session_user(request))
         ctx.setdefault("hosted", auth.is_hosted())
         return templates.TemplateResponse(request, template, ctx)
@@ -246,7 +247,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # The LeetCode questions this company is known to ask (top few), plus a
         # link to the full company page. Empty for companies not in the registry.
         company_key = canonical_key(job["company"])
-        lc_questions = db.company_problems_for(conn, company_key, limit=6)
+        lc_questions = db.company_problems_for(conn, company_key, limit=6,
+                                               user_id=auth.current_user_id(request))
         lc_total = db.company_problem_count(conn, company_key)
         # Startup facts (employees, funding, investors, …) for this company when
         # it's a known startup — shown and editable in a sidebar panel.
@@ -392,7 +394,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/prep", response_class=HTMLResponse)
     def prep_home(request: Request):
-        tracks = db.prep_tracks_overview(conn)
+        uid = auth.current_user_id(request)
+        tracks = db.prep_tracks_overview(conn, uid)
         disciplines = _resume_disciplines()
         recommended, other = _split_prep_tracks(tracks, disciplines)
         return render(request, "prep.html",
@@ -400,9 +403,9 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       recommended_tracks=recommended,
                       other_tracks=other,
                       resume_disciplines=disciplines,
-                      resume_target=db.prep_resume_target(conn),
-                      overall=db.prep_overall_counts(conn),
-                      companies=db.companies_overview(conn))
+                      resume_target=db.prep_resume_target(conn, uid),
+                      overall=db.prep_overall_counts(conn, uid),
+                      companies=db.companies_overview(conn, uid))
 
     @app.get("/prep/track/{track_slug}", response_class=HTMLResponse)
     def prep_track(request: Request, track_slug: str):
@@ -411,11 +414,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         if track is None:
             return RedirectResponse("/prep", status_code=303)
         return render(request, "prep_track.html", track=dict(track),
-                      modules=db.prep_modules_for_track(conn, track["id"]))
+                      modules=db.prep_modules_for_track(
+                          conn, track["id"], auth.current_user_id(request)))
 
     @app.get("/prep/module/{module_slug}", response_class=HTMLResponse)
     def prep_module(request: Request, module_slug: str):
-        detail = db.prep_module_detail(conn, module_slug)
+        detail = db.prep_module_detail(conn, module_slug, auth.current_user_id(request))
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
         detail["has_source"] = prep_sources.available(root, detail["module"]["source_refs"])
@@ -448,14 +452,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/prep/module/{module_slug}/lesson/{lesson_slug}", response_class=HTMLResponse)
     def prep_lesson(request: Request, module_slug: str, lesson_slug: str):
-        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug)
+        uid = auth.current_user_id(request)
+        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug, uid)
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
         lesson = detail["lesson"]
         # Opening a fresh lesson marks it in-progress so the /prep landing can
         # resume you here. Already-completed lessons are left as-is.
         if lesson["state"] == "not_started":
-            db.set_lesson_state(conn, lesson["id"], "in_progress")
+            db.set_lesson_state(conn, lesson["id"], "in_progress", user_id=uid)
             lesson["state"] = "in_progress"
         try:
             takeaways = json.loads(lesson.get("key_takeaways") or "[]")
@@ -469,31 +474,34 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       has_source=has_source)
 
     @app.post("/prep/lessons/{lesson_id}/state")
-    def prep_set_lesson(lesson_id: int, state: str = Form(...),
+    def prep_set_lesson(request: Request, lesson_id: int, state: str = Form(...),
                         notes: str = Form(None), next: str = Form("/prep")):
         try:
-            db.set_lesson_state(conn, lesson_id, state, notes=notes)
+            db.set_lesson_state(conn, lesson_id, state, notes=notes,
+                                user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.post("/prep/problems/{problem_id}/state")
-    def prep_set_problem(problem_id: int, state: str = Form(...),
+    def prep_set_problem(request: Request, problem_id: int, state: str = Form(...),
                          next: str = Form("/prep")):
         try:
-            db.set_problem_state(conn, problem_id, state)
+            db.set_problem_state(conn, problem_id, state,
+                                 user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.get("/prep/module/{module_slug}/ctci/{problem_slug}", response_class=HTMLResponse)
     def prep_ctci_problem(request: Request, module_slug: str, problem_slug: str):
-        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug)
+        uid = auth.current_user_id(request)
+        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug, uid)
         if detail is None:
             return RedirectResponse(f"/prep/module/{module_slug}", status_code=303)
         problem = detail["problem"]
         if problem["state"] == "not_started":
-            db.set_ctci_problem_state(conn, problem["id"], "attempted")
+            db.set_ctci_problem_state(conn, problem["id"], "attempted", user_id=uid)
             problem["state"] = "attempted"
         try:
             hints = json.loads(problem.get("hints") or "[]")
@@ -503,10 +511,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       siblings=detail["siblings"], hints=hints)
 
     @app.post("/prep/ctci-problems/{ctci_problem_id}/state")
-    def prep_set_ctci_problem(ctci_problem_id: int, state: str = Form(...),
+    def prep_set_ctci_problem(request: Request, ctci_problem_id: int,
+                              state: str = Form(...),
                               notes: str = Form(None), next: str = Form("/prep")):
         try:
-            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes)
+            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes,
+                                      user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
@@ -517,11 +527,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # render() already injects company_counts (used by the nav badge and the
         # page header), so no need to recompute it here.
         return render(request, "companies.html",
-                      companies=db.companies_overview(conn))
+                      companies=db.companies_overview(conn, auth.current_user_id(request)))
 
     @app.get("/companies/{company_key}", response_class=HTMLResponse)
     def company_detail(request: Request, company_key: str, difficulty: str = ""):
-        problems = db.company_problems_for(conn, company_key, difficulty=difficulty)
+        problems = db.company_problems_for(conn, company_key, difficulty=difficulty,
+                                           user_id=auth.current_user_id(request))
         # The empty state (unknown company / no problems) is handled in-template
         # with a "⟳ Refresh questions" CTA, so no special-casing is needed here.
         return render(request, "company.html",
@@ -553,10 +564,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return RedirectResponse(f"/companies/{company_key}", status_code=303)
 
     @app.post("/company-problems/{problem_id}/state")
-    def set_company_problem(problem_id: int, state: str = Form(...),
+    def set_company_problem(request: Request, problem_id: int, state: str = Form(...),
                             next: str = Form("/companies")):
         try:
-            db.set_company_problem_state(conn, problem_id, state)
+            db.set_company_problem_state(conn, problem_id, state,
+                                         user_id=auth.current_user_id(request))
         except (ValueError, sqlite3.Error):
             # Bad state value, or a stale id whose problem row is gone (the
             # progress FK fails) — ignore and redirect rather than 500.

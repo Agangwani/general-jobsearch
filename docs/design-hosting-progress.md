@@ -26,7 +26,7 @@ plan; the app host and the code changes are the rest.
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
 | **2a. Auth (login wall)** | Supabase Auth, signed sessions, `app_users`, owner-gated signups | ✅ **Done, tested** |
-| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile isolated**; jobs/fit next |
+| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile + prep/company progress** done; jobs/fit next |
 | **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
 | **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
@@ -141,8 +141,9 @@ functions take `user_id=db.LOCAL_USER_ID` and scope by it. Routes pass
 - [x] **Profile** (`profile_fields`) — fully isolated (migration `0003`; the
   unique key is now `(user_id, field)`). Verified: two accounts can't see each
   other's profile (`tests/test_auth.py::test_profiles_are_isolated_per_user`).
-- [ ] **Prep & company progress** (`prep_*_progress`, `company_problem_progress`)
-  — same pattern: scope the progress setters and the overview/count reads.
+- [x] **Prep & company progress** (`prep_*_progress`, `company_problem_progress`)
+  — setters + all overview/detail/count reads scoped by user (migration `0004`).
+  Verified: `tests/test_user_scoping.py`.
 - [ ] **Application tracking** (`applications`, `application_events`, `runs`) —
   the harder piece: today `upsert_job` auto-creates one application per job
   (1:1, single-user). Multi-user needs **lazy applications** (created when a
