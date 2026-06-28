@@ -411,6 +411,26 @@ PATCHABLE = (
 )
 
 
+def _require_row(conn: sqlite3.Connection, table: str, row_id: int) -> None:
+    """Guard a state-change setter against a stale/unknown parent id.
+
+    The status/progress setters below UPDATE a parent row (a no-op for an
+    unknown id, no error) and then INSERT an event/progress row whose FK
+    references that parent. For an id with no parent row the INSERT violates
+    the FK — raising sqlite3.IntegrityError on SQLite or psycopg.errors.*
+    on Postgres, and (on Postgres) poisoning the open transaction. Rather than
+    catch a dialect-specific error after the fact, we check the parent exists
+    up front and raise ValueError when it doesn't. Every caller already turns a
+    ValueError into a 303 redirect (mirroring the bad-state-value path), so a
+    stale id is a clean no-op in both backends instead of an HTTP 500.
+
+    ``table`` is a fixed internal literal (never user input), so interpolating
+    it into the SQL is safe.
+    """
+    if conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone() is None:
+        raise ValueError(f"no {table} row with id {row_id!r}")
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -538,6 +558,9 @@ def set_application_status(
     conn: sqlite3.Connection, application_id: int, status: str,
     detail: str = "", via: str = "",
 ) -> None:
+    # A stale/unknown id would no-op the UPDATE but fail the application_events
+    # FK on INSERT (a 500); raise ValueError so callers redirect instead.
+    _require_row(conn, "applications", application_id)
     now = utcnow()
     fields = {"status": status, "updated_at": now}
     if status == "applied":
@@ -882,6 +905,8 @@ def set_lesson_state(conn: sqlite3.Connection, lesson_id: int, state: str,
                      user_id: str = LOCAL_USER_ID) -> None:
     if state not in LESSON_STATES:
         raise ValueError(f"invalid lesson state {state!r}")
+    # Stale/unknown lesson_id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "prep_lessons", lesson_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id, state FROM prep_lesson_progress WHERE lesson_id = ? AND user_id = ?",
@@ -920,6 +945,8 @@ def set_problem_state(conn: sqlite3.Connection, problem_id: int, state: str,
                       user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid problem state {state!r}")
+    # Stale/unknown problem_id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "prep_problems", problem_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id, state FROM prep_problem_progress WHERE problem_id = ? AND user_id = ?",
@@ -977,6 +1004,8 @@ def set_ctci_problem_state(conn: sqlite3.Connection, ctci_problem_id: int,
                            user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid ctci problem state {state!r}")
+    # Stale/unknown id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "prep_ctci_problems", ctci_problem_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id, state FROM prep_ctci_problem_progress "
@@ -1175,6 +1204,8 @@ def set_company_problem_state(conn: sqlite3.Connection, problem_id: int,
                               user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid company problem state {state!r}")
+    # Stale/unknown id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "company_problems", problem_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id FROM company_problem_progress "
