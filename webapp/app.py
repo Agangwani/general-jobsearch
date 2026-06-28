@@ -606,8 +606,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.get("/api/apply-status/{application_id}")
     def apply_status(application_id: int):
         status = sessions.status(application_id)  # includes the fill summary
+        # FastAPI accepts an arbitrary-precision int from the path, but an id
+        # outside SQLite's signed 64-bit INTEGER range overflows the query
+        # rather than just missing — treat it as an unknown (not-found) id.
+        in_range = -(2 ** 63) <= application_id < 2 ** 63
         row = conn.execute("SELECT status FROM applications WHERE id = ?",
-                           (application_id,)).fetchone()
+                           (application_id,)).fetchone() if in_range else None
         status["application_status"] = row["status"] if row else "unknown"
         return JSONResponse(status)
 
