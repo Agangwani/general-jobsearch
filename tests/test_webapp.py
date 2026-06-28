@@ -616,3 +616,38 @@ def test_prep_page_recommends_tracks_for_resume(tmp_path):
     # below the divider (not recommended for a finance resume).
     assert '/prep/track/coding"' in html
     assert html.index('/prep/track/coding"') > divider
+
+
+# ----------------------------------------------------- static / client JS
+def _app_js() -> str:
+    return (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.js").read_text()
+
+
+def test_clipboard_writes_are_guarded():
+    """Regression for UI-QA findings 47847ee469f0 (jobs copy panel) and
+    63d83e6dcc22 (resume copy buttons): a denied/unavailable Clipboard API used
+    to reject with no .catch(), so the copy failed silently and the rejection
+    escaped as an uncaught page error. Every navigator.clipboard.writeText(...)
+    call must be guarded by a .catch() (a graceful fallback / user feedback).
+
+    Static-text assertion (this is client-side JS) kept robust to formatting by
+    scanning each writeText call's promise chain up to the next one for .catch(.
+    """
+    src = _app_js()
+    needle = "navigator.clipboard.writeText("
+    starts = [i for i in range(len(src)) if src.startswith(needle, i)]
+    assert starts, "expected the clipboard copy code to still use writeText()"
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(src)
+        chain = src[start:end]
+        assert ".catch(" in chain, (
+            "navigator.clipboard.writeText() at offset "
+            f"{start} has no .catch() — a denied clipboard would throw uncaught"
+        )
+
+
+def test_clipboard_has_a_fallback_path():
+    """The fix should degrade gracefully (legacy execCommand path) rather than
+    only swallow the error, so copy keeps working in non-secure contexts."""
+    src = _app_js()
+    assert "execCommand" in src, "expected a legacy copy fallback for denied clipboard"
