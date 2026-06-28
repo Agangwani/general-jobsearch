@@ -140,6 +140,27 @@ def test_search(conn):
     assert len(db.search_jobs(conn, stack="applied")) == 0
 
 
+def test_search_escapes_like_wildcards(conn):
+    """A user search term is a literal substring, not a LIKE pattern. Bare '%'
+    or '_' must NOT act as wildcards: q='%' should match nothing (no job has a
+    literal percent) rather than returning every row, and 'N_w' must not match
+    'New York' via the single-char wildcard. Literal '%'/'_' match literally."""
+    db.upsert_job(conn, record("k1", title="Senior Backend Engineer",
+                               location="New York, NY", description="payments fraud"))
+    db.upsert_job(conn, record("k2", company="Beta", title="Senior ML Engineer",
+                               location="Remote", description="50% travel"))
+    # '%' is escaped → matches a literal percent sign only (k2's "50% travel"),
+    # NOT every row.
+    pct = db.search_jobs(conn, q="%")
+    assert {r["key"] for r in pct} == {"k2"}
+    assert len(pct) < 2                                   # crucially: not "all rows"
+    # '_' is escaped → 'N_w' is a literal, so it does NOT match "New York".
+    assert db.search_jobs(conn, q="N_w") == []
+    # A real substring still matches (escaping doesn't break normal search).
+    assert {r["key"] for r in db.search_jobs(conn, q="New York")} == {"k1"}
+    assert {r["key"] for r in db.search_jobs(conn, q="50%")} == {"k2"}
+
+
 def test_sort_by_fit(conn):
     db.upsert_job(conn, record("k1", fit_score=80.0))
     db.upsert_job(conn, record("k2", company="Beta", fit_score=60.0))
@@ -526,6 +547,63 @@ def test_dashboard_tolerates_malformed_min_fit(tmp_path):
     ok = client.get("/?min_fit=70")
     assert ok.status_code == 200
     assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
+
+
+def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
+    """The Filter form's "near-miss" checkbox must round-trip both ways.
+
+    An unchecked HTML checkbox is omitted from the GET query, so without a
+    hidden companion the handler's near_miss="1" default kept near-miss jobs
+    visible forever (the box could never be turned off). With the companion
+    `<input type="hidden" name="near_miss" value="0">`:
+      * default / box checked  → near-miss jobs SHOWN
+      * box unchecked (submits near_miss=0) → near-miss jobs HIDDEN
+    while a normal (non-near-miss) job stays visible in every case."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    # A normal job and a near-miss job (non-empty filter_reason). Distinct
+    # titles so we can tell which rows render.
+    db.upsert_job(app.state.conn, record("k-normal", title="Normal Match Engineer"))
+    db.upsert_job(app.state.conn, record("k-near", company="Beta",
+                                         title="Near Miss Engineer",
+                                         filter_reason="UNLEVELED_TITLE"))
+
+    # Default: near-miss shown (handler default near_miss="1").
+    default = client.get("/?run_scope=all")
+    assert default.status_code == 200
+    assert "Normal Match Engineer" in default.text
+    assert "Near Miss Engineer" in default.text
+
+    # Box checked: form submits the hidden "0" then the checkbox "1"; last value
+    # wins → on → still shown.
+    on = client.get("/?run_scope=all&near_miss=0&near_miss=1")
+    assert on.status_code == 200
+    assert "Near Miss Engineer" in on.text
+
+    # Box UNCHECKED: form submits only the hidden "0" → off → near-miss hidden,
+    # but the normal job is unaffected. This is the bug fix (was impossible).
+    off = client.get("/?run_scope=all&near_miss=0")
+    assert off.status_code == 200
+    assert "Normal Match Engineer" in off.text
+    assert "Near Miss Engineer" not in off.text
+
+    # The rendered form carries the hidden companion so the browser actually
+    # submits near_miss=0 when the box is cleared.
+    assert '<input type="hidden" name="near_miss" value="0">' in default.text
 
 
 def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
