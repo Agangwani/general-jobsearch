@@ -7,6 +7,7 @@ design: the database holds profile PII and application history.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from jobsearch.prep.seed import seed_into_db
 from jobsearch.referrals import discover as referrals_discover
@@ -26,7 +28,7 @@ from jobsearch.resume import extract_keywords, pdf_to_text
 
 from jobsearch.company_questions import canonical_key
 
-from . import clusters, company_questions, db, emailmod, gmail, ingest, prep_sources, profile
+from . import auth, clusters, company_questions, db, emailmod, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -42,6 +44,28 @@ def _safe_next(value: str) -> str:
 
 def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="jobsearch UI")
+
+    # Auth (webapp/auth.py). Hosted mode (Supabase Auth configured) puts the app
+    # behind a login wall; local mode leaves it open and the wall is inert. The
+    # wall reads request.session, so SessionMiddleware is added *after* it
+    # (Starlette runs the last-added middleware outermost).
+    @app.middleware("http")
+    async def _auth_wall(request: Request, call_next):
+        if (auth.is_hosted() and not auth.is_open_path(request.url.path)
+                and not auth.session_user(request)):
+            return RedirectResponse("/login", status_code=303)
+        return await call_next(request)
+
+    if auth.is_hosted() and not os.environ.get("JOBSEARCH_SESSION_SECRET"):
+        print("WARNING: JOBSEARCH_SESSION_SECRET unset — using an insecure "
+              "default. Set a long random value before exposing this publicly.")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=os.environ.get("JOBSEARCH_SESSION_SECRET", "dev-insecure-session-key"),
+        same_site="lax",
+        https_only=bool(os.environ.get("JOBSEARCH_HTTPS_ONLY")),
+    )
+
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
@@ -93,10 +117,70 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
+        uid = auth.current_user_id(request)
         ctx.setdefault("counts", db.stack_counts(conn))
-        ctx.setdefault("prep_counts", db.prep_overall_counts(conn))
-        ctx.setdefault("company_counts", db.company_overall_counts(conn))
+        ctx.setdefault("prep_counts", db.prep_overall_counts(conn, uid))
+        ctx.setdefault("company_counts", db.company_overall_counts(conn, uid))
+        ctx.setdefault("current_user", auth.session_user(request))
+        ctx.setdefault("hosted", auth.is_hosted())
         return templates.TemplateResponse(request, template, ctx)
+
+    # ----------------------------------------------------------------- auth
+    # These routes are reachable without a session (the wall allows them); they
+    # are inert in local mode, where there is no login.
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(request: Request, error: str = "", msg: str = ""):
+        return templates.TemplateResponse(request, "login.html",
+                                          {"error": error, "msg": msg})
+
+    @app.post("/login")
+    def login_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+        try:
+            user = auth.sign_in(email.strip(), password)
+        except auth.AuthError as exc:
+            return templates.TemplateResponse(
+                request, "login.html", {"error": str(exc)}, status_code=400)
+        request.session["user"] = user
+        # First account to log in becomes the owner/admin.
+        db.upsert_app_user(conn, user["id"], user["email"],
+                           is_admin=db.count_app_users(conn) == 0)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/signup", response_class=HTMLResponse)
+    def signup_form(request: Request, error: str = ""):
+        return templates.TemplateResponse(
+            request, "signup.html", {"error": error, "open": auth.signups_open(conn)})
+
+    @app.post("/signup")
+    def signup_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+        if not auth.signups_open(conn):
+            return templates.TemplateResponse(
+                request, "signup.html",
+                {"error": "Signups are currently closed.", "open": False},
+                status_code=403)
+        try:
+            user, needs_confirmation = auth.sign_up(email.strip(), password)
+        except auth.AuthError as exc:
+            return templates.TemplateResponse(
+                request, "signup.html", {"error": str(exc), "open": True},
+                status_code=400)
+        if needs_confirmation:
+            return templates.TemplateResponse(request, "login.html", {
+                "msg": "Account created — check your email to confirm, then log in."})
+        request.session["user"] = user
+        db.upsert_app_user(conn, user["id"], user["email"],
+                           is_admin=db.count_app_users(conn) == 0)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/logout")
+    @app.post("/logout")
+    def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    @app.get("/healthz")
+    def healthz():
+        return JSONResponse({"ok": True})
 
     # ------------------------------------------------------------ dashboard
     @app.get("/", response_class=HTMLResponse)
@@ -163,14 +247,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # The LeetCode questions this company is known to ask (top few), plus a
         # link to the full company page. Empty for companies not in the registry.
         company_key = canonical_key(job["company"])
-        lc_questions = db.company_problems_for(conn, company_key, limit=6)
+        lc_questions = db.company_problems_for(conn, company_key, limit=6,
+                                               user_id=auth.current_user_id(request))
         lc_total = db.company_problem_count(conn, company_key)
         # Startup facts (employees, funding, investors, …) for this company when
         # it's a known startup — shown and editable in a sidebar panel.
         startup = db.startup_company_for(conn, job["company"]) if job["is_startup"] else None
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
-                      profile_fields=profile.panel_fields(conn),
+                      profile_fields=profile.panel_fields(conn, auth.current_user_id(request)),
                       lc_questions=lc_questions, lc_total=lc_total,
                       company_key=company_key, startup=startup)
 
@@ -309,7 +394,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/prep", response_class=HTMLResponse)
     def prep_home(request: Request):
-        tracks = db.prep_tracks_overview(conn)
+        uid = auth.current_user_id(request)
+        tracks = db.prep_tracks_overview(conn, uid)
         disciplines = _resume_disciplines()
         recommended, other = _split_prep_tracks(tracks, disciplines)
         return render(request, "prep.html",
@@ -317,9 +403,9 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       recommended_tracks=recommended,
                       other_tracks=other,
                       resume_disciplines=disciplines,
-                      resume_target=db.prep_resume_target(conn),
-                      overall=db.prep_overall_counts(conn),
-                      companies=db.companies_overview(conn))
+                      resume_target=db.prep_resume_target(conn, uid),
+                      overall=db.prep_overall_counts(conn, uid),
+                      companies=db.companies_overview(conn, uid))
 
     @app.get("/prep/track/{track_slug}", response_class=HTMLResponse)
     def prep_track(request: Request, track_slug: str):
@@ -328,11 +414,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         if track is None:
             return RedirectResponse("/prep", status_code=303)
         return render(request, "prep_track.html", track=dict(track),
-                      modules=db.prep_modules_for_track(conn, track["id"]))
+                      modules=db.prep_modules_for_track(
+                          conn, track["id"], auth.current_user_id(request)))
 
     @app.get("/prep/module/{module_slug}", response_class=HTMLResponse)
     def prep_module(request: Request, module_slug: str):
-        detail = db.prep_module_detail(conn, module_slug)
+        detail = db.prep_module_detail(conn, module_slug, auth.current_user_id(request))
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
         detail["has_source"] = prep_sources.available(root, detail["module"]["source_refs"])
@@ -365,14 +452,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/prep/module/{module_slug}/lesson/{lesson_slug}", response_class=HTMLResponse)
     def prep_lesson(request: Request, module_slug: str, lesson_slug: str):
-        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug)
+        uid = auth.current_user_id(request)
+        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug, uid)
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
         lesson = detail["lesson"]
         # Opening a fresh lesson marks it in-progress so the /prep landing can
         # resume you here. Already-completed lessons are left as-is.
         if lesson["state"] == "not_started":
-            db.set_lesson_state(conn, lesson["id"], "in_progress")
+            db.set_lesson_state(conn, lesson["id"], "in_progress", user_id=uid)
             lesson["state"] = "in_progress"
         try:
             takeaways = json.loads(lesson.get("key_takeaways") or "[]")
@@ -386,31 +474,34 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       has_source=has_source)
 
     @app.post("/prep/lessons/{lesson_id}/state")
-    def prep_set_lesson(lesson_id: int, state: str = Form(...),
+    def prep_set_lesson(request: Request, lesson_id: int, state: str = Form(...),
                         notes: str = Form(None), next: str = Form("/prep")):
         try:
-            db.set_lesson_state(conn, lesson_id, state, notes=notes)
+            db.set_lesson_state(conn, lesson_id, state, notes=notes,
+                                user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.post("/prep/problems/{problem_id}/state")
-    def prep_set_problem(problem_id: int, state: str = Form(...),
+    def prep_set_problem(request: Request, problem_id: int, state: str = Form(...),
                          next: str = Form("/prep")):
         try:
-            db.set_problem_state(conn, problem_id, state)
+            db.set_problem_state(conn, problem_id, state,
+                                 user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.get("/prep/module/{module_slug}/ctci/{problem_slug}", response_class=HTMLResponse)
     def prep_ctci_problem(request: Request, module_slug: str, problem_slug: str):
-        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug)
+        uid = auth.current_user_id(request)
+        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug, uid)
         if detail is None:
             return RedirectResponse(f"/prep/module/{module_slug}", status_code=303)
         problem = detail["problem"]
         if problem["state"] == "not_started":
-            db.set_ctci_problem_state(conn, problem["id"], "attempted")
+            db.set_ctci_problem_state(conn, problem["id"], "attempted", user_id=uid)
             problem["state"] = "attempted"
         try:
             hints = json.loads(problem.get("hints") or "[]")
@@ -420,10 +511,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       siblings=detail["siblings"], hints=hints)
 
     @app.post("/prep/ctci-problems/{ctci_problem_id}/state")
-    def prep_set_ctci_problem(ctci_problem_id: int, state: str = Form(...),
+    def prep_set_ctci_problem(request: Request, ctci_problem_id: int,
+                              state: str = Form(...),
                               notes: str = Form(None), next: str = Form("/prep")):
         try:
-            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes)
+            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes,
+                                      user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
@@ -434,11 +527,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # render() already injects company_counts (used by the nav badge and the
         # page header), so no need to recompute it here.
         return render(request, "companies.html",
-                      companies=db.companies_overview(conn))
+                      companies=db.companies_overview(conn, auth.current_user_id(request)))
 
     @app.get("/companies/{company_key}", response_class=HTMLResponse)
     def company_detail(request: Request, company_key: str, difficulty: str = ""):
-        problems = db.company_problems_for(conn, company_key, difficulty=difficulty)
+        problems = db.company_problems_for(conn, company_key, difficulty=difficulty,
+                                           user_id=auth.current_user_id(request))
         # The empty state (unknown company / no problems) is handled in-template
         # with a "⟳ Refresh questions" CTA, so no special-casing is needed here.
         return render(request, "company.html",
@@ -470,10 +564,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return RedirectResponse(f"/companies/{company_key}", status_code=303)
 
     @app.post("/company-problems/{problem_id}/state")
-    def set_company_problem(problem_id: int, state: str = Form(...),
+    def set_company_problem(request: Request, problem_id: int, state: str = Form(...),
                             next: str = Form("/companies")):
         try:
-            db.set_company_problem_state(conn, problem_id, state)
+            db.set_company_problem_state(conn, problem_id, state,
+                                         user_id=auth.current_user_id(request))
         except (ValueError, sqlite3.Error):
             # Bad state value, or a stale id whose problem row is gone (the
             # progress FK fails) — ignore and redirect rather than 500.
@@ -639,7 +734,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       keywords=extract_keywords(resume_text) if resume_text else [])
 
     @app.post("/resume/upload")
-    async def upload_resume(file: UploadFile = File(...)):
+    async def upload_resume(request: Request, file: UploadFile = File(...)):
         max_bytes = 10 * 1024 * 1024  # cap the read so a huge upload can't OOM us
         data = await file.read(max_bytes + 1)
         if len(data) > max_bytes:
@@ -667,7 +762,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
                                     status_code=303)
         (root / "data" / "resume.txt").write_text(text + "\n")
-        profile.reseed_from_resume(conn, text)
+        profile.reseed_from_resume(conn, text, user_id=auth.current_user_id(request))
         return RedirectResponse("/resume?uploaded=1", status_code=303)
 
     @app.post("/resume/run")
@@ -704,22 +799,26 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/profile", response_class=HTMLResponse)
     def profile_page(request: Request):
-        return render(request, "profile.html", fields=profile.all_fields(conn),
+        uid = auth.current_user_id(request)
+        profile.ensure_fields(conn, uid)  # make the standard fields exist for this user
+        return render(request, "profile.html", fields=profile.all_fields(conn, uid),
                       field_options=profile.FIELD_OPTIONS)
 
     @app.post("/profile")
     async def save_profile(request: Request):
+        uid = auth.current_user_id(request)
         form = await request.form()
         for field, value in form.items():
-            profile.set_field(conn, field, str(value))
+            profile.set_field(conn, field, str(value), user_id=uid)
         return RedirectResponse("/profile", status_code=303)
 
     @app.post("/profile/from-resume")
-    def profile_from_resume():
+    def profile_from_resume(request: Request):
         # Fill empty profile fields from the resume; never clobbers manual edits.
+        uid = auth.current_user_id(request)
         resume = root / "data" / "resume.txt"
         if resume.exists():
-            profile.populate_from_resume(conn, resume.read_text())
+            profile.populate_from_resume(conn, resume.read_text(), user_id=uid)
         return RedirectResponse("/profile", status_code=303)
 
     # ------------------------------------------------------ search config view

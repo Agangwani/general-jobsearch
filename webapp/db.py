@@ -22,11 +22,17 @@ application history).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from jobsearch.utils import normalize_company_name
+
+# Sentinel owner id for single-user / local mode. Per-user (hosted) rows use the
+# Supabase auth UUID instead; per-user columns default to this so local behavior
+# is completely unchanged (one implicit user).
+LOCAL_USER_ID = "local"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -87,9 +93,11 @@ CREATE INDEX IF NOT EXISTS idx_app_events_app ON application_events(application_
 
 CREATE TABLE IF NOT EXISTS profile_fields (
     id         INTEGER PRIMARY KEY,
-    field      TEXT UNIQUE NOT NULL,
+    user_id    TEXT NOT NULL DEFAULT 'local',   -- owner of this field (Stage 2b)
+    field      TEXT NOT NULL,
     value      TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, field)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -174,7 +182,7 @@ CREATE TABLE IF NOT EXISTS referral_candidates (
     name              TEXT NOT NULL,
     headline          TEXT DEFAULT '',
     linkedin_url      TEXT UNIQUE NOT NULL,
-    current_role      TEXT DEFAULT '',
+    "current_role"    TEXT DEFAULT '',   -- quoted: reserved keyword in Postgres
     current_company   TEXT DEFAULT '',
     location          TEXT DEFAULT '',
     summary           TEXT DEFAULT '',
@@ -262,21 +270,25 @@ CREATE INDEX IF NOT EXISTS idx_prep_problems_module ON prep_problems(module_id);
 
 CREATE TABLE IF NOT EXISTS prep_lesson_progress (
     id           INTEGER PRIMARY KEY,
-    lesson_id    INTEGER UNIQUE NOT NULL REFERENCES prep_lessons(id),
+    user_id      TEXT NOT NULL DEFAULT 'local',
+    lesson_id    INTEGER NOT NULL REFERENCES prep_lessons(id),
     state        TEXT NOT NULL DEFAULT 'not_started',
     notes        TEXT DEFAULT '',
     started_at   TEXT,
     completed_at TEXT,
-    updated_at   TEXT NOT NULL
+    updated_at   TEXT NOT NULL,
+    UNIQUE(user_id, lesson_id)
 );
 
 CREATE TABLE IF NOT EXISTS prep_problem_progress (
     id           INTEGER PRIMARY KEY,
-    problem_id   INTEGER UNIQUE NOT NULL REFERENCES prep_problems(id),
+    user_id      TEXT NOT NULL DEFAULT 'local',
+    problem_id   INTEGER NOT NULL REFERENCES prep_problems(id),
     state        TEXT NOT NULL DEFAULT 'not_started',  -- not_started | attempted | solved
     notes        TEXT DEFAULT '',
     solved_at    TEXT,
-    updated_at   TEXT NOT NULL
+    updated_at   TEXT NOT NULL,
+    UNIQUE(user_id, problem_id)
 );
 
 -- CtCI book problems (Ch.1-17 of "Cracking the Coding Interview"). Unlike
@@ -300,11 +312,13 @@ CREATE INDEX IF NOT EXISTS idx_prep_ctci_problems_module ON prep_ctci_problems(m
 
 CREATE TABLE IF NOT EXISTS prep_ctci_problem_progress (
     id              INTEGER PRIMARY KEY,
-    ctci_problem_id INTEGER UNIQUE NOT NULL REFERENCES prep_ctci_problems(id),
+    user_id         TEXT NOT NULL DEFAULT 'local',
+    ctci_problem_id INTEGER NOT NULL REFERENCES prep_ctci_problems(id),
     state           TEXT NOT NULL DEFAULT 'not_started',
     notes           TEXT DEFAULT '',
     solved_at       TEXT,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    UNIQUE(user_id, ctci_problem_id)
 );
 
 -- Stamped after a successful seed so reseeds skip work when content unchanged.
@@ -341,11 +355,13 @@ CREATE INDEX IF NOT EXISTS idx_company_problems_key ON company_problems(company_
 
 CREATE TABLE IF NOT EXISTS company_problem_progress (
     id                 INTEGER PRIMARY KEY,
-    company_problem_id INTEGER UNIQUE NOT NULL REFERENCES company_problems(id),
+    user_id            TEXT NOT NULL DEFAULT 'local',
+    company_problem_id INTEGER NOT NULL REFERENCES company_problems(id),
     state              TEXT NOT NULL DEFAULT 'not_started',  -- not_started | attempted | solved
     notes              TEXT DEFAULT '',
     solved_at          TEXT,
-    updated_at         TEXT NOT NULL
+    updated_at         TEXT NOT NULL,
+    UNIQUE(user_id, company_problem_id)
 );
 
 -- Per-company (or all-company) refresh state, polled by the UI while a
@@ -361,6 +377,19 @@ CREATE TABLE IF NOT EXISTS company_refresh_runs (
     finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_company_refresh_key ON company_refresh_runs(company_key);
+
+-- ------------------------------------------------------- hosted-mode accounts ---
+-- Only used when the app runs behind Supabase Auth (hosted mode; webapp/auth.py).
+-- `id` is the Supabase auth user UUID. Local single-user mode never writes here.
+-- Until per-user data isolation (Stage 2b) every account would share one dataset,
+-- so signups are gated to the first (owner) account.
+CREATE TABLE IF NOT EXISTS app_users (
+    id            TEXT PRIMARY KEY,            -- Supabase auth user id (UUID)
+    email         TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL,
+    last_login_at TEXT
+);
 """
 
 LESSON_STATES = ("not_started", "in_progress", "completed")
@@ -386,7 +415,24 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(path: Path):
+    """Open the application database.
+
+    Defaults to local SQLite at ``path`` (the single-user, on-your-machine
+    product). When ``JOBSEARCH_DATABASE_URL`` is set — hosted deployments, see
+    ``docs/design-hosting.md`` — it connects to that Postgres database instead
+    and ``path`` is ignored. Both backends expose the same connection API to the
+    rest of the app (see ``webapp/pgcompat.py``)."""
+    url = os.environ.get("JOBSEARCH_DATABASE_URL")
+    if url:
+        from .pgcompat import connect_postgres, sqlite_schema_to_postgres
+        conn = connect_postgres(url)
+        conn.executescript(sqlite_schema_to_postgres(SCHEMA))
+        return conn
+    return _connect_sqlite(path)
+
+
+def _connect_sqlite(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -404,6 +450,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "is_startup" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN is_startup INTEGER NOT NULL DEFAULT 0")
+    # Stage 2b: per-user scoping. Existing single-user DBs gain a user_id column
+    # on each per-user table, defaulting to the local owner, so all current rows
+    # belong to 'local'. The old single-column UNIQUE constraints stay (harmless
+    # with one local user); the code scopes by (user_id, …) explicitly rather
+    # than relying on them.
+    for tbl in ("profile_fields", "prep_lesson_progress", "prep_problem_progress",
+                "prep_ctci_problem_progress", "company_problem_progress"):
+        tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+        if "user_id" not in tcols:
+            conn.execute(
+                f"ALTER TABLE {tbl} ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'")
     conn.commit()
 
 
@@ -702,7 +759,8 @@ def stack_counts(conn: sqlite3.Connection) -> dict:
 
 
 # ---------------------------------------------------------- prep queries ---
-def prep_tracks_overview(conn: sqlite3.Connection) -> list[dict]:
+def prep_tracks_overview(conn: sqlite3.Connection,
+                         user_id: str = LOCAL_USER_ID) -> list[dict]:
     """One row per track with totals + completion counts. Drives /prep landing."""
     rows = conn.execute("""
         SELECT
@@ -713,49 +771,51 @@ def prep_tracks_overview(conn: sqlite3.Connection) -> list[dict]:
           (SELECT COUNT(*) FROM prep_lesson_progress p
             JOIN prep_lessons l ON l.id = p.lesson_id
             JOIN prep_modules m ON m.id = l.module_id
-            WHERE m.track_id = t.id AND p.state = 'completed') AS lessons_done,
+            WHERE m.track_id = t.id AND p.state = 'completed' AND p.user_id = :uid) AS lessons_done,
           (SELECT COUNT(*) FROM prep_problems pr
             JOIN prep_modules m ON m.id = pr.module_id WHERE m.track_id = t.id) AS problem_count,
           (SELECT COUNT(*) FROM prep_problem_progress pp
             JOIN prep_problems pr ON pr.id = pp.problem_id
             JOIN prep_modules m ON m.id = pr.module_id
-            WHERE m.track_id = t.id AND pp.state = 'solved') AS problems_done,
+            WHERE m.track_id = t.id AND pp.state = 'solved' AND pp.user_id = :uid) AS problems_done,
           (SELECT COUNT(*) FROM prep_ctci_problems cp
             JOIN prep_modules m ON m.id = cp.module_id WHERE m.track_id = t.id) AS ctci_count,
           (SELECT COUNT(*) FROM prep_ctci_problem_progress cpp
             JOIN prep_ctci_problems cp ON cp.id = cpp.ctci_problem_id
             JOIN prep_modules m ON m.id = cp.module_id
-            WHERE m.track_id = t.id AND cpp.state = 'solved') AS ctci_done
+            WHERE m.track_id = t.id AND cpp.state = 'solved' AND cpp.user_id = :uid) AS ctci_done
         FROM prep_tracks t
         ORDER BY t.sort_order, t.id
-    """).fetchall()
+    """, {"uid": user_id}).fetchall()
     return [dict(r) for r in rows]
 
 
-def prep_modules_for_track(conn: sqlite3.Connection, track_id: int) -> list[dict]:
+def prep_modules_for_track(conn: sqlite3.Connection, track_id: int,
+                           user_id: str = LOCAL_USER_ID) -> list[dict]:
     rows = conn.execute("""
         SELECT
           m.id, m.slug, m.title, m.summary, m.source_refs, m.est_minutes,
           (SELECT COUNT(*) FROM prep_lessons l WHERE l.module_id = m.id) AS lesson_count,
           (SELECT COUNT(*) FROM prep_lesson_progress p
             JOIN prep_lessons l ON l.id = p.lesson_id
-            WHERE l.module_id = m.id AND p.state = 'completed') AS lessons_done,
+            WHERE l.module_id = m.id AND p.state = 'completed' AND p.user_id = :uid) AS lessons_done,
           (SELECT COUNT(*) FROM prep_problems pr WHERE pr.module_id = m.id) AS problem_count,
           (SELECT COUNT(*) FROM prep_problem_progress pp
             JOIN prep_problems pr ON pr.id = pp.problem_id
-            WHERE pr.module_id = m.id AND pp.state = 'solved') AS problems_done,
+            WHERE pr.module_id = m.id AND pp.state = 'solved' AND pp.user_id = :uid) AS problems_done,
           (SELECT COUNT(*) FROM prep_ctci_problems cp WHERE cp.module_id = m.id) AS ctci_count,
           (SELECT COUNT(*) FROM prep_ctci_problem_progress cpp
             JOIN prep_ctci_problems cp ON cp.id = cpp.ctci_problem_id
-            WHERE cp.module_id = m.id AND cpp.state = 'solved') AS ctci_done
+            WHERE cp.module_id = m.id AND cpp.state = 'solved' AND cpp.user_id = :uid) AS ctci_done
         FROM prep_modules m
-        WHERE m.track_id = ?
+        WHERE m.track_id = :track_id
         ORDER BY m.sort_order, m.id
-    """, (track_id,)).fetchall()
+    """, {"track_id": track_id, "uid": user_id}).fetchall()
     return [dict(r) for r in rows]
 
 
-def prep_module_detail(conn: sqlite3.Connection, module_slug: str) -> dict | None:
+def prep_module_detail(conn: sqlite3.Connection, module_slug: str,
+                       user_id: str = LOCAL_USER_ID) -> dict | None:
     module = conn.execute("""
         SELECT m.*, t.slug AS track_slug, t.title AS track_title
         FROM prep_modules m JOIN prep_tracks t ON t.id = m.track_id
@@ -767,25 +827,25 @@ def prep_module_detail(conn: sqlite3.Connection, module_slug: str) -> dict | Non
         SELECT l.id, l.slug, l.title, l.source_refs, l.sort_order,
                COALESCE(p.state, 'not_started') AS state
         FROM prep_lessons l
-        LEFT JOIN prep_lesson_progress p ON p.lesson_id = l.id
-        WHERE l.module_id = ?
+        LEFT JOIN prep_lesson_progress p ON p.lesson_id = l.id AND p.user_id = :uid
+        WHERE l.module_id = :mid
         ORDER BY l.sort_order, l.id
-    """, (module["id"],)).fetchall()
+    """, {"mid": module["id"], "uid": user_id}).fetchall()
     problems = conn.execute("""
         SELECT pr.*, COALESCE(pp.state, 'not_started') AS state
         FROM prep_problems pr
-        LEFT JOIN prep_problem_progress pp ON pp.problem_id = pr.id
-        WHERE pr.module_id = ?
+        LEFT JOIN prep_problem_progress pp ON pp.problem_id = pr.id AND pp.user_id = :uid
+        WHERE pr.module_id = :mid
         ORDER BY pr.sort_order, pr.id
-    """, (module["id"],)).fetchall()
+    """, {"mid": module["id"], "uid": user_id}).fetchall()
     ctci_problems = conn.execute("""
         SELECT cp.id, cp.slug, cp.ctci_id, cp.title, cp.complexity, cp.sort_order,
                COALESCE(cpp.state, 'not_started') AS state
         FROM prep_ctci_problems cp
-        LEFT JOIN prep_ctci_problem_progress cpp ON cpp.ctci_problem_id = cp.id
-        WHERE cp.module_id = ?
+        LEFT JOIN prep_ctci_problem_progress cpp ON cpp.ctci_problem_id = cp.id AND cpp.user_id = :uid
+        WHERE cp.module_id = :mid
         ORDER BY cp.sort_order, cp.id
-    """, (module["id"],)).fetchall()
+    """, {"mid": module["id"], "uid": user_id}).fetchall()
     return {
         "module": dict(module),
         "lessons": [dict(r) for r in lessons],
@@ -794,7 +854,8 @@ def prep_module_detail(conn: sqlite3.Connection, module_slug: str) -> dict | Non
     }
 
 
-def prep_lesson_detail(conn: sqlite3.Connection, module_slug: str, lesson_slug: str) -> dict | None:
+def prep_lesson_detail(conn: sqlite3.Connection, module_slug: str, lesson_slug: str,
+                       user_id: str = LOCAL_USER_ID) -> dict | None:
     row = conn.execute("""
         SELECT
           l.*, m.slug AS module_slug, m.title AS module_title, m.id AS module_id,
@@ -804,9 +865,9 @@ def prep_lesson_detail(conn: sqlite3.Connection, module_slug: str, lesson_slug: 
         FROM prep_lessons l
         JOIN prep_modules m ON m.id = l.module_id
         JOIN prep_tracks t ON t.id = m.track_id
-        LEFT JOIN prep_lesson_progress p ON p.lesson_id = l.id
-        WHERE m.slug = ? AND l.slug = ?
-    """, (module_slug, lesson_slug)).fetchone()
+        LEFT JOIN prep_lesson_progress p ON p.lesson_id = l.id AND p.user_id = :uid
+        WHERE m.slug = :mslug AND l.slug = :lslug
+    """, {"mslug": module_slug, "lslug": lesson_slug, "uid": user_id}).fetchone()
     if row is None:
         return None
     siblings = conn.execute("""
@@ -817,21 +878,22 @@ def prep_lesson_detail(conn: sqlite3.Connection, module_slug: str, lesson_slug: 
 
 
 def set_lesson_state(conn: sqlite3.Connection, lesson_id: int, state: str,
-                     notes: str | None = None) -> None:
+                     notes: str | None = None,
+                     user_id: str = LOCAL_USER_ID) -> None:
     if state not in LESSON_STATES:
         raise ValueError(f"invalid lesson state {state!r}")
     now = utcnow()
     row = conn.execute(
-        "SELECT id, state FROM prep_lesson_progress WHERE lesson_id = ?",
-        (lesson_id,)).fetchone()
+        "SELECT id, state FROM prep_lesson_progress WHERE lesson_id = ? AND user_id = ?",
+        (lesson_id, user_id)).fetchone()
     started_at = now if state in ("in_progress", "completed") else None
     completed_at = now if state == "completed" else None
     if row is None:
         conn.execute(
             """INSERT INTO prep_lesson_progress
-                 (lesson_id, state, notes, started_at, completed_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (lesson_id, state, notes or "", started_at, completed_at, now))
+                 (user_id, lesson_id, state, notes, started_at, completed_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, lesson_id, state, notes or "", started_at, completed_at, now))
     else:
         sets = ["state = ?", "updated_at = ?"]
         args: list = [state, now]
@@ -846,28 +908,29 @@ def set_lesson_state(conn: sqlite3.Connection, lesson_id: int, state: str,
         if row["state"] == "not_started" and state != "not_started":
             sets.append("started_at = ?")
             args.append(now)
-        args.append(lesson_id)
+        args.extend([lesson_id, user_id])
         conn.execute(
-            f"UPDATE prep_lesson_progress SET {', '.join(sets)} WHERE lesson_id = ?",
-            args)
+            f"UPDATE prep_lesson_progress SET {', '.join(sets)} "
+            "WHERE lesson_id = ? AND user_id = ?", args)
     conn.commit()
 
 
 def set_problem_state(conn: sqlite3.Connection, problem_id: int, state: str,
-                      notes: str | None = None) -> None:
+                      notes: str | None = None,
+                      user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid problem state {state!r}")
     now = utcnow()
     row = conn.execute(
-        "SELECT id, state FROM prep_problem_progress WHERE problem_id = ?",
-        (problem_id,)).fetchone()
+        "SELECT id, state FROM prep_problem_progress WHERE problem_id = ? AND user_id = ?",
+        (problem_id, user_id)).fetchone()
     solved_at = now if state == "solved" else None
     if row is None:
         conn.execute(
             """INSERT INTO prep_problem_progress
-                 (problem_id, state, notes, solved_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (problem_id, state, notes or "", solved_at, now))
+                 (user_id, problem_id, state, notes, solved_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, problem_id, state, notes or "", solved_at, now))
     else:
         sets = ["state = ?", "updated_at = ?"]
         args: list = [state, now]
@@ -877,15 +940,16 @@ def set_problem_state(conn: sqlite3.Connection, problem_id: int, state: str,
         if state == "solved":
             sets.append("solved_at = ?")
             args.append(now)
-        args.append(problem_id)
+        args.extend([problem_id, user_id])
         conn.execute(
-            f"UPDATE prep_problem_progress SET {', '.join(sets)} WHERE problem_id = ?",
-            args)
+            f"UPDATE prep_problem_progress SET {', '.join(sets)} "
+            "WHERE problem_id = ? AND user_id = ?", args)
     conn.commit()
 
 
 def prep_ctci_problem_detail(conn: sqlite3.Connection, module_slug: str,
-                             problem_slug: str) -> dict | None:
+                             problem_slug: str,
+                             user_id: str = LOCAL_USER_ID) -> dict | None:
     """Full content + sibling nav for a single CtCI book problem."""
     row = conn.execute("""
         SELECT
@@ -896,9 +960,9 @@ def prep_ctci_problem_detail(conn: sqlite3.Connection, module_slug: str,
         FROM prep_ctci_problems cp
         JOIN prep_modules m ON m.id = cp.module_id
         JOIN prep_tracks t ON t.id = m.track_id
-        LEFT JOIN prep_ctci_problem_progress cpp ON cpp.ctci_problem_id = cp.id
-        WHERE m.slug = ? AND cp.slug = ?
-    """, (module_slug, problem_slug)).fetchone()
+        LEFT JOIN prep_ctci_problem_progress cpp ON cpp.ctci_problem_id = cp.id AND cpp.user_id = :uid
+        WHERE m.slug = :mslug AND cp.slug = :pslug
+    """, {"mslug": module_slug, "pslug": problem_slug, "uid": user_id}).fetchone()
     if row is None:
         return None
     siblings = conn.execute("""
@@ -909,20 +973,22 @@ def prep_ctci_problem_detail(conn: sqlite3.Connection, module_slug: str,
 
 
 def set_ctci_problem_state(conn: sqlite3.Connection, ctci_problem_id: int,
-                           state: str, notes: str | None = None) -> None:
+                           state: str, notes: str | None = None,
+                           user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid ctci problem state {state!r}")
     now = utcnow()
     row = conn.execute(
-        "SELECT id, state FROM prep_ctci_problem_progress WHERE ctci_problem_id = ?",
-        (ctci_problem_id,)).fetchone()
+        "SELECT id, state FROM prep_ctci_problem_progress "
+        "WHERE ctci_problem_id = ? AND user_id = ?",
+        (ctci_problem_id, user_id)).fetchone()
     solved_at = now if state == "solved" else None
     if row is None:
         conn.execute(
             """INSERT INTO prep_ctci_problem_progress
-                 (ctci_problem_id, state, notes, solved_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (ctci_problem_id, state, notes or "", solved_at, now))
+                 (user_id, ctci_problem_id, state, notes, solved_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, ctci_problem_id, state, notes or "", solved_at, now))
     else:
         sets = ["state = ?", "updated_at = ?"]
         args: list = [state, now]
@@ -932,14 +998,15 @@ def set_ctci_problem_state(conn: sqlite3.Connection, ctci_problem_id: int,
         if state == "solved":
             sets.append("solved_at = ?")
             args.append(now)
-        args.append(ctci_problem_id)
+        args.extend([ctci_problem_id, user_id])
         conn.execute(
-            f"UPDATE prep_ctci_problem_progress SET {', '.join(sets)} WHERE ctci_problem_id = ?",
-            args)
+            f"UPDATE prep_ctci_problem_progress SET {', '.join(sets)} "
+            "WHERE ctci_problem_id = ? AND user_id = ?", args)
     conn.commit()
 
 
-def prep_resume_target(conn: sqlite3.Connection) -> dict | None:
+def prep_resume_target(conn: sqlite3.Connection,
+                       user_id: str = LOCAL_USER_ID) -> dict | None:
     """The "resume where you left off" hook on the /prep landing. Returns the
     most-recently-touched in-progress lesson, or — failing that — the first
     not_started lesson, or None if everything is done."""
@@ -950,9 +1017,9 @@ def prep_resume_target(conn: sqlite3.Connection) -> dict | None:
         JOIN prep_lessons l ON l.id = p.lesson_id
         JOIN prep_modules m ON m.id = l.module_id
         JOIN prep_tracks t ON t.id = m.track_id
-        WHERE p.state = 'in_progress'
+        WHERE p.state = 'in_progress' AND p.user_id = :uid
         ORDER BY p.updated_at DESC LIMIT 1
-    """).fetchone()
+    """, {"uid": user_id}).fetchone()
     if row:
         return dict(row)
     row = conn.execute("""
@@ -961,24 +1028,28 @@ def prep_resume_target(conn: sqlite3.Connection) -> dict | None:
         FROM prep_lessons l
         JOIN prep_modules m ON m.id = l.module_id
         JOIN prep_tracks t ON t.id = m.track_id
-        LEFT JOIN prep_lesson_progress p ON p.lesson_id = l.id
+        LEFT JOIN prep_lesson_progress p ON p.lesson_id = l.id AND p.user_id = :uid
         WHERE COALESCE(p.state, 'not_started') = 'not_started'
         ORDER BY t.sort_order, m.sort_order, l.sort_order LIMIT 1
-    """).fetchone()
+    """, {"uid": user_id}).fetchone()
     return dict(row) if row else None
 
 
-def prep_overall_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def prep_overall_counts(conn: sqlite3.Connection,
+                        user_id: str = LOCAL_USER_ID) -> dict[str, int]:
     """Headline numbers for the nav badge — total + completed lessons."""
     rows = conn.execute("""
         SELECT
           (SELECT COUNT(*) FROM prep_lessons) AS lessons_total,
-          (SELECT COUNT(*) FROM prep_lesson_progress WHERE state = 'completed') AS lessons_done,
+          (SELECT COUNT(*) FROM prep_lesson_progress
+             WHERE state = 'completed' AND user_id = :uid) AS lessons_done,
           (SELECT COUNT(*) FROM prep_problems) AS problems_total,
-          (SELECT COUNT(*) FROM prep_problem_progress WHERE state = 'solved') AS problems_done,
+          (SELECT COUNT(*) FROM prep_problem_progress
+             WHERE state = 'solved' AND user_id = :uid) AS problems_done,
           (SELECT COUNT(*) FROM prep_ctci_problems) AS ctci_total,
-          (SELECT COUNT(*) FROM prep_ctci_problem_progress WHERE state = 'solved') AS ctci_done
-    """).fetchone()
+          (SELECT COUNT(*) FROM prep_ctci_problem_progress
+             WHERE state = 'solved' AND user_id = :uid) AS ctci_done
+    """, {"uid": user_id}).fetchone()
     return dict(rows) if rows else {
         "lessons_total": 0, "lessons_done": 0,
         "problems_total": 0, "problems_done": 0,
@@ -1040,7 +1111,8 @@ def seed_company_problems(conn: sqlite3.Connection, records: list[dict]) -> dict
     return {"inserted": inserted, "updated": updated, "total": len(records)}
 
 
-def companies_overview(conn: sqlite3.Connection) -> list[dict]:
+def companies_overview(conn: sqlite3.Connection,
+                       user_id: str = LOCAL_USER_ID) -> list[dict]:
     """One row per company with question + solved counts, busiest first.
     Drives the /companies landing."""
     rows = conn.execute("""
@@ -1054,29 +1126,32 @@ def companies_overview(conn: sqlite3.Connection) -> list[dict]:
                MAX(cp.last_refreshed_at) AS last_refreshed_at,
                MAX(CASE WHEN cp.source != 'bundled' THEN 1 ELSE 0 END) AS refreshed
         FROM company_problems cp
-        LEFT JOIN company_problem_progress pr ON pr.company_problem_id = cp.id
+        LEFT JOIN company_problem_progress pr
+          ON pr.company_problem_id = cp.id AND pr.user_id = :uid
         GROUP BY cp.company_key
-        ORDER BY problem_count DESC, company COLLATE NOCASE
-    """).fetchall()
+        ORDER BY problem_count DESC, LOWER(MIN(cp.company))
+    """, {"uid": user_id}).fetchall()
     return [dict(r) for r in rows]
 
 
 def company_problems_for(conn: sqlite3.Connection, company_key: str,
-                         difficulty: str = "", limit: int = 0) -> list[dict]:
+                         difficulty: str = "", limit: int = 0,
+                         user_id: str = LOCAL_USER_ID) -> list[dict]:
     """A company's questions (most-asked first) with solve state joined."""
     sql = ["""SELECT cp.*, COALESCE(pr.state, 'not_started') AS state
               FROM company_problems cp
-              LEFT JOIN company_problem_progress pr ON pr.company_problem_id = cp.id
-              WHERE cp.company_key = ?"""]
-    args: list = [company_key]
+              LEFT JOIN company_problem_progress pr
+                ON pr.company_problem_id = cp.id AND pr.user_id = :uid
+              WHERE cp.company_key = :ckey"""]
+    params: dict = {"uid": user_id, "ckey": company_key}
     if difficulty in ("easy", "medium", "hard"):
-        sql.append("AND cp.difficulty = ?")
-        args.append(difficulty)
+        sql.append("AND cp.difficulty = :diff")
+        params["diff"] = difficulty
     sql.append("ORDER BY cp.frequency DESC, cp.leetcode_number")
     if limit:
-        sql.append("LIMIT ?")
-        args.append(limit)
-    return [dict(r) for r in conn.execute(" ".join(sql), args).fetchall()]
+        sql.append("LIMIT :lim")
+        params["lim"] = limit
+    return [dict(r) for r in conn.execute(" ".join(sql), params).fetchall()]
 
 
 def company_problem_count(conn: sqlite3.Connection, company_key: str) -> int:
@@ -1096,20 +1171,22 @@ def company_display_name(conn: sqlite3.Connection, company_key: str) -> str:
 
 
 def set_company_problem_state(conn: sqlite3.Connection, problem_id: int,
-                              state: str, notes: str | None = None) -> None:
+                              state: str, notes: str | None = None,
+                              user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid company problem state {state!r}")
     now = utcnow()
     row = conn.execute(
-        "SELECT id FROM company_problem_progress WHERE company_problem_id = ?",
-        (problem_id,)).fetchone()
+        "SELECT id FROM company_problem_progress "
+        "WHERE company_problem_id = ? AND user_id = ?",
+        (problem_id, user_id)).fetchone()
     solved_at = now if state == "solved" else None
     if row is None:
         conn.execute(
             """INSERT INTO company_problem_progress
-                 (company_problem_id, state, notes, solved_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (problem_id, state, notes or "", solved_at, now))
+                 (user_id, company_problem_id, state, notes, solved_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, problem_id, state, notes or "", solved_at, now))
     else:
         sets = ["state = ?", "updated_at = ?"]
         args: list = [state, now]
@@ -1119,33 +1196,36 @@ def set_company_problem_state(conn: sqlite3.Connection, problem_id: int,
         if state == "solved":
             sets.append("solved_at = ?")
             args.append(now)
-        args.append(problem_id)
+        args.extend([problem_id, user_id])
         conn.execute(
             f"UPDATE company_problem_progress SET {', '.join(sets)} "
-            "WHERE company_problem_id = ?", args)
+            "WHERE company_problem_id = ? AND user_id = ?", args)
     conn.commit()
 
 
-def company_overall_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def company_overall_counts(conn: sqlite3.Connection,
+                           user_id: str = LOCAL_USER_ID) -> dict[str, int]:
     """Headline numbers for the nav badge — distinct companies + solved/total."""
     row = conn.execute("""
         SELECT
           (SELECT COUNT(DISTINCT company_key) FROM company_problems) AS companies,
           (SELECT COUNT(*) FROM company_problems) AS problems_total,
-          (SELECT COUNT(*) FROM company_problem_progress WHERE state = 'solved')
-            AS problems_done
-    """).fetchone()
+          (SELECT COUNT(*) FROM company_problem_progress
+             WHERE state = 'solved' AND user_id = :uid) AS problems_done
+    """, {"uid": user_id}).fetchone()
     return dict(row) if row else {"companies": 0, "problems_total": 0,
                                   "problems_done": 0}
 
 
 # --- company question refresh runs (mirror referral_runs) -------------------
 def start_company_refresh(conn: sqlite3.Connection, company_key: str = "") -> int:
-    cur = conn.execute(
+    # RETURNING id works on both SQLite (3.35+) and Postgres; psycopg has no
+    # cursor.lastrowid, so the new id is read back explicitly instead.
+    row = conn.execute(
         "INSERT INTO company_refresh_runs (company_key, state, started_at) "
-        "VALUES (?, 'running', ?)", (company_key, utcnow()))
+        "VALUES (?, 'running', ?) RETURNING id", (company_key, utcnow())).fetchone()
     conn.commit()
-    return cur.lastrowid
+    return row["id"]
 
 
 def finish_company_refresh(conn: sqlite3.Connection, run_id: int, *,
@@ -1320,7 +1400,7 @@ def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
         counts[normalize_company_name(r["company"])] = (r["n"], r["open_n"] or 0)
     out = []
     for row in conn.execute(
-            "SELECT * FROM startup_companies ORDER BY name COLLATE NOCASE").fetchall():
+            "SELECT * FROM startup_companies ORDER BY LOWER(name)").fetchall():
         meta = decode_startup_row(row)
         if q:
             hay = " ".join([meta["name"], meta["industry"],
@@ -1347,3 +1427,35 @@ def refresh_startup_flags(conn: sqlite3.Connection) -> int:
         changed += cur.rowcount
     conn.commit()
     return changed
+
+
+# ------------------------------------------------------------ hosted accounts ---
+# Used only in hosted mode (Supabase Auth); see webapp/auth.py. Local single-user
+# mode never touches these.
+def count_app_users(conn) -> int:
+    """Number of accounts on record. 0 in local mode / before the first login."""
+    return conn.execute("SELECT COUNT(*) AS n FROM app_users").fetchone()["n"]
+
+
+def get_app_user(conn, user_id: str):
+    return conn.execute("SELECT * FROM app_users WHERE id = ?", (user_id,)).fetchone()
+
+
+def upsert_app_user(conn, user_id: str, email: str,
+                    *, is_admin: bool | None = None) -> None:
+    """Record or refresh an account (called on login). ``is_admin`` is applied
+    only when explicitly passed — the first account to log in becomes the owner."""
+    now = utcnow()
+    if get_app_user(conn, user_id) is None:
+        conn.execute(
+            "INSERT INTO app_users (id, email, is_admin, created_at, last_login_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, email, 1 if is_admin else 0, now, now))
+    else:
+        conn.execute(
+            "UPDATE app_users SET email = ?, last_login_at = ? WHERE id = ?",
+            (email, now, user_id))
+        if is_admin is not None:
+            conn.execute("UPDATE app_users SET is_admin = ? WHERE id = ?",
+                         (1 if is_admin else 0, user_id))
+    conn.commit()

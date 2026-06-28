@@ -39,6 +39,10 @@ This folder has two kinds of docs:
 | [design-application-automation.md](design-application-automation.md) | The staged roadmap for automating application *submission* (human-in-the-loop). | partial / roadmap |
 | [design-deployment.md](design-deployment.md) | Cost analysis of where to run the daily pipeline. | analysis |
 | [design-hosting.md](design-hosting.md) | What would change to host the app online for multiple users. | roadmap |
+| [design-hosting-progress.md](design-hosting-progress.md) | Living status of the hosting work: staged plan + what's actually shipped (Postgres backend, deploy files, Supabase Auth login wall, per-user isolation in progress). | in progress |
+| [deploy.md](deploy.md) | Host-agnostic deploy guide (Render / Cloud Run) + the env vars and Supabase connection string. | guide |
+| [deploy-cheapest.md](deploy-cheapest.md) | Cheapest CLI-only hosting (Google Cloud Run, ~$0/mo; Hetzner runner-up). | guide |
+| [deploy-aws.md](deploy-aws.md) | Full AWS hosting via AWS CLI + Terraform/CDK, no console (App Runner + ECR + SSM). | guide |
 
 ## Beyond `docs/`
 

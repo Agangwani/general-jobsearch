@@ -1,0 +1,23 @@
+# Keep the build context (and image) lean and free of local/runtime state.
+.git
+.github
+.claude
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv
+venv/
+node_modules/
+
+# Local-only runtime state — never bake into a hosted image.
+data/*.db
+data/*.sqlite*
+data/token.json
+data/*.json
+reports/
+
+# Dev-only.
+tests/
+uiqa/
+*.md
+docs/
