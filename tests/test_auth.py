@@ -99,3 +99,32 @@ def test_bad_credentials_show_an_error(hosted, monkeypatch):
                     follow_redirects=False)
     assert r.status_code == 400
     assert "Invalid login credentials" in r.text
+
+
+def test_profiles_are_isolated_per_user(hosted, tmp_path, monkeypatch):
+    """Stage 2b: two accounts must not see each other's profile data."""
+    # Alice logs in and saves a profile value.
+    _stub_login(monkeypatch, uid="uuid-alice", email="alice@example.com")
+    hosted.post("/login", data={"email": "alice@example.com", "password": "pw"})
+    hosted.post("/profile", data={"full_name": "Alice Alpha"})
+    assert "Alice Alpha" in hosted.get("/profile").text
+    hosted.get("/logout")
+
+    # Bob logs in — he must not see Alice's data, and his edit stays separate.
+    _stub_login(monkeypatch, uid="uuid-bob", email="bob@example.com")
+    hosted.post("/login", data={"email": "bob@example.com", "password": "pw"})
+    assert "Alice Alpha" not in hosted.get("/profile").text
+    hosted.post("/profile", data={"full_name": "Bob Beta"})
+    page = hosted.get("/profile").text
+    assert "Bob Beta" in page and "Alice Alpha" not in page
+
+    # Each value is stored under its own user_id.
+    db = sqlite3.connect(tmp_path / "data" / "auth.db")
+    db.row_factory = sqlite3.Row
+    try:
+        vals = {r["user_id"]: r["value"] for r in db.execute(
+            "SELECT user_id, value FROM profile_fields WHERE field = 'full_name'")}
+    finally:
+        db.close()
+    assert vals.get("uuid-alice") == "Alice Alpha"
+    assert vals.get("uuid-bob") == "Bob Beta"

@@ -73,6 +73,14 @@ def session_user(request):
         return None
 
 
+def current_user_id(request) -> str:
+    """The id to scope per-user data by — the logged-in user's id in hosted
+    mode, or the local sentinel otherwise. Hosted routes are behind the wall, so
+    a real user is always present there; the LOCAL_USER fallback only applies in
+    local mode."""
+    return (session_user(request) or LOCAL_USER)["id"]
+
+
 # --------------------------------------------------------------- GoTrue calls ---
 def _headers() -> dict:
     key = _api_key()

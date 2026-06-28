@@ -184,21 +184,24 @@ def seed_from_resume(resume_text: str) -> dict[str, str]:
     return fields
 
 
-def populate_from_resume(conn, resume_text: str, *, only_empty: bool = True) -> list[str]:
+def populate_from_resume(conn, resume_text: str, *, only_empty: bool = True,
+                         user_id: str = db.LOCAL_USER_ID) -> list[str]:
     """Fill profile fields from the resume. By default only fills blanks, so a
     user's manual edits are preserved. Returns the list of fields changed."""
-    existing = {r["field"]: r["value"] for r in all_fields(conn)}
+    existing = {r["field"]: r["value"] for r in all_fields(conn, user_id)}
     changed = []
     for field, value in seed_from_resume(resume_text).items():
         if not value or (only_empty and existing.get(field)):
             continue
-        set_field(conn, field, value)
+        set_field(conn, field, value, user_id=user_id)
         changed.append(field)
     return changed
 
 
-def ensure_seeded(conn, root: Path) -> None:
-    existing = conn.execute("SELECT COUNT(*) AS n FROM profile_fields").fetchone()["n"]
+def ensure_seeded(conn, root: Path, user_id: str = db.LOCAL_USER_ID) -> None:
+    existing = conn.execute(
+        "SELECT COUNT(*) AS n FROM profile_fields WHERE user_id = ?",
+        (user_id,)).fetchone()["n"]
     if existing:
         return
     seeded: dict[str, str] = {}
@@ -212,52 +215,67 @@ def ensure_seeded(conn, root: Path) -> None:
         for field, value in seed_from_resume(resume.read_text()).items():
             seeded.setdefault(field, value)
     now = db.utcnow()
+    # No rows for this user yet (checked above), so a plain insert per field is safe.
     for field in STANDARD_FIELDS:
         conn.execute(
-            "INSERT INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(field) DO NOTHING",
-            (field, seeded.get(field, ""), now),
+            "INSERT INTO profile_fields (user_id, field, value, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, field, seeded.get(field, ""), now),
         )
     conn.commit()
 
 
-def ensure_fields(conn) -> None:
-    """Top up any STANDARD_FIELDS missing from an existing DB (idempotent), so
+def ensure_fields(conn, user_id: str = db.LOCAL_USER_ID) -> None:
+    """Top up any STANDARD_FIELDS missing for this user (idempotent), so
     newly-added profile fields show up without disturbing already-saved values."""
     now = db.utcnow()
+    have = {r["field"] for r in conn.execute(
+        "SELECT field FROM profile_fields WHERE user_id = ?", (user_id,)).fetchall()}
     for field in STANDARD_FIELDS:
-        conn.execute(
-            "INSERT INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(field) DO NOTHING",
-            (field, "", now),
-        )
+        if field not in have:
+            conn.execute(
+                "INSERT INTO profile_fields (user_id, field, value, updated_at) "
+                "VALUES (?, ?, ?, ?)", (user_id, field, "", now))
     conn.commit()
 
 
-def all_fields(conn) -> list:
-    rows = conn.execute("SELECT * FROM profile_fields").fetchall()
+def all_fields(conn, user_id: str = db.LOCAL_USER_ID) -> list:
+    rows = conn.execute(
+        "SELECT * FROM profile_fields WHERE user_id = ?", (user_id,)).fetchall()
     order = {f: i for i, f in enumerate(STANDARD_FIELDS)}
     return sorted(rows, key=lambda r: order.get(r["field"], 99))
 
 
-def panel_fields(conn) -> list:
+def panel_fields(conn, user_id: str = db.LOCAL_USER_ID) -> list:
     """Rows for the per-job copy-paste panel — the core contact fields only,
     without the form-fill extras (address/education/EEO/cover letter)."""
-    return [r for r in all_fields(conn) if r["field"] not in AUTOFILL_ONLY_FIELDS]
+    return [r for r in all_fields(conn, user_id)
+            if r["field"] not in AUTOFILL_ONLY_FIELDS]
 
 
-def set_field(conn, field: str, value: str) -> None:
-    conn.execute(
-        "INSERT INTO profile_fields (field, value, updated_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(field) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        (field, value, db.utcnow()),
-    )
+def set_field(conn, field: str, value: str, user_id: str = db.LOCAL_USER_ID) -> None:
+    # Explicit upsert scoped by (user_id, field) — avoids depending on a
+    # particular UNIQUE constraint, so it works on both fresh (composite-unique)
+    # and migrated single-user databases.
+    now = db.utcnow()
+    row = conn.execute(
+        "SELECT id FROM profile_fields WHERE user_id = ? AND field = ?",
+        (user_id, field)).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO profile_fields (user_id, field, value, updated_at) "
+            "VALUES (?, ?, ?, ?)", (user_id, field, value, now))
+    else:
+        conn.execute(
+            "UPDATE profile_fields SET value = ?, updated_at = ? WHERE id = ?",
+            (value, now, row["id"]))
     conn.commit()
 
 
-def reseed_from_resume(conn, resume_text: str) -> None:
+def reseed_from_resume(conn, resume_text: str,
+                       user_id: str = db.LOCAL_USER_ID) -> None:
     """Refresh the resume-derived fields after a new upload. Only fields the
     parser actually extracted are overwritten; everything else (work auth,
     salary expectation, manual edits to untouched fields) is preserved."""
     for field, value in seed_from_resume(resume_text).items():
-        set_field(conn, field, value)
+        set_field(conn, field, value, user_id=user_id)

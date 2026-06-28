@@ -29,6 +29,11 @@ from pathlib import Path
 
 from jobsearch.utils import normalize_company_name
 
+# Sentinel owner id for single-user / local mode. Per-user (hosted) rows use the
+# Supabase auth UUID instead; per-user columns default to this so local behavior
+# is completely unchanged (one implicit user).
+LOCAL_USER_ID = "local"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id              INTEGER PRIMARY KEY,
@@ -88,9 +93,11 @@ CREATE INDEX IF NOT EXISTS idx_app_events_app ON application_events(application_
 
 CREATE TABLE IF NOT EXISTS profile_fields (
     id         INTEGER PRIMARY KEY,
-    field      TEXT UNIQUE NOT NULL,
+    user_id    TEXT NOT NULL DEFAULT 'local',   -- owner of this field (Stage 2b)
+    field      TEXT NOT NULL,
     value      TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, field)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -435,6 +442,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "is_startup" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN is_startup INTEGER NOT NULL DEFAULT 0")
+    # Stage 2b: per-user scoping. Existing single-user DBs gain a user_id column
+    # defaulting to the local owner, so all current rows belong to 'local'. The
+    # old single-column `field UNIQUE` stays (harmless with one local user); the
+    # code scopes by (user_id, field) explicitly rather than relying on it.
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(profile_fields)").fetchall()}
+    if "user_id" not in pcols:
+        conn.execute(
+            "ALTER TABLE profile_fields ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'")
     conn.commit()
 
 

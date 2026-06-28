@@ -26,7 +26,7 @@ plan; the app host and the code changes are the rest.
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
 | **2a. Auth (login wall)** | Supabase Auth, signed sessions, `app_users`, owner-gated signups | ✅ **Done, tested** |
-| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | ⬜ Next (the bulk) |
+| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile isolated**; jobs/fit next |
 | **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
 | **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
@@ -125,16 +125,35 @@ email-confirmation message, and error handling (GoTrue stubbed).
 **Config (hosted):** `SUPABASE_URL`, `SUPABASE_ANON_KEY` (or
 `SUPABASE_PUBLISHABLE_KEY`), and a long random `JOBSEARCH_SESSION_SECRET`.
 
-## Stage 2b — per-user data isolation (NEXT, the bulk)
+## Stage 2b — per-user data isolation (IN PROGRESS, the bulk)
 
-Add a `user_id` column + index to the per-user tables (`applications`,
-`application_events`, `profile_fields`, `runs`, `prep_*_progress`,
-`company_problem_progress`) while `jobs`/`job_events`, the prep **content**
-tables, and `company_problems` stay global; move per-user fit into a
-`user_job_fit` table (today `jobs.fit_score/rank_score/cluster` are single-user
-columns). Scope every per-user query by the session's user id. Then open public
-signups. This is the larger refactor — it touches scoring, ingest, and the
-dashboard queries.
+Each per-user table gains a `user_id` (defaulting to the `'local'` sentinel, so
+single-user/local mode is unchanged — one implicit user), and every per-user
+query is scoped by the current user. Done incrementally; **signups stay
+owner-gated until all per-user data is isolated** (partial scoping would leak
+data between accounts, so it isn't opened early).
+
+**The pattern (established):** `webapp/auth.current_user_id(request)` →
+`'local'` in local mode, the Supabase UUID in hosted mode. Per-user db/helper
+functions take `user_id=db.LOCAL_USER_ID` and scope by it. Routes pass
+`current_user_id(request)`.
+
+- [x] **Profile** (`profile_fields`) — fully isolated (migration `0003`; the
+  unique key is now `(user_id, field)`). Verified: two accounts can't see each
+  other's profile (`tests/test_auth.py::test_profiles_are_isolated_per_user`).
+- [ ] **Prep & company progress** (`prep_*_progress`, `company_problem_progress`)
+  — same pattern: scope the progress setters and the overview/count reads.
+- [ ] **Application tracking** (`applications`, `application_events`, `runs`) —
+  the harder piece: today `upsert_job` auto-creates one application per job
+  (1:1, single-user). Multi-user needs **lazy applications** (created when a
+  user first engages) so the to-apply pile is `jobs LEFT JOIN applications ON
+  job_id AND user_id`.
+- [ ] **Per-user fit** — move `jobs.fit_score/rank_score/cluster` (single-user
+  columns today) into `user_job_fit (user_id, job_id, …)`, and have the worker
+  rescore each active user's resume against the global corpus. Touches
+  `scoring.py`, `ingest.py`, and the dashboard queries.
+
+Once those land, open public signups (drop the owner gate).
 
 **RLS note:** Supabase enabled Row-Level Security on every table by default.
 The app connects with a **direct Postgres role** and enforces `user_id` in its
@@ -154,9 +173,11 @@ Recommended **free** hosts (verified mid-2026): **Render** free web service
 (simplest, native GitHub auto-deploy, sleeps when idle) or **Google Cloud Run**
 (scales to $0 at idle, more setup). **Fly.io is no longer free** for new
 accounts. The database stays on Supabase's free Postgres (pooler endpoint), and
-the daily worker stays on free GitHub Actions. Net ~$0/mo. A later optimization
-splits a lean web image (no Chromium, sklearn off the request path) from the
-worker image; see `design-deployment.md`.
+the daily worker stays on free GitHub Actions. Net ~$0/mo. **Exact CLI-only
+guides:** [`deploy-cheapest.md`](deploy-cheapest.md) (Cloud Run, ~$0/mo) and
+[`deploy-aws.md`](deploy-aws.md) (AWS App Runner via Terraform/CDK, ~$3–6/mo,
+fully console-free). A later optimization splits a lean web image (no Chromium,
+sklearn off the request path) from the worker image; see `design-deployment.md`.
 
 ## Stage 4 — repoint the daily worker
 

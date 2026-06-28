@@ -253,7 +253,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         startup = db.startup_company_for(conn, job["company"]) if job["is_startup"] else None
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
-                      profile_fields=profile.panel_fields(conn),
+                      profile_fields=profile.panel_fields(conn, auth.current_user_id(request)),
                       lc_questions=lc_questions, lc_total=lc_total,
                       company_key=company_key, startup=startup)
 
@@ -722,7 +722,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       keywords=extract_keywords(resume_text) if resume_text else [])
 
     @app.post("/resume/upload")
-    async def upload_resume(file: UploadFile = File(...)):
+    async def upload_resume(request: Request, file: UploadFile = File(...)):
         max_bytes = 10 * 1024 * 1024  # cap the read so a huge upload can't OOM us
         data = await file.read(max_bytes + 1)
         if len(data) > max_bytes:
@@ -750,7 +750,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
                                     status_code=303)
         (root / "data" / "resume.txt").write_text(text + "\n")
-        profile.reseed_from_resume(conn, text)
+        profile.reseed_from_resume(conn, text, user_id=auth.current_user_id(request))
         return RedirectResponse("/resume?uploaded=1", status_code=303)
 
     @app.post("/resume/run")
@@ -787,22 +787,26 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/profile", response_class=HTMLResponse)
     def profile_page(request: Request):
-        return render(request, "profile.html", fields=profile.all_fields(conn),
+        uid = auth.current_user_id(request)
+        profile.ensure_fields(conn, uid)  # make the standard fields exist for this user
+        return render(request, "profile.html", fields=profile.all_fields(conn, uid),
                       field_options=profile.FIELD_OPTIONS)
 
     @app.post("/profile")
     async def save_profile(request: Request):
+        uid = auth.current_user_id(request)
         form = await request.form()
         for field, value in form.items():
-            profile.set_field(conn, field, str(value))
+            profile.set_field(conn, field, str(value), user_id=uid)
         return RedirectResponse("/profile", status_code=303)
 
     @app.post("/profile/from-resume")
-    def profile_from_resume():
+    def profile_from_resume(request: Request):
         # Fill empty profile fields from the resume; never clobbers manual edits.
+        uid = auth.current_user_id(request)
         resume = root / "data" / "resume.txt"
         if resume.exists():
-            profile.populate_from_resume(conn, resume.read_text())
+            profile.populate_from_resume(conn, resume.read_text(), user_id=uid)
         return RedirectResponse("/profile", status_code=303)
 
     # ------------------------------------------------------ search config view
