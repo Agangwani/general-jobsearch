@@ -528,6 +528,90 @@ def test_dashboard_tolerates_malformed_min_fit(tmp_path):
     assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
 
 
+def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
+    """A job with no posting URL must not render dead controls: the "Open
+    posting" link would become href="" (reloads the page) and the apply/re-fill
+    POSTs 404 with no URL. Guard them with {% if job.url %} so URL-less jobs
+    show a muted "no posting link" note instead."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
+                                         company="Datadog", url=""))
+    job_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Datadog'").fetchone()["id"]
+
+    detail = client.get(f"/jobs/{job_id}")
+    assert detail.status_code == 200
+    html = detail.text
+    assert 'href=""' not in html                      # no dead "Open posting" link
+    assert "Open posting" not in html                 # the link itself is gone
+    assert "data-apply-btn" not in html               # no Auto-fill apply button
+    assert "data-refill-btn" not in html              # no Re-fill button
+    assert "no posting link" in html                  # muted note shown instead
+
+    # Sanity: a job *with* a URL still shows the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Acme:1",
+                                         company="Acme", url="https://acme.com/jobs/1"))
+    acme_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Acme'").fetchone()["id"]
+    acme_html = client.get(f"/jobs/{acme_id}").text
+    assert "data-apply-btn" in acme_html
+    assert 'href="https://acme.com/jobs/1"' in acme_html
+
+
+def test_settings_manual_links_have_rel_noopener(tmp_path):
+    """The "Manual check" external links open in a new tab; without rel="noopener"
+    the opened page gets window.opener access. Assert the rendered links carry it."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\n"
+        "manual_check:\n  - name: Stripe\n    careers_url: https://stripe.com/jobs\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    html = client.get("/settings").text
+    assert "https://stripe.com/jobs" in html           # the manual-check link rendered
+    # The target=_blank link must carry rel="noopener" (no target="_blank" without it).
+    assert 'target="_blank" rel="noopener"' in html
+    assert 'href="https://stripe.com/jobs" target="_blank" rel="noopener"' in html
+
+
+def test_fit_map_resume_star_is_click_through():
+    """The résumé star (.cmap-resume) is painted over the highest-fit dots; without
+    pointer-events:none it swallows clicks meant for those top posting dots. Assert
+    the CSS rule disables pointer events on the star."""
+    css = (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.css").read_text()
+    rule = next(line for line in css.splitlines()
+                if line.lstrip().startswith(".cmap-resume "))
+    normalized = rule.replace(" ", "")
+    assert "pointer-events:none" in normalized, rule
+
+
 def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
     """The /resume page shows the resume's target roles, and the run button
     triggers the pipeline (mocked) in the background."""
