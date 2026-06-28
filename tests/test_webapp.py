@@ -528,6 +528,53 @@ def test_dashboard_tolerates_malformed_min_fit(tmp_path):
     assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
 
 
+def test_company_with_space_in_key_is_reachable(tmp_path):
+    """A company whose key contains a space (e.g. "goldman sachs") must be
+    reachable from the landing page. The link is a URL *path* segment, so the
+    space has to be percent-encoded ("%20") — quote_plus's "+" is a literal
+    plus in a path and would route to a non-existent key (misleading empty
+    state). The encoded path must round-trip back to the seeded key and render
+    its questions."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
+    # Seed a company whose key has a space, with a question to show.
+    db.seed_company_problems(app.state.conn, [{
+        "company": "Goldman Sachs", "company_key": "goldman sachs",
+        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
+        "difficulty": "easy", "frequency": 90.0,
+        "url": "https://leetcode.com/problems/two-sum/",
+    }])
+
+    # The landing card must link to the path-encoded key (%20), not the "+"
+    # form that quote_plus produces and that a URL path treats as a literal.
+    home = client.get("/companies")
+    assert home.status_code == 200
+    assert "/companies/goldman%20sachs" in home.text
+    assert "/companies/goldman+sachs" not in home.text
+
+    # And that encoded path round-trips to the real key and renders the question
+    # (rather than the misleading "No questions yet" empty state).
+    detail = client.get("/companies/goldman%20sachs")
+    assert detail.status_code == 200
+    assert "Two Sum" in detail.text
+    assert "Goldman Sachs" in detail.text
+
+
 def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
     """The /resume page shows the resume's target roles, and the run button
     triggers the pipeline (mocked) in the background."""
