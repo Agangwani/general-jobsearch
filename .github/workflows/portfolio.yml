@@ -1,0 +1,64 @@
+name: Portfolio site
+
+# Builds and deploys the portfolio landing page (portfolio/) to GitHub Pages.
+# The daily schedule re-runs portfolio/update.py so each project's "what's new"
+# (latest commits, last-updated, commit counts) refreshes automatically.
+#
+# NOTE: GitHub only runs scheduled workflows on the default branch, so the daily
+# auto-refresh begins once this file is merged to `main`. Pushes and manual runs
+# work on any listed branch in the meantime.
+
+on:
+  schedule:
+    - cron: "45 12 * * *"   # 12:45 UTC daily — after the daily job-search run
+  push:
+    branches: [main]
+    paths:
+      - "portfolio/**"
+      - ".github/workflows/portfolio.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Refresh project activity
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python portfolio/update.py
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload portfolio artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: portfolio
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
