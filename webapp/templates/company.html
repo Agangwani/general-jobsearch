@@ -23,7 +23,7 @@
     {% endif %}
   </div>
   <div class="actions">
-    <form method="post" action="/companies/{{ company_key|qp }}/refresh" style="display:inline">
+    <form method="post" action="/companies/{{ company_key|qpath }}/refresh" style="display:inline">
       <input type="hidden" name="company" value="{{ company }}">
       <button class="btn btn-primary" id="refresh-btn" type="submit" {% if is_running %}disabled{% endif %}
               title="Pull a larger, frequency-ranked list for this company from the configured community dataset. Network-optional: if it can't reach the dataset the bundled list stays.">
@@ -35,10 +35,10 @@
 
 <div class="filter-bar">
   <span class="muted">Difficulty:</span>
-  <a class="chip {{ 'chip-on' if not difficulty }}" href="/companies/{{ company_key|qp }}">All ({{ all_problem_count }})</a>
-  <a class="chip diff-easy {{ 'chip-on' if difficulty == 'easy' }}" href="/companies/{{ company_key|qp }}?difficulty=easy">Easy</a>
-  <a class="chip diff-medium {{ 'chip-on' if difficulty == 'medium' }}" href="/companies/{{ company_key|qp }}?difficulty=medium">Medium</a>
-  <a class="chip diff-hard {{ 'chip-on' if difficulty == 'hard' }}" href="/companies/{{ company_key|qp }}?difficulty=hard">Hard</a>
+  <a class="chip {{ 'chip-on' if not difficulty }}" href="/companies/{{ company_key|qpath }}">All ({{ all_problem_count }})</a>
+  <a class="chip diff-easy {{ 'chip-on' if difficulty == 'easy' }}" href="/companies/{{ company_key|qpath }}?difficulty=easy">Easy</a>
+  <a class="chip diff-medium {{ 'chip-on' if difficulty == 'medium' }}" href="/companies/{{ company_key|qpath }}?difficulty=medium">Medium</a>
+  <a class="chip diff-hard {{ 'chip-on' if difficulty == 'hard' }}" href="/companies/{{ company_key|qpath }}?difficulty=hard">Hard</a>
 </div>
 
 {% if problems %}
@@ -61,7 +61,7 @@
       <td><span class="state {{ p.state }}">{{ p.state|replace('_',' ') }}</span></td>
       <td>
         <form class="inline-form" method="post" action="/company-problems/{{ p.id }}/state">
-          <input type="hidden" name="next" value="/companies/{{ company_key|qp }}{% if difficulty %}?difficulty={{ difficulty }}{% endif %}">
+          <input type="hidden" name="next" value="/companies/{{ company_key|qpath }}{% if difficulty %}?difficulty={{ difficulty }}{% endif %}">
           <button class="btn btn-row" name="state" value="solved" title="Mark solved">✓</button>
           <button class="btn btn-row" name="state" value="attempted" title="Mark attempted">…</button>
           <button class="btn btn-row btn-ghost" name="state" value="not_started" title="Reset">↺</button>

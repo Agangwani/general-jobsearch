@@ -555,6 +555,14 @@ def set_application_status(
 
 
 def job_with_application(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    # ``job_id`` arrives from a URL path param, and FastAPI's ``int`` accepts an
+    # arbitrary-precision Python integer. SQLite's INTEGER is signed 64-bit, so
+    # an id outside that range raises OverflowError rather than just missing.
+    # Treat any out-of-range id as "no such job" so the routes (job detail,
+    # referrals, cluster view) degrade to their existing not-found redirect
+    # instead of returning HTTP 500.
+    if not (-(2 ** 63) <= job_id < 2 ** 63):
+        return None
     return conn.execute(
         """SELECT j.*, a.id AS application_id, a.status, a.applied_at,
                   a.submitted_via, a.notes
