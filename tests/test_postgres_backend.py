@@ -185,3 +185,46 @@ def test_applications_are_per_user_on_postgres(pgconn):
     # An unknown/out-of-range job id never violates the FK — returns None.
     assert db.get_or_create_application(pgconn, 999999, "u1") is None
     assert db.get_or_create_application(pgconn, 2 ** 63, "u1") is None
+
+
+def test_state_setters_stale_id_no_op_on_postgres(pgconn):
+    """The state-change setters guard a stale/unknown parent id by raising
+    ValueError up front (webapp/db._require_row) instead of letting the FK
+    INSERT fail. On Postgres a failed INSERT also poisons the open transaction,
+    so the pre-check matters even more than on SQLite. This proves the guard is
+    truly dialect-agnostic: a stale id raises ValueError (not psycopg.Error),
+    the connection stays usable, and a subsequent valid write still commits."""
+    import pytest
+
+    from jobsearch.prep.seed import seed_into_db
+    from webapp import db
+
+    seed_into_db(pgconn)
+    db.upsert_job(pgconn, _job())
+    job_id = pgconn.execute("SELECT id FROM jobs WHERE key = ?",
+                            ("greenhouse:Acme:1",)).fetchone()["id"]
+    app = db.job_with_application(pgconn, job_id)
+
+    # Each stale id raises ValueError (the dialect-agnostic no-op signal), not a
+    # raw psycopg.Error, and never aborts the transaction.
+    with pytest.raises(ValueError):
+        db.set_application_status(pgconn, 99999999, "applied")
+    lesson_id = pgconn.execute("SELECT id FROM prep_lessons LIMIT 1").fetchone()["id"]
+    problem_id = pgconn.execute("SELECT id FROM prep_problems LIMIT 1").fetchone()["id"]
+    with pytest.raises(ValueError):
+        db.set_lesson_state(pgconn, 99999999, "completed")
+    with pytest.raises(ValueError):
+        db.set_problem_state(pgconn, 99999999, "solved")
+
+    # The connection is still healthy and a valid write persists (would fail with
+    # "current transaction is aborted" if a poisoned INSERT had leaked).
+    db.set_application_status(pgconn, app["application_id"], "applied")
+    assert db.job_with_application(pgconn, job_id)["status"] == "applied"
+    db.set_lesson_state(pgconn, lesson_id, "completed")
+    assert pgconn.execute(
+        "SELECT state FROM prep_lesson_progress WHERE lesson_id = ?",
+        (lesson_id,)).fetchone()["state"] == "completed"
+    db.set_problem_state(pgconn, problem_id, "solved")
+    assert pgconn.execute(
+        "SELECT state FROM prep_problem_progress WHERE problem_id = ?",
+        (problem_id,)).fetchone()["state"] == "solved"

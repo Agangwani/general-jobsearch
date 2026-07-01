@@ -131,7 +131,12 @@
     <option value="">All companies</option>
     {% for c in companies %}<option value="{{ c }}" {{ 'selected' if c == company }}>{{ c }}</option>{% endfor %}
   </select>
-  <label class="check"><input type="checkbox" name="near_miss" value="1" {{ 'checked' if near_miss == '1' }}> near-miss</label>
+  {#-- Hidden companion submits near_miss=0 when the box is unchecked (an
+       unchecked checkbox is omitted from the GET query entirely). When the box
+       is checked its value="1" appears later in the query and wins, so the
+       handler sees "1" → on / "0" → off and unchecking now actually hides
+       near-miss jobs. --#}
+  <label class="check"><input type="hidden" name="near_miss" value="0"><input type="checkbox" name="near_miss" value="1" {{ 'checked' if near_miss == '1' }}> near-miss</label>
   <input class="filter-num" type="number" name="min_fit" value="{{ min_fit }}" placeholder="Min fit ≥" min="0" max="100" step="1">
   <select name="status_filter">
     <option value="">Any status</option>

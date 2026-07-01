@@ -416,6 +416,26 @@ PATCHABLE = (
 )
 
 
+def _require_row(conn: sqlite3.Connection, table: str, row_id: int) -> None:
+    """Guard a state-change setter against a stale/unknown parent id.
+
+    The status/progress setters below UPDATE a parent row (a no-op for an
+    unknown id, no error) and then INSERT an event/progress row whose FK
+    references that parent. For an id with no parent row the INSERT violates
+    the FK — raising sqlite3.IntegrityError on SQLite or psycopg.errors.*
+    on Postgres, and (on Postgres) poisoning the open transaction. Rather than
+    catch a dialect-specific error after the fact, we check the parent exists
+    up front and raise ValueError when it doesn't. Every caller already turns a
+    ValueError into a 303 redirect (mirroring the bad-state-value path), so a
+    stale id is a clean no-op in both backends instead of an HTTP 500.
+
+    ``table`` is a fixed internal literal (never user input), so interpolating
+    it into the SQL is safe.
+    """
+    if conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone() is None:
+        raise ValueError(f"no {table} row with id {row_id!r}")
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -580,6 +600,9 @@ def set_application_status(
     conn: sqlite3.Connection, application_id: int, status: str,
     detail: str = "", via: str = "",
 ) -> None:
+    # A stale/unknown id would no-op the UPDATE but fail the application_events
+    # FK on INSERT (a 500); raise ValueError so callers redirect instead.
+    _require_row(conn, "applications", application_id)
     now = utcnow()
     fields = {"status": status, "updated_at": now}
     if status == "applied":
@@ -598,6 +621,14 @@ def set_application_status(
 
 def job_with_application(conn: sqlite3.Connection, job_id: int,
                          user_id: str = LOCAL_USER_ID) -> sqlite3.Row | None:
+    # ``job_id`` arrives from a URL path param, and FastAPI's ``int`` accepts an
+    # arbitrary-precision Python integer. SQLite's INTEGER is signed 64-bit, so
+    # an id outside that range raises OverflowError rather than just missing.
+    # Treat any out-of-range id as "no such job" so the routes (job detail,
+    # referrals, cluster view) degrade to their existing not-found redirect
+    # instead of returning HTTP 500.
+    if not (-(2 ** 63) <= job_id < 2 ** 63):
+        return None
     # LEFT JOIN scoped to this user: a job with no application for them still
     # resolves (status COALESCEs to 'not_applied'), so it shows in the to-apply
     # pile. application_id is NULL until they engage (get_or_create_application).
@@ -659,6 +690,18 @@ def active_application_urls(conn: sqlite3.Connection,
     ).fetchall()
 
 
+def like_term(q: str) -> str:
+    """Build a safe ``LIKE`` pattern for a user search term.
+
+    User-supplied text is a literal substring, not a pattern, so escape the
+    LIKE metacharacters ``%`` and ``_`` (and the escape char itself) and wrap
+    in ``%…%``. Callers must pair this with ``ESCAPE '\\'`` in the SQL so a
+    typed ``%`` matches a literal percent instead of "anything". Without this,
+    ``q='%'`` returns every row and ``q='N_w'`` matches "New …"."""
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 # Columns the user can sort by. Values are safe SQL column references. Status
 # COALESCEs the (possibly absent) per-user application to the to-apply default.
 SORTABLE = {
@@ -702,8 +745,9 @@ def search_jobs(
     elif startup_scope == "hide":
         sql.append("AND j.is_startup = 0")
     if q:
-        sql.append("AND (j.title LIKE ? OR j.description LIKE ? OR j.company LIKE ? OR j.location LIKE ?)")
-        args += [f"%{q}%"] * 4
+        sql.append("AND (j.title LIKE ? ESCAPE '\\' OR j.description LIKE ? ESCAPE '\\' "
+                   "OR j.company LIKE ? ESCAPE '\\' OR j.location LIKE ? ESCAPE '\\')")
+        args += [like_term(q)] * 4
     if company:
         sql.append("AND j.company = ?")
         args.append(company)
@@ -955,6 +999,8 @@ def set_lesson_state(conn: sqlite3.Connection, lesson_id: int, state: str,
                      user_id: str = LOCAL_USER_ID) -> None:
     if state not in LESSON_STATES:
         raise ValueError(f"invalid lesson state {state!r}")
+    # Stale/unknown lesson_id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "prep_lessons", lesson_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id, state FROM prep_lesson_progress WHERE lesson_id = ? AND user_id = ?",
@@ -993,6 +1039,8 @@ def set_problem_state(conn: sqlite3.Connection, problem_id: int, state: str,
                       user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid problem state {state!r}")
+    # Stale/unknown problem_id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "prep_problems", problem_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id, state FROM prep_problem_progress WHERE problem_id = ? AND user_id = ?",
@@ -1050,6 +1098,8 @@ def set_ctci_problem_state(conn: sqlite3.Connection, ctci_problem_id: int,
                            user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid ctci problem state {state!r}")
+    # Stale/unknown id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "prep_ctci_problems", ctci_problem_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id, state FROM prep_ctci_problem_progress "
@@ -1248,6 +1298,8 @@ def set_company_problem_state(conn: sqlite3.Connection, problem_id: int,
                               user_id: str = LOCAL_USER_ID) -> None:
     if state not in PROBLEM_STATES:
         raise ValueError(f"invalid company problem state {state!r}")
+    # Stale/unknown id: no-op rather than fail the progress FK on INSERT.
+    _require_row(conn, "company_problems", problem_id)
     now = utcnow()
     row = conn.execute(
         "SELECT id FROM company_problem_progress "

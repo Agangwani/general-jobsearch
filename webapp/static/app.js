@@ -1,18 +1,52 @@
 // Copy-to-clipboard for profile fields and resume blocks.
-function flash(el) {
-  el.classList.add("copied");
-  setTimeout(() => el.classList.remove("copied"), 700);
+function flash(el, ok = true) {
+  const cls = ok ? "copied" : "copy-failed";
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 700);
 }
+
+// Last-resort copy for when the async Clipboard API is unavailable or denied
+// (non-secure context, missing permission). A throwaway <textarea> + the legacy
+// execCommand path covers those cases without any dependency.
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Copy `text`, then flash `el` to show success or failure. A denied/unavailable
+// Clipboard API must never surface as an uncaught page error — every rejection
+// is caught and we fall back to the legacy path before reporting back.
+function copyText(text, el) {
+  const fallback = () => flash(el, legacyCopy(text));
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => flash(el, true)).catch(fallback);
+  } else {
+    fallback();
+  }
+}
+
 document.addEventListener("click", (e) => {
   const row = e.target.closest("[data-copy]");
   if (row && !e.target.closest("a")) {
-    navigator.clipboard.writeText(row.dataset.copy).then(() => flash(row));
+    copyText(row.dataset.copy, row);
     return;
   }
   const btn = e.target.closest("[data-copy-target]");
   if (btn) {
     const src = document.getElementById(btn.dataset.copyTarget);
-    if (src) navigator.clipboard.writeText(src.dataset.copy || src.textContent).then(() => flash(btn));
+    if (src) copyText(src.dataset.copy || src.textContent, btn);
   }
 });
 

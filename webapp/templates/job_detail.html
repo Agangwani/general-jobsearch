@@ -31,6 +31,7 @@
       📊 Why this fit?
     </a>
     {% endif %}
+    {% if job.url %}
     <button class="btn btn-primary" data-apply-btn
             data-job-id="{{ job.id }}"
             title="Opens a tab in the integrated browser and auto-fills your profile into the form. Never submits — you review and click submit.">
@@ -41,11 +42,16 @@
             title="Re-run auto-fill on this job's already-open tab — useful after the form finishes loading or you've updated your profile. Opens a tab if none is open.">
       ↻ Re-fill open tab
     </button>
+    {% endif %}
     <a class="btn btn-ghost" href="/jobs/{{ job.id }}/referrals"
        title="Find current employees who can refer you. Searches LinkedIn for people on this team and ranks them by job fit + match to your background.">
       🤝 Find a referral
     </a>
+    {% if job.url %}
     <a class="btn btn-ghost" href="{{ job.url }}" target="_blank" rel="noopener">Open posting ↗</a>
+    {% else %}
+    <span class="muted">no posting link</span>
+    {% endif %}
   </div>
 </header>
 <p class="muted">⚡ opens a tab in the integrated browser and auto-fills your profile into the

@@ -903,6 +903,12 @@ select.status-rejected, select.status-withdrawn { color: var(--red); border-colo
 .copy-row dt { color: var(--muted); font-size: var(--fs-xs); text-transform: capitalize; }
 .copy-row dd { margin: 0; font-size: var(--fs-sm); text-align: right; word-break: break-all; color: var(--text); }
 .copy-row.copied { border-color: var(--green); background: var(--green-soft); }
+.copy-row.copy-failed { border-color: var(--red); background: var(--red-soft); }
+
+/* Copy feedback for the resume buttons (Copy entire resume / per-block ⧉):
+   a brief green = copied, red = copy failed, so a denied clipboard isn't silent. */
+.copied { border-color: var(--green); color: var(--green); }
+.copy-failed { border-color: var(--red); color: var(--red); }
 
 /* ----------------------------------------------------------------- resume -- */
 .resume-block {
@@ -1426,7 +1432,7 @@ details > summary:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cmap-centroid { stroke-width: 2.5; stroke-dasharray: 4 3; opacity: 0.9; }
 .cmap-centroid-num { font: 700 13px var(--font-mono); opacity: 0.9; }
 .cmap-link { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.5; }
-.cmap-resume { stroke: var(--bg-card); stroke-width: 2; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); }
+.cmap-resume { stroke: var(--bg-card); stroke-width: 2; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); pointer-events: none; }
 .cmap-you { font: 600 14px var(--font-sans); }
 .cmap-focus { stroke: var(--text); stroke-width: 3; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4)); }
 
