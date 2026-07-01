@@ -851,6 +851,93 @@ def test_prep_page_recommends_tracks_for_resume(tmp_path):
     assert html.index('/prep/track/coding"') > divider
 
 
+<<<<<<< uiqa-fix/state-500-stale-id
+def test_state_change_endpoints_tolerate_stale_id(tmp_path):
+    """Per-row status/progress toggles carry an id straight from a rendered row.
+    If that row was removed (DB reseeded, progress reset, a duplicated tab) the
+    id is stale: the setter no-ops the parent UPDATE but its event/progress
+    INSERT would violate the FK. That must degrade to a 303 redirect, never a
+    500 (matching the bulk-status and company-problem paths). Covers SQLite,
+    the default test backend; the Postgres-parity check lives in
+    test_postgres_backend.py. A valid id on each endpoint still persists."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  locations: [new york]\n"
+        "ranking:\n  half_life_days: 7\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    conn = app.state.conn
+    client = TestClient(app)
+    db.upsert_job(conn, record())
+
+    # A huge, non-existent id with a *valid* state on every state-change POST.
+    STALE = 99999999
+    stale_cases = [
+        (f"/applications/{STALE}/status", {"status": "applied", "note": "from a stale row"}),
+        (f"/prep/lessons/{STALE}/state", {"state": "completed", "next": "/prep"}),
+        (f"/prep/problems/{STALE}/state", {"state": "solved", "next": "/prep"}),
+        (f"/prep/ctci-problems/{STALE}/state", {"state": "solved", "next": "/prep"}),
+        (f"/company-problems/{STALE}/state", {"state": "solved", "next": "/companies"}),
+    ]
+    for path, data in stale_cases:
+        resp = client.post(path, data=data, follow_redirects=False)
+        assert resp.status_code == 303, f"{path} on a stale id should 303, got {resp.status_code}"
+    # No orphan progress/event rows were written for the stale id.
+    assert conn.execute("SELECT COUNT(*) c FROM application_events "
+                        "WHERE application_id = ?", (STALE,)).fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM prep_lesson_progress "
+                        "WHERE lesson_id = ?", (STALE,)).fetchone()["c"] == 0
+
+    # And a *valid* id on each endpoint still works and persists the new state.
+    app_id = conn.execute("SELECT id FROM applications LIMIT 1").fetchone()["id"]
+    lesson_id = conn.execute("SELECT id FROM prep_lessons LIMIT 1").fetchone()["id"]
+    problem_id = conn.execute("SELECT id FROM prep_problems LIMIT 1").fetchone()["id"]
+    company_problem_id = conn.execute("SELECT id FROM company_problems LIMIT 1").fetchone()["id"]
+    # The seeded corpus has no CtCI problems, so add a real parent row to also
+    # exercise the valid-id path for that endpoint.
+    module_id = conn.execute("SELECT id FROM prep_modules LIMIT 1").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO prep_ctci_problems "
+        "(module_id, slug, ctci_id, title, prompt_md, solution_md) "
+        "VALUES (?, 'is-unique', '1.1', 'Is Unique', 'prompt', 'solution')",
+        (module_id,))
+    conn.commit()
+    ctci_id = conn.execute("SELECT id FROM prep_ctci_problems LIMIT 1").fetchone()["id"]
+
+    assert client.post(f"/applications/{app_id}/status",
+                       data={"status": "applied", "note": "real"},
+                       follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT status FROM applications WHERE id = ?",
+                        (app_id,)).fetchone()["status"] == "applied"
+
+    assert client.post(f"/prep/lessons/{lesson_id}/state",
+                       data={"state": "completed"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM prep_lesson_progress WHERE lesson_id = ?",
+                        (lesson_id,)).fetchone()["state"] == "completed"
+
+    assert client.post(f"/prep/problems/{problem_id}/state",
+                       data={"state": "solved"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM prep_problem_progress WHERE problem_id = ?",
+                        (problem_id,)).fetchone()["state"] == "solved"
+
+    assert client.post(f"/prep/ctci-problems/{ctci_id}/state",
+                       data={"state": "solved"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM prep_ctci_problem_progress WHERE ctci_problem_id = ?",
+                        (ctci_id,)).fetchone()["state"] == "solved"
+
+    assert client.post(f"/company-problems/{company_problem_id}/state",
+                       data={"state": "solved"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM company_problem_progress WHERE company_problem_id = ?",
+                        (company_problem_id,)).fetchone()["state"] == "solved"
+=======
 # ----------------------------------------------------- static / client JS
 def _app_js() -> str:
     return (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.js").read_text()
@@ -884,3 +971,4 @@ def test_clipboard_has_a_fallback_path():
     only swallow the error, so copy keeps working in non-secure contexts."""
     src = _app_js()
     assert "execCommand" in src, "expected a legacy copy fallback for denied clipboard"
+>>>>>>> main

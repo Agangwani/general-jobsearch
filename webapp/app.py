@@ -662,8 +662,14 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.post("/applications/{application_id}/status")
     def set_status(application_id: int, status: str = Form(...), note: str = Form("")):
         if status in db.APP_STATUSES:
-            db.set_application_status(conn, application_id, status,
-                                      detail=note or "set manually", via="ui")
+            try:
+                db.set_application_status(conn, application_id, status,
+                                          detail=note or "set manually", via="ui")
+            except (ValueError, sqlite3.Error):
+                # Bad status, or a stale id whose application row is gone (the
+                # event FK fails) — ignore and redirect rather than 500, matching
+                # the bulk-status path above.
+                pass
         if note:
             conn.execute("UPDATE applications SET notes = ? WHERE id = ?",
                          (note, application_id))
