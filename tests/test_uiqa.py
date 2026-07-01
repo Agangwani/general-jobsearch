@@ -164,9 +164,15 @@ def _browser_available() -> bool:
 
 @pytest.mark.skipif(not _browser_available(),
                     reason="Playwright Chromium not launchable in this environment")
-def test_end_to_end_detects_the_min_fit_500():
-    """Boot the real app + a real browser, drive a scenario, and confirm the
-    harness catches the /?min_fit=abc server 500 (the bug Stage 3 fixes)."""
+def test_end_to_end_min_fit_handled_and_harness_detects_problems():
+    """Boot the real app + a real browser and drive scenarios end-to-end.
+
+    Two things at once: (1) the dashboard now parses a non-numeric ``min_fit``
+    defensively — the ``/?min_fit=abc`` 500 an earlier swarm found is fixed on
+    main — so the harness must report that page as clean; and (2) the harness's
+    own problem-detection still works: a deliberately-wrong ``expect_status`` on
+    a page that loads fine must surface as a problem, exercising the capture and
+    per-step attribution path (so a future real 500 would be caught)."""
     from pathlib import Path
 
     from uiqa.appserver import AppServer
@@ -181,10 +187,18 @@ def test_end_to_end_detects_the_min_fit_500():
         runner = ScenarioRunner(server, browser, p, server.root)
         ok = runner.run({"name": "home loads", "steps": [
             {"action": "goto", "path": "/"}, {"action": "expect_no_error"}]})
-        bad = runner.run({"name": "min_fit junk", "steps": [
+        # min_fit=abc is now handled gracefully (200, no server error).
+        handled = runner.run({"name": "min_fit junk handled", "steps": [
             {"action": "goto", "path": "/?min_fit=abc"},
-            {"action": "expect_status", "code": 200}]})
+            {"action": "expect_status", "code": 200},
+            {"action": "expect_no_error"}]})
+        # A wrong expectation on a healthy page must still be caught.
+        detected = runner.run({"name": "harness catches a discrepancy", "steps": [
+            {"action": "goto", "path": "/"},
+            {"action": "expect_status", "code": 500}]})
     assert ok["ok"] is True, "the home page should load cleanly"
-    assert bad["problem_count"] > 0, "min_fit=abc should surface a 500"
-    kinds = {pr["kind"] for s in bad["steps"] for pr in s["problems"]}
-    assert {"http_error_5xx", "server_error"} & kinds
+    assert handled["ok"] is True and handled["problem_count"] == 0, \
+        "min_fit=abc must be handled gracefully, not 500"
+    assert detected["problem_count"] > 0, "harness must surface a wrong-status assertion"
+    kinds = {pr["kind"] for s in detected["steps"] for pr in s["problems"]}
+    assert "assertion" in kinds
