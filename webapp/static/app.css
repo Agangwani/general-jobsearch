@@ -1426,7 +1426,7 @@ details > summary:focus-visible { outline: 2px solid var(--accent); outline-offs
 .cmap-centroid { stroke-width: 2.5; stroke-dasharray: 4 3; opacity: 0.9; }
 .cmap-centroid-num { font: 700 13px var(--font-mono); opacity: 0.9; }
 .cmap-link { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.5; }
-.cmap-resume { stroke: var(--bg-card); stroke-width: 2; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); }
+.cmap-resume { stroke: var(--bg-card); stroke-width: 2; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.35)); pointer-events: none; }
 .cmap-you { font: 600 14px var(--font-sans); }
 .cmap-focus { stroke: var(--text); stroke-width: 3; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4)); }
 
