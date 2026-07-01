@@ -922,6 +922,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/jobs/{job_id}/history")
     def api_history(job_id: int):
+        # ``job_id`` comes from the URL path, where FastAPI's ``int`` accepts an
+        # arbitrary-precision integer. SQLite's INTEGER is signed 64-bit, so an
+        # id outside that range would overflow the bind (a 500). Treat it as "no
+        # such job" — an empty history — like db.job_with_application does.
+        if not (-(2 ** 63) <= job_id < 2 ** 63):
+            return JSONResponse([])
         rows = conn.execute(
             "SELECT event_type, payload, created_at FROM job_events "
             "WHERE job_id = ? ORDER BY created_at", (job_id,)).fetchall()

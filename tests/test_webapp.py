@@ -560,15 +560,51 @@ def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
       * box unchecked (submits near_miss=0) → near-miss jobs HIDDEN
     while a normal (non-near-miss) job stays visible in every case."""
 def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
-    """Regression for UI-QA findings a3273a214cc8 (/clusters/job/{id}) and
-    38e768ed8515 (/jobs/{id}, /jobs/{id}/referrals, /api/apply-status/{id}).
+    """Regression for UI-QA findings 5d6cf6e7d60c (/jobs/{id}), 1af76daa1b19
+    (/jobs/{id}/referrals), 52c396e7e011 / 9e0f80f360e0 (/clusters/job/{id}) and
+    6792550db789 (/api/jobs/{id}/history).
 
     Every id-typed route takes its id straight from the URL path, where
     FastAPI's ``int`` accepts an arbitrary-precision integer. An id beyond
     SQLite's signed 64-bit INTEGER range (>= 2**63) used to overflow the
     parameterised query and surface as HTTP 500. The routes must instead
-    degrade to their normal not-found behaviour (a 303 redirect, or the empty
-    apply-status payload) — never 500. A valid seeded id still works."""
+    degrade to their normal not-found behaviour (a 303 redirect for the HTML
+    pages, an empty JSON history for the API) — never 500. A valid seeded id
+    still works."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: x\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies: []\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    db.upsert_job(app.state.conn, record())
+    good_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
+
+    # Two out-of-range ids: one just past the signed-64-bit boundary (2**63)
+    # and one far beyond it.
+    for bad in ("9223372036854775808", "999999999999999999999999"):
+        for path in (f"/jobs/{bad}", f"/jobs/{bad}/referrals",
+                     f"/clusters/job/{bad}"):
+            resp = client.get(path, follow_redirects=False)
+            assert resp.status_code == 303, (path, resp.status_code)
+        hist = client.get(f"/api/jobs/{bad}/history")
+        assert hist.status_code == 200, (bad, hist.status_code)
+        assert hist.json() == []
+
+    # A valid, in-range id still resolves normally (no over-eager rejection).
+    assert client.get(f"/jobs/{good_id}").status_code == 200
+    assert client.get(f"/api/jobs/{good_id}/history").status_code == 200
+
+
 def test_company_with_space_in_key_is_reachable(tmp_path):
     """A company whose key contains a space (e.g. "goldman sachs") must be
     reachable from the landing page. The link is a URL *path* segment, so the
@@ -851,7 +887,6 @@ def test_prep_page_recommends_tracks_for_resume(tmp_path):
     assert html.index('/prep/track/coding"') > divider
 
 
-<<<<<<< uiqa-fix/state-500-stale-id
 def test_state_change_endpoints_tolerate_stale_id(tmp_path):
     """Per-row status/progress toggles carry an id straight from a rendered row.
     If that row was removed (DB reseeded, progress reset, a duplicated tab) the
@@ -937,7 +972,8 @@ def test_state_change_endpoints_tolerate_stale_id(tmp_path):
                        data={"state": "solved"}, follow_redirects=False).status_code == 303
     assert conn.execute("SELECT state FROM company_problem_progress WHERE company_problem_id = ?",
                         (company_problem_id,)).fetchone()["state"] == "solved"
-=======
+
+
 # ----------------------------------------------------- static / client JS
 def _app_js() -> str:
     return (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.js").read_text()
@@ -971,4 +1007,3 @@ def test_clipboard_has_a_fallback_path():
     only swallow the error, so copy keeps working in non-secure contexts."""
     src = _app_js()
     assert "execCommand" in src, "expected a legacy copy fallback for denied clipboard"
->>>>>>> main
