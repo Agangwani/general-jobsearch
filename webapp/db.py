@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS user_job_fit (
 );
 CREATE INDEX IF NOT EXISTS idx_user_job_fit_user ON user_job_fit(user_id);
 
+-- Per-user résumé text (Stage 2b). The résumé was a single on-disk file
+-- (data/resume.txt); hosted disk is ephemeral and multi-user, so each user's
+-- résumé text lives here. Needed so the daily worker can re-score every active
+-- user against the fresh corpus, and so a résumé survives a container restart.
+CREATE TABLE IF NOT EXISTS user_resumes (
+    user_id     TEXT PRIMARY KEY,
+    resume_text TEXT NOT NULL DEFAULT '',
+    filename    TEXT DEFAULT '',
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS profile_fields (
     id         INTEGER PRIMARY KEY,
     user_id    TEXT NOT NULL DEFAULT 'local',   -- owner of this field (Stage 2b)
@@ -653,6 +664,41 @@ def upsert_user_fit(conn: sqlite3.Connection, user_id: str, job_id: int,
             "UPDATE user_job_fit SET fit_score = ?, rank_score = ?, cluster = ?, "
             "updated_at = ? WHERE id = ?",
             (fit_score, rank_score, cluster, now, row["id"]))
+
+
+def set_user_resume(conn: sqlite3.Connection, user_id: str, resume_text: str,
+                    filename: str = "") -> None:
+    """Store a user's résumé text (idempotent per user). Persists it in the DB so
+    the daily worker can re-score them and so it survives a container restart."""
+    now = utcnow()
+    row = conn.execute(
+        "SELECT user_id FROM user_resumes WHERE user_id = ?", (user_id,)).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO user_resumes (user_id, resume_text, filename, updated_at) "
+            "VALUES (?, ?, ?, ?)", (user_id, resume_text, filename, now))
+    else:
+        conn.execute(
+            "UPDATE user_resumes SET resume_text = ?, filename = ?, updated_at = ? "
+            "WHERE user_id = ?", (resume_text, filename, now, user_id))
+    conn.commit()
+
+
+def get_user_resume(conn: sqlite3.Connection, user_id: str) -> str:
+    """A user's stored résumé text, or '' if none."""
+    row = conn.execute(
+        "SELECT resume_text FROM user_resumes WHERE user_id = ?", (user_id,)).fetchone()
+    return row["resume_text"] if row and row["resume_text"] else ""
+
+
+def users_with_resume(conn: sqlite3.Connection) -> list[str]:
+    """User ids that have a non-empty stored résumé — the re-score work list. The
+    'local' sentinel is excluded: its fit is the pipeline's (owner) scores,
+    mirrored in on ingest, not a per-résumé re-score."""
+    rows = conn.execute(
+        "SELECT user_id FROM user_resumes WHERE resume_text != ? AND user_id != ?",
+        ("", LOCAL_USER_ID)).fetchall()
+    return [r["user_id"] for r in rows]
 
 
 def set_application_status(

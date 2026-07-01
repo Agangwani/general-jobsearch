@@ -157,12 +157,26 @@ functions take `user_id=db.LOCAL_USER_ID` and scope by it. Routes pass
   FK; `runs` (global ingest metadata) stays global. Verified:
   `tests/test_application_scoping.py` (SQLite) +
   `test_postgres_backend.py::test_applications_are_per_user_on_postgres` (live PG).
-- [ ] **Per-user fit** — move `jobs.fit_score/rank_score/cluster` (single-user
-  columns today) into `user_job_fit (user_id, job_id, …)`, and have the worker
-  rescore each active user's resume against the global corpus. Touches
-  `scoring.py`, `ingest.py`, and the dashboard queries.
+- [x] **Per-user fit** — `fit_score/rank_score/cluster` moved off `jobs` into
+  `user_job_fit (user_id, job_id, …)` (migration `0006`); the dashboard reads fit
+  through it LEFT JOINed on the current user (a shared `_JOB_FIT_SELECT` lists the
+  jobs columns explicitly so there's never a duplicate `fit_score` column — which
+  would resolve differently on SQLite vs psycopg). `jobs.fit_*` stays as the
+  pipeline's (owner) scores and is mirrored into the `local` rows on ingest, so
+  single-user mode is unchanged. `webapp/fit.rescore_user` scores a résumé
+  against the DB job corpus; it runs on **all three triggers**: on résumé
+  **upload**, on the manual **"↻ Refresh matches"** button (`POST /matches/refresh`),
+  and by the **daily worker** (`python -m jobsearch rescore-users`, wired into
+  `daily-job-search.yml` behind `JOBSEARCH_DATABASE_URL`). Résumé text is now
+  stored per user in `user_resumes` (migration `0007`) — needed so the worker can
+  re-score users and so an uploaded résumé survives a container restart; the
+  `/resume` page reads the per-user résumé so accounts never see each other's.
+  Verified: `tests/test_fit_scoping.py` (SQLite, model + engine + routes) +
+  `test_postgres_backend.py::{test_fit_is_per_user,test_rescore_user}_on_postgres`.
 
-Once those land, open public signups (drop the owner gate).
+Once those land, open public signups (drop the owner gate). **All per-user data
+is now isolated** (profile, prep/company progress, applications, fit, résumé) —
+Stage 2c below opens signups.
 
 **RLS note:** Supabase enabled Row-Level Security on every table by default.
 The app connects with a **direct Postgres role** and enforces `user_id` in its

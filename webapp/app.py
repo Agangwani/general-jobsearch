@@ -28,7 +28,7 @@ from jobsearch.resume import extract_keywords, pdf_to_text
 
 from jobsearch.company_questions import canonical_key
 
-from . import auth, clusters, company_questions, db, emailmod, gmail, ingest, prep_sources, profile
+from . import auth, clusters, company_questions, db, emailmod, fit, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -756,11 +756,18 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/resume", response_class=HTMLResponse)
     def resume(request: Request, uploaded: int = 0, error: str = "", started: int = 0):
-        text_path = root / "data" / "resume.txt"
-        using_sample = not text_path.exists()
-        if using_sample:
-            text_path = root / "data" / "sample_resume.txt"
-        resume_text = text_path.read_text() if text_path.exists() else ""
+        # Prefer this user's stored résumé (per-user; set on upload) so accounts
+        # never see each other's. Fall back to the on-disk résumé — the local
+        # single-user path — then the bundled sample.
+        uid = auth.current_user_id(request)
+        resume_text = db.get_user_resume(conn, uid)
+        using_sample = False
+        if not resume_text:
+            text_path = root / "data" / "resume.txt"
+            using_sample = not text_path.exists()
+            if using_sample:
+                text_path = root / "data" / "sample_resume.txt"
+            resume_text = text_path.read_text() if text_path.exists() else ""
         pdfs = sorted((root / "data").glob("*.pdf"))
         # Sections split on blank lines for per-block copy buttons.
         sections = [s.strip() for s in resume_text.split("\n\n") if s.strip()]
@@ -800,8 +807,39 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
             return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
                                     status_code=303)
         (root / "data" / "resume.txt").write_text(text + "\n")
-        profile.reseed_from_resume(conn, text, user_id=auth.current_user_id(request))
+        uid = auth.current_user_id(request)
+        profile.reseed_from_resume(conn, text, user_id=uid)
+        # Persist the résumé per-user (survives restarts; the daily worker reads
+        # it) and re-score this user's matches against the current corpus right
+        # away, so their fit reflects the new résumé without a pipeline run.
+        db.set_user_resume(conn, uid, text, Path(file.filename or "resume").name)
+        try:
+            fit.rescore_user(conn, uid, text)
+        except Exception as exc:  # noqa: BLE001 — scoring is best-effort here
+            print(f"WARNING: résumé re-score after upload failed: {exc}", file=sys.stderr)
         return RedirectResponse("/resume?uploaded=1", status_code=303)
+
+    @app.post("/matches/refresh")
+    def refresh_matches(request: Request):
+        # Manual "refresh matches": re-score the current user's résumé against
+        # the current job corpus on demand (the third fit trigger, alongside
+        # upload and the daily worker). Uses the stored résumé, falling back to
+        # the on-disk résumé in local single-user mode.
+        uid = auth.current_user_id(request)
+        text = db.get_user_resume(conn, uid)
+        if not text:
+            rp = root / "data" / "resume.txt"
+            text = rp.read_text() if rp.exists() else ""
+            if text and uid == db.LOCAL_USER_ID:
+                db.set_user_resume(conn, uid, text)
+        scored = 0
+        try:
+            scored = fit.rescore_user(conn, uid, text)
+        except Exception as exc:  # noqa: BLE001 — surface, don't 500
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        if "application/json" in (request.headers.get("accept") or ""):
+            return JSONResponse({"scored": scored, "has_resume": bool(text)})
+        return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
     @app.post("/resume/run")
     def run_pipeline():

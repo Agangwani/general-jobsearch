@@ -96,6 +96,12 @@
           title="Auto-fill every job tab already open in the integrated browser. Never submits.">
     ⚡ Fill all open tabs
   </button>
+  <form method="post" action="/matches/refresh" style="display:inline">
+    <button class="btn" type="submit"
+            title="Re-score your résumé against the current jobs — updates each job's fit to you.">
+      ↻ Refresh matches
+    </button>
+  </form>
   <span class="muted" id="apply-all-summary"></span>
   <ul class="apply-all-list" id="apply-all-list" hidden></ul>
 </div>

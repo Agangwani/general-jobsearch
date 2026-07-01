@@ -109,3 +109,100 @@ def test_local_mode_fit_unchanged(conn):
     jid = _jid(conn, "greenhouse:Acme:1")
     assert db.search_jobs(conn, min_fit=70.0)[0]["fit_score"] == 72.5
     assert db.search_jobs(conn, min_fit=80.0) == []  # 72.5 < 80 → filtered out
+
+
+# ---------------------------------------------------- part 4b: rescoring engine
+from webapp import fit  # noqa: E402
+
+
+def test_user_resume_storage(conn):
+    assert db.get_user_resume(conn, "u1") == ""
+    db.set_user_resume(conn, "u1", "my résumé text", "cv.pdf")
+    assert db.get_user_resume(conn, "u1") == "my résumé text"
+    db.set_user_resume(conn, "u1", "updated text", "cv2.pdf")  # idempotent overwrite
+    assert db.get_user_resume(conn, "u1") == "updated text"
+    assert db.users_with_resume(conn) == ["u1"]
+    # The 'local' sentinel is never a re-score target (its fit is the pipeline's).
+    db.set_user_resume(conn, "local", "local résumé")
+    assert "local" not in db.users_with_resume(conn)
+
+
+def test_rescore_user_writes_per_user_fit(conn):
+    db.upsert_job(conn, _job("greenhouse:Acme:1", company="Acme", title="Backend Engineer",
+                             description="python postgres backend distributed systems api services"))
+    db.upsert_job(conn, _job("greenhouse:Beta:2", company="Beta", title="Frontend Engineer",
+                             url="https://beta.co/2",
+                             description="react typescript css frontend ui visual design layout"))
+    acme, beta = _jid(conn, "greenhouse:Acme:1"), _jid(conn, "greenhouse:Beta:2")
+
+    n = fit.rescore_user(conn, "u1", "python backend engineer with postgres and distributed systems")
+    assert n == 2
+    fa = conn.execute("SELECT fit_score FROM user_job_fit WHERE user_id='u1' AND job_id=?",
+                      (acme,)).fetchone()["fit_score"]
+    fb = conn.execute("SELECT fit_score FROM user_job_fit WHERE user_id='u1' AND job_id=?",
+                      (beta,)).fetchone()["fit_score"]
+    assert fa is not None and fb is not None
+    assert fa >= fb                 # the backend résumé fits the backend job best
+    assert max(fa, fb) == 100.0     # scores are scaled so the top match is 100
+    # Isolated: another user with no re-score has no fit rows.
+    assert conn.execute("SELECT COUNT(*) c FROM user_job_fit WHERE user_id='u2'").fetchone()["c"] == 0
+
+
+def test_rescore_user_blank_resume_is_noop(conn):
+    db.upsert_job(conn, _job(description="python backend postgres"))
+    assert fit.rescore_user(conn, "u1", "   ") == 0
+    assert conn.execute("SELECT COUNT(*) c FROM user_job_fit WHERE user_id='u1'").fetchone()["c"] == 0
+
+
+def test_rescore_all_active_users_skips_local(conn):
+    db.upsert_job(conn, _job(description="python backend postgres distributed systems services"))
+    db.set_user_resume(conn, "u1", "python backend engineer postgres distributed systems")
+    db.set_user_resume(conn, "local", "should be skipped — local fit is the pipeline's")
+    results = fit.rescore_all_active_users(conn)
+    assert "u1" in results and "local" not in results
+    assert results["u1"] == 1
+    assert conn.execute("SELECT COUNT(*) c FROM user_job_fit WHERE user_id='u1'").fetchone()["c"] == 1
+
+
+def _fit_client(tmp_path):
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+    (tmp_path / "data").mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer\n")
+    (tmp_path / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  locations: [new york]\n"
+        "ranking:\n  half_life_days: 7\n")
+    (tmp_path / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+    app = create_app(tmp_path, db_path=tmp_path / "data" / "test.db")
+    return app, TestClient(app)
+
+
+def test_upload_stores_resume_and_rescores(tmp_path):
+    app, client = _fit_client(tmp_path)
+    conn = app.state.conn
+    db.upsert_job(conn, _job(description="python backend postgres distributed systems services"))
+    jid = _jid(conn, "greenhouse:Acme:1")
+    resume = ("Jane Engineer\nSenior Backend Engineer\n\nEXPERIENCE\n"
+              "Built python postgres distributed backend systems and services for years.\n")
+    resp = client.post("/resume/upload",
+                       files={"file": ("resume.txt", resume.encode(), "text/plain")},
+                       follow_redirects=False)
+    assert resp.status_code == 303 and "uploaded=1" in resp.headers["location"]
+    # Résumé persisted for the local user and matches were re-scored.
+    assert db.get_user_resume(conn, "local").startswith("Jane Engineer")
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM user_job_fit WHERE user_id='local' AND job_id=? "
+        "AND fit_score IS NOT NULL", (jid,)).fetchone()["c"] == 1
+
+
+def test_matches_refresh_route(tmp_path):
+    app, client = _fit_client(tmp_path)
+    conn = app.state.conn
+    db.upsert_job(conn, _job(description="python backend postgres distributed systems services"))
+    db.set_user_resume(conn, "local", "python backend engineer postgres distributed systems")
+    resp = client.post("/matches/refresh", headers={"accept": "application/json"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["scored"] == 1 and body["has_resume"] is True

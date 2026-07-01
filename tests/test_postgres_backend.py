@@ -213,6 +213,32 @@ def test_fit_is_per_user_on_postgres(pgconn):
     assert db.search_jobs(pgconn, min_fit=70.0, user_id="u2") == []
 
 
+def test_rescore_user_on_postgres(pgconn):
+    """Stage 2b part 4b on Postgres: per-user résumé storage + rescore_user
+    write fit rows, and the daily-worker rescore_all_active_users skips 'local'."""
+    from webapp import db, fit
+
+    db.upsert_job(pgconn, _job(
+        description="python postgres backend distributed systems services api"))
+    jid = pgconn.execute(
+        "SELECT id FROM jobs WHERE key = ?", ("greenhouse:Acme:1",)).fetchone()["id"]
+
+    db.set_user_resume(pgconn, "u1", "python backend engineer postgres distributed systems")
+    assert db.get_user_resume(pgconn, "u1").startswith("python")
+    assert db.users_with_resume(pgconn) == ["u1"]
+
+    n = fit.rescore_user(pgconn, "u1", db.get_user_resume(pgconn, "u1"))
+    assert n == 1
+    assert pgconn.execute(
+        "SELECT fit_score FROM user_job_fit WHERE user_id = ? AND job_id = ?",
+        ("u1", jid)).fetchone()["fit_score"] is not None
+
+    # The worker skips the 'local' pipeline sentinel.
+    db.set_user_resume(pgconn, "local", "should be skipped")
+    results = fit.rescore_all_active_users(pgconn)
+    assert "u1" in results and "local" not in results
+
+
 def test_state_setters_stale_id_no_op_on_postgres(pgconn):
     """The state-change setters guard a stale/unknown parent id by raising
     ValueError up front (webapp/db._require_row) instead of letting the FK
