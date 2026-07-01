@@ -613,6 +613,18 @@ def active_application_urls(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def like_term(q: str) -> str:
+    """Build a safe ``LIKE`` pattern for a user search term.
+
+    User-supplied text is a literal substring, not a pattern, so escape the
+    LIKE metacharacters ``%`` and ``_`` (and the escape char itself) and wrap
+    in ``%…%``. Callers must pair this with ``ESCAPE '\\'`` in the SQL so a
+    typed ``%`` matches a literal percent instead of "anything". Without this,
+    ``q='%'`` returns every row and ``q='N_w'`` matches "New …"."""
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 # Columns the user can sort by. Values are safe SQL column references.
 SORTABLE = {
     "fit":        "j.fit_score",
@@ -649,8 +661,9 @@ def search_jobs(
     elif startup_scope == "hide":
         sql.append("AND j.is_startup = 0")
     if q:
-        sql.append("AND (j.title LIKE ? OR j.description LIKE ? OR j.company LIKE ? OR j.location LIKE ?)")
-        args += [f"%{q}%"] * 4
+        sql.append("AND (j.title LIKE ? ESCAPE '\\' OR j.description LIKE ? ESCAPE '\\' "
+                   "OR j.company LIKE ? ESCAPE '\\' OR j.location LIKE ? ESCAPE '\\')")
+        args += [like_term(q)] * 4
     if company:
         sql.append("AND j.company = ?")
         args.append(company)

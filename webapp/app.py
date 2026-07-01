@@ -852,8 +852,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                  FROM email_messages m LEFT JOIN jobs j ON j.id = m.job_id"""
         args: list = []
         if q:
-            sql += " WHERE m.subject LIKE ? OR m.from_addr LIKE ? OR m.body LIKE ?"
-            args = [f"%{q}%"] * 3
+            # Escape LIKE wildcards so a typed '%'/'_' matches literally rather
+            # than "anything" (see db.like_term).
+            sql += (" WHERE (m.subject LIKE ? ESCAPE '\\' OR m.from_addr LIKE ? ESCAPE '\\' "
+                    "OR m.body LIKE ? ESCAPE '\\')")
+            args = [db.like_term(q)] * 3
         sql += " ORDER BY m.sent_at DESC LIMIT 200"
         messages = conn.execute(sql, args).fetchall()
         return render(request, "emails.html", connected=connected, messages=messages,
