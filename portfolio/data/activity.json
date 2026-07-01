@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-06-28T16:01:22Z",
+  "authenticated": true,
+  "repos": {
+    "Agangwani/muselearn": {
+      "pushed_at": "2026-06-28T01:44:49Z",
+      "description": null,
+      "language": "JavaScript",
+      "stars": 0,
+      "open_issues": 0,
+      "html_url": "https://github.com/Agangwani/muselearn",
+      "commits_7d": 3,
+      "commits_30d": 3,
+      "recent_commits": [
+        {
+          "message": "Merge pull request #1 from Agangwani/claude/music-production-learning-site-su0pke",
+          "date": "2026-06-28T01:44:49Z",
+          "url": "https://github.com/Agangwani/muselearn/commit/f5392bb1e7bdb3b164150dd1d046c26827eec3e3"
+        },
+        {
+          "message": "Build MuseLearn: interactive music production learning site",
+          "date": "2026-06-28T01:28:45Z",
+          "url": "https://github.com/Agangwani/muselearn/commit/1fef6b026c99f36dea306f40649cb0e5e963ae97"
+        },
+        {
+          "message": "Initial commit",
+          "date": "2026-06-28T00:59:02Z",
+          "url": "https://github.com/Agangwani/muselearn/commit/ad382ae4c0ea928a78514e620804a414e7494bcb"
+        }
+      ]
+    },
+    "Agangwani/general-jobsearch": {
+      "pushed_at": "2026-06-28T14:52:44Z",
+      "description": null,
+      "language": "Python",
+      "stars": 1,
+      "open_issues": 9,
+      "html_url": "https://github.com/Agangwani/general-jobsearch",
+      "commits_7d": 27,
+      "commits_30d": 91,
+      "recent_commits": [
+        {
+          "message": "Merge pull request #17 from Agangwani/claude/supabase-multidevice-hosting-qothi4",
+          "date": "2026-06-28T13:45:14Z",
+          "url": "https://github.com/Agangwani/general-jobsearch/commit/38561ed95baaf02d3687ee0b9c4d65d7d9a946fb"
+        },
+        {
+          "message": "Stage 2b (part 2): per-user prep & company progress isolation",
+          "date": "2026-06-28T02:31:15Z",
+          "url": "https://github.com/Agangwani/general-jobsearch/commit/4b18d8aa5dc0e131479bea825955a0f0c56531a4"
+        },
+        {
+          "message": "Stage 2b (part 1): per-user profile isolation",
+          "date": "2026-06-28T01:57:07Z",
+          "url": "https://github.com/Agangwani/general-jobsearch/commit/ff3d711a5e67baff16aecb584fd8dbb689116f24"
+        },
+        {
+          "message": "docs: CLI hosting guides — cheapest (Cloud Run) and AWS (Terraform/CDK)",
+          "date": "2026-06-28T01:57:07Z",
+          "url": "https://github.com/Agangwani/general-jobsearch/commit/54eb30d25b9304495d9a946787c760093d43ea0f"
+        },
+        {
+          "message": "Stage 2a: Supabase Auth login wall + accounts (hosted mode)",
+          "date": "2026-06-26T01:53:03Z",
+          "url": "https://github.com/Agangwani/general-jobsearch/commit/2dd5c397cdce3651428830df980ea28c76ec66ba"
+        }
+      ]
+    }
+  }
+}

@@ -538,6 +538,26 @@ def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
     parameterised query and surface as HTTP 500. The routes must instead
     degrade to their normal not-found behaviour (a 303 redirect, or the empty
     apply-status payload) — never 500. A valid seeded id still works."""
+def test_company_with_space_in_key_is_reachable(tmp_path):
+    """A company whose key contains a space (e.g. "goldman sachs") must be
+    reachable from the landing page. The link is a URL *path* segment, so the
+    space has to be percent-encoded ("%20") — quote_plus's "+" is a literal
+    plus in a path and would route to a non-existent key (misleading empty
+    state). The encoded path must round-trip back to the seeded key and render
+    its questions."""
+def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
+    """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
+    makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
+    handler's `except ValueError` used to miss, returning HTTP 500. It must
+    instead degrade to the friendly redirect (303 → /resume?error=...) like
+    every other bad upload, and a valid text resume must still succeed."""
+    from urllib.parse import parse_qs, urlsplit
+
+def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
+    """A job with no posting URL must not render dead controls: the "Open
+    posting" link would become href="" (reloads the page) and the apply/re-fill
+    POSTs 404 with no URL. Guard them with {% if job.url %} so URL-less jobs
+    show a muted "no posting link" note instead."""
     from fastapi.testclient import TestClient
     from webapp.app import create_app
 
@@ -576,6 +596,109 @@ def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
     assert client.get(f"/clusters/job/{job_id}", follow_redirects=False).status_code == 200
     assert client.get(f"/jobs/{job_id}/referrals", follow_redirects=False).status_code == 200
     assert client.get(f"/api/apply-status/{app_id}").status_code == 200
+
+    # Seed a company whose key has a space, with a question to show.
+    db.seed_company_problems(app.state.conn, [{
+        "company": "Goldman Sachs", "company_key": "goldman sachs",
+        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
+        "difficulty": "easy", "frequency": 90.0,
+        "url": "https://leetcode.com/problems/two-sum/",
+    }])
+
+    # The landing card must link to the path-encoded key (%20), not the "+"
+    # form that quote_plus produces and that a URL path treats as a literal.
+    home = client.get("/companies")
+    assert home.status_code == 200
+    assert "/companies/goldman%20sachs" in home.text
+    assert "/companies/goldman+sachs" not in home.text
+
+    # And that encoded path round-trips to the real key and renders the question
+    # (rather than the misleading "No questions yet" empty state).
+    detail = client.get("/companies/goldman%20sachs")
+    assert detail.status_code == 200
+    assert "Two Sum" in detail.text
+    assert "Goldman Sachs" in detail.text
+    # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
+    resp = client.post(
+        "/resume/upload",
+        files={"file": ("malformed.pdf", b"%PDF-1.4 broken", "application/pdf")},
+        follow_redirects=False)
+    assert resp.status_code == 303, f"expected friendly 303, got {resp.status_code}"
+    q = parse_qs(urlsplit(resp.headers["location"]).query)
+    assert "error" in q and q["error"][0]  # carried a user-facing message, not a 500
+
+    # A valid plain-text resume still uploads cleanly (redirects with uploaded=1).
+    ok = client.post(
+        "/resume/upload",
+        files={"file": ("resume.txt",
+                        b"Jane Engineer\nSenior Software Engineer\n\nEXPERIENCE\n"
+                        b"Built distributed backend systems at scale for many years.\n",
+                        "text/plain")},
+        follow_redirects=False)
+    assert ok.status_code == 303
+    assert "uploaded=1" in ok.headers["location"]
+    assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
+    # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
+                                         company="Datadog", url=""))
+    job_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Datadog'").fetchone()["id"]
+
+    detail = client.get(f"/jobs/{job_id}")
+    assert detail.status_code == 200
+    html = detail.text
+    assert 'href=""' not in html                      # no dead "Open posting" link
+    assert "Open posting" not in html                 # the link itself is gone
+    assert "data-apply-btn" not in html               # no Auto-fill apply button
+    assert "data-refill-btn" not in html              # no Re-fill button
+    assert "no posting link" in html                  # muted note shown instead
+
+    # Sanity: a job *with* a URL still shows the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Acme:1",
+                                         company="Acme", url="https://acme.com/jobs/1"))
+    acme_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Acme'").fetchone()["id"]
+    acme_html = client.get(f"/jobs/{acme_id}").text
+    assert "data-apply-btn" in acme_html
+    assert 'href="https://acme.com/jobs/1"' in acme_html
+
+
+def test_settings_manual_links_have_rel_noopener(tmp_path):
+    """The "Manual check" external links open in a new tab; without rel="noopener"
+    the opened page gets window.opener access. Assert the rendered links carry it."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\n"
+        "manual_check:\n  - name: Stripe\n    careers_url: https://stripe.com/jobs\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    html = client.get("/settings").text
+    assert "https://stripe.com/jobs" in html           # the manual-check link rendered
+    # The target=_blank link must carry rel="noopener" (no target="_blank" without it).
+    assert 'target="_blank" rel="noopener"' in html
+    assert 'href="https://stripe.com/jobs" target="_blank" rel="noopener"' in html
+
+
+def test_fit_map_resume_star_is_click_through():
+    """The résumé star (.cmap-resume) is painted over the highest-fit dots; without
+    pointer-events:none it swallows clicks meant for those top posting dots. Assert
+    the CSS rule disables pointer events on the star."""
+    css = (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.css").read_text()
+    rule = next(line for line in css.splitlines()
+                if line.lstrip().startswith(".cmap-resume "))
+    normalized = rule.replace(" ", "")
+    assert "pointer-events:none" in normalized, rule
 
 
 def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
@@ -666,3 +789,38 @@ def test_prep_page_recommends_tracks_for_resume(tmp_path):
     # below the divider (not recommended for a finance resume).
     assert '/prep/track/coding"' in html
     assert html.index('/prep/track/coding"') > divider
+
+
+# ----------------------------------------------------- static / client JS
+def _app_js() -> str:
+    return (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.js").read_text()
+
+
+def test_clipboard_writes_are_guarded():
+    """Regression for UI-QA findings 47847ee469f0 (jobs copy panel) and
+    63d83e6dcc22 (resume copy buttons): a denied/unavailable Clipboard API used
+    to reject with no .catch(), so the copy failed silently and the rejection
+    escaped as an uncaught page error. Every navigator.clipboard.writeText(...)
+    call must be guarded by a .catch() (a graceful fallback / user feedback).
+
+    Static-text assertion (this is client-side JS) kept robust to formatting by
+    scanning each writeText call's promise chain up to the next one for .catch(.
+    """
+    src = _app_js()
+    needle = "navigator.clipboard.writeText("
+    starts = [i for i in range(len(src)) if src.startswith(needle, i)]
+    assert starts, "expected the clipboard copy code to still use writeText()"
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(src)
+        chain = src[start:end]
+        assert ".catch(" in chain, (
+            "navigator.clipboard.writeText() at offset "
+            f"{start} has no .catch() — a denied clipboard would throw uncaught"
+        )
+
+
+def test_clipboard_has_a_fallback_path():
+    """The fix should degrade gracefully (legacy execCommand path) rather than
+    only swallow the error, so copy keeps working in non-secure contexts."""
+    src = _app_js()
+    assert "execCommand" in src, "expected a legacy copy fallback for denied clipboard"
