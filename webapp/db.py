@@ -96,6 +96,24 @@ CREATE TABLE IF NOT EXISTS application_events (
 );
 CREATE INDEX IF NOT EXISTS idx_app_events_app ON application_events(application_id);
 
+-- Per-user résumé-fit (Stage 2b). fit_score/rank_score/cluster were single-user
+-- columns on jobs; here they are scored per user (each user's résumé vs the job
+-- corpus) so two accounts see their own matches. The dashboard reads fit through
+-- this table LEFT JOINed on the current user; jobs.fit_* stays as the pipeline's
+-- (owner) scores for the CLI report and is copied into the 'local' rows on
+-- ingest so single-user mode is unchanged.
+CREATE TABLE IF NOT EXISTS user_job_fit (
+    id          INTEGER PRIMARY KEY,
+    user_id     TEXT NOT NULL DEFAULT 'local',
+    job_id      INTEGER NOT NULL REFERENCES jobs(id),
+    fit_score   REAL,
+    rank_score  REAL,
+    cluster     INTEGER,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(user_id, job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_job_fit_user ON user_job_fit(user_id);
+
 CREATE TABLE IF NOT EXISTS profile_fields (
     id         INTEGER PRIMARY KEY,
     user_id    TEXT NOT NULL DEFAULT 'local',   -- owner of this field (Stage 2b)
@@ -494,6 +512,7 @@ def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -
     """Insert a job or patch an existing one. Returns 'inserted', 'updated',
     or 'unchanged'. Every change is recorded in job_events."""
     now = now or utcnow()
+    d = _defaults(record)
     row = conn.execute("SELECT * FROM jobs WHERE key = ?", (record["key"],)).fetchone()
     if row is None:
         conn.execute(
@@ -505,7 +524,7 @@ def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -
                        :description, :posted_at, :fit_score, :rank_score,
                        :cluster, :filter_reason, :validation,
                        :validation_note, :now, :now)""",
-            {**_defaults(record), "now": now},
+            {**d, "now": now},
         )
         job_id = conn.execute("SELECT id FROM jobs WHERE key = ?", (record["key"],)).fetchone()["id"]
         conn.execute(
@@ -521,6 +540,10 @@ def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -
             "VALUES (?, ?, ?, ?)",
             (LOCAL_USER_ID, job_id, now, now),
         )
+        # Mirror the pipeline's (owner) fit into the local user's per-user fit so
+        # single-user mode reads its scores from user_job_fit unchanged. Hosted
+        # users get their own fit from rescore_user against their résumé.
+        _sync_local_fit(conn, job_id, now)
         conn.commit()
         return "inserted"
 
@@ -547,12 +570,27 @@ def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -
             "VALUES (?, 'updated', ?, ?)",
             (row["id"], json.dumps(changes, default=str), now),
         )
+        _sync_local_fit(conn, row["id"], now)
         conn.commit()
         return "updated"
 
     conn.execute("UPDATE jobs SET last_seen_at = ?, is_active = 1 WHERE id = ?", (now, row["id"]))
+    _sync_local_fit(conn, row["id"], now)
     conn.commit()
     return "unchanged"
+
+
+def _sync_local_fit(conn: sqlite3.Connection, job_id: int, now: str) -> None:
+    """Mirror the job's stored (pipeline/owner) fit into the local user's
+    per-user fit, so single-user mode reads user_job_fit unchanged. Reads the
+    job's current fit_score so it honors upsert_job's 'don't erase on an empty
+    re-run' rule rather than clobbering with a bare record."""
+    jf = conn.execute(
+        "SELECT fit_score, rank_score, cluster FROM jobs WHERE id = ?",
+        (job_id,)).fetchone()
+    if jf is not None:
+        upsert_user_fit(conn, LOCAL_USER_ID, job_id,
+                        jf["fit_score"], jf["rank_score"], jf["cluster"], now)
 
 
 def _defaults(record: dict) -> dict:
@@ -596,6 +634,27 @@ def get_or_create_application(
         (job_id, user_id)).fetchone()["id"]
 
 
+def upsert_user_fit(conn: sqlite3.Connection, user_id: str, job_id: int,
+                    fit_score, rank_score, cluster, now: str | None = None) -> None:
+    """Write one user's fit for one job (idempotent, scoped by (user_id,
+    job_id)). Explicit SELECT-then-write so it behaves identically on SQLite and
+    Postgres without relying on ON CONFLICT."""
+    now = now or utcnow()
+    row = conn.execute(
+        "SELECT id FROM user_job_fit WHERE user_id = ? AND job_id = ?",
+        (user_id, job_id)).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO user_job_fit (user_id, job_id, fit_score, rank_score, "
+            "cluster, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, job_id, fit_score, rank_score, cluster, now))
+    else:
+        conn.execute(
+            "UPDATE user_job_fit SET fit_score = ?, rank_score = ?, cluster = ?, "
+            "updated_at = ? WHERE id = ?",
+            (fit_score, rank_score, cluster, now, row["id"]))
+
+
 def set_application_status(
     conn: sqlite3.Connection, application_id: int, status: str,
     detail: str = "", via: str = "",
@@ -629,17 +688,18 @@ def job_with_application(conn: sqlite3.Connection, job_id: int,
     # instead of returning HTTP 500.
     if not (-(2 ** 63) <= job_id < 2 ** 63):
         return None
-    # LEFT JOIN scoped to this user: a job with no application for them still
-    # resolves (status COALESCEs to 'not_applied'), so it shows in the to-apply
-    # pile. application_id is NULL until they engage (get_or_create_application).
+    # LEFT JOIN scoped to this user for both fit (user_job_fit) and application:
+    # a job with no fit shows "—", a job with no application COALESCEs to
+    # 'not_applied' (to-apply). application_id is NULL until they engage.
     return conn.execute(
-        """SELECT j.*, a.id AS application_id,
-                  COALESCE(a.status, 'not_applied') AS status,
-                  a.applied_at, a.submitted_via, a.notes
-           FROM jobs j LEFT JOIN applications a
-                ON a.job_id = j.id AND a.user_id = ?
-           WHERE j.id = ?""",
-        (user_id, job_id),
+        f"""SELECT {_JOB_FIT_SELECT}, a.id AS application_id,
+                   COALESCE(a.status, 'not_applied') AS status,
+                   a.applied_at, a.submitted_via, a.notes
+            FROM jobs j
+                 {_FIT_JOIN}
+                 LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = ?
+            WHERE j.id = ?""",
+        (user_id, user_id, job_id),
     ).fetchone()
 
 
@@ -702,10 +762,25 @@ def like_term(q: str) -> str:
     return f"%{escaped}%"
 
 
-# Columns the user can sort by. Values are safe SQL column references. Status
-# COALESCEs the (possibly absent) per-user application to the to-apply default.
+# The job row for a per-user view: every jobs column, but the fit trio
+# (fit_score/rank_score/cluster) sourced from user_job_fit (alias f) instead of
+# jobs (alias j), so each user sees their own scores. Listing the jobs columns
+# explicitly (rather than j.*) avoids a duplicate fit_score column, which would
+# resolve differently on SQLite (first wins) vs psycopg (last wins).
+_JOB_FIT_SELECT = (
+    "j.id, j.key, j.source, j.company, j.title, j.location, j.url, j.description, "
+    "j.posted_at, j.filter_reason, j.validation, j.validation_note, "
+    "j.first_seen_at, j.last_seen_at, j.is_active, j.is_startup, "
+    "f.fit_score AS fit_score, f.rank_score AS rank_score, f.cluster AS cluster"
+)
+# LEFT JOIN of the current user's fit; its user_id placeholder binds first.
+_FIT_JOIN = "LEFT JOIN user_job_fit f ON f.job_id = j.id AND f.user_id = ?"
+
+# Columns the user can sort by. Values are safe SQL column references. Fit/rank
+# come from the per-user fit join (f); status COALESCEs the (possibly absent)
+# per-user application to the to-apply default.
 SORTABLE = {
-    "fit":        "j.fit_score",
+    "fit":        "f.fit_score",
     "company":    "j.company",
     "title":      "j.title",
     "location":   "j.location",
@@ -730,16 +805,19 @@ def search_jobs(
     user_id: str = LOCAL_USER_ID,
     limit: int = 500,
 ) -> list[sqlite3.Row]:
-    # LEFT JOIN the current user's applications: a job they haven't engaged has
-    # no row, so its status COALESCEs to 'not_applied' (the to-apply pile). The
-    # user_id placeholder lives in the JOIN, so it is the FIRST bound arg.
+    # LEFT JOIN the current user's fit (user_job_fit) and applications: a job
+    # they haven't been scored on shows no fit, one they haven't engaged
+    # COALESCEs to 'not_applied' (the to-apply pile). Both JOIN user_id
+    # placeholders bind first, fit then application.
     st = "COALESCE(a.status, 'not_applied')"
     sql = [
-        f"""SELECT j.*, a.id AS application_id, {st} AS status, a.applied_at
-            FROM jobs j LEFT JOIN applications a
-                 ON a.job_id = j.id AND a.user_id = ? WHERE 1=1"""
+        f"""SELECT {_JOB_FIT_SELECT}, a.id AS application_id, {st} AS status, a.applied_at
+            FROM jobs j
+                 {_FIT_JOIN}
+                 LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = ?
+            WHERE 1=1"""
     ]
-    args: list = [user_id]
+    args: list = [user_id, user_id]
     if startup_scope == "only":
         sql.append("AND j.is_startup = 1")
     elif startup_scope == "hide":
@@ -770,7 +848,7 @@ def search_jobs(
     if not include_near_miss:
         sql.append("AND j.filter_reason = ''")
     if min_fit is not None:
-        sql.append("AND j.fit_score >= ?")
+        sql.append("AND f.fit_score >= ?")
         args.append(min_fit)
     if status_filter and status_filter in APP_STATUSES:
         sql.append(f"AND {st} = ?")
@@ -781,7 +859,7 @@ def search_jobs(
         nulls = "NULLS LAST" if direction == "DESC" else "NULLS FIRST"
         sql.append(f"ORDER BY {col} {direction} {nulls}")
     else:
-        sql.append(f"ORDER BY {st} != 'in_progress', j.rank_score DESC NULLS LAST, j.first_seen_at DESC")
+        sql.append(f"ORDER BY {st} != 'in_progress', f.rank_score DESC NULLS LAST, j.first_seen_at DESC")
     sql.append("LIMIT ?")
     args.append(limit)
     return conn.execute(" ".join(sql), args).fetchall()
@@ -794,15 +872,17 @@ def top_fit_to_apply(conn: sqlite3.Connection, n: int = 5,
     tiebreak. A job the user hasn't engaged counts as to-apply (no row)."""
     placeholders = ",".join("?" * len(APPLIED_SET))
     return conn.execute(
-        f"""SELECT j.*, a.id AS application_id, COALESCE(a.status, 'not_applied') AS status
-            FROM jobs j LEFT JOIN applications a
-                 ON a.job_id = j.id AND a.user_id = ?
+        f"""SELECT {_JOB_FIT_SELECT}, a.id AS application_id,
+                   COALESCE(a.status, 'not_applied') AS status
+            FROM jobs j
+                 {_FIT_JOIN}
+                 LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = ?
             WHERE j.is_active = 1 AND j.url != ''
               AND COALESCE(a.status, 'not_applied') NOT IN ({placeholders})
-            ORDER BY j.fit_score DESC NULLS LAST, j.rank_score DESC NULLS LAST,
+            ORDER BY f.fit_score DESC NULLS LAST, f.rank_score DESC NULLS LAST,
                      j.first_seen_at DESC
             LIMIT ?""",
-        (user_id, *sorted(APPLIED_SET), n),
+        (user_id, user_id, *sorted(APPLIED_SET), n),
     ).fetchall()
 
 

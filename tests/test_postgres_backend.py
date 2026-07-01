@@ -187,6 +187,32 @@ def test_applications_are_per_user_on_postgres(pgconn):
     assert db.get_or_create_application(pgconn, 2 ** 63, "u1") is None
 
 
+def test_fit_is_per_user_on_postgres(pgconn):
+    """Stage 2b per-user fit, on Postgres: upsert_job mirrors the pipeline fit
+    into the local user; upsert_user_fit isolates each user; and the explicit
+    per-user fit SELECT (no duplicate fit_score column) round-trips. Catches the
+    SQLite-vs-psycopg duplicate-column hazard the _JOB_FIT_SELECT avoids."""
+    from webapp import db
+
+    db.upsert_job(pgconn, _job(fit_score=87.5, rank_score=80.0))
+    jid = pgconn.execute(
+        "SELECT id FROM jobs WHERE key = ?", ("greenhouse:Acme:1",)).fetchone()["id"]
+
+    # Local mirror populated by ingest/upsert_job.
+    local = db.job_with_application(pgconn, jid)  # default user_id='local'
+    assert local["fit_score"] == 87.5 and local["rank_score"] == 80.0
+
+    # Per-user fit is isolated.
+    db.upsert_user_fit(pgconn, "u1", jid, 90.0, 88.0, 3)
+    db.upsert_user_fit(pgconn, "u2", jid, 40.0, 30.0, 1)
+    assert db.job_with_application(pgconn, jid, "u1")["fit_score"] == 90.0
+    assert db.job_with_application(pgconn, jid, "u2")["fit_score"] == 40.0
+    assert db.job_with_application(pgconn, jid, "u3")["fit_score"] is None
+    # min_fit filters on the current user's fit.
+    assert len(db.search_jobs(pgconn, min_fit=70.0, user_id="u1")) == 1
+    assert db.search_jobs(pgconn, min_fit=70.0, user_id="u2") == []
+
+
 def test_state_setters_stale_id_no_op_on_postgres(pgconn):
     """The state-change setters guard a stale/unknown parent id by raising
     ValueError up front (webapp/db._require_row) instead of letting the FK
