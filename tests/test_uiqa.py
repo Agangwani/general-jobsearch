@@ -88,6 +88,45 @@ def test_area_for():
     assert explore.area_for("/prep/module/x") == "prep"
 
 
+# -------------------------------------------------------------------- crawl
+def test_crawl_survives_a_navigation_error(tmp_path, monkeypatch):
+    """A single slow/flaky route (goto raises) must not abort the whole crawl:
+    the good routes are still indexed and the bad one is logged as a finding so
+    Stage 2 can replay-and-judge it."""
+    rd = RunDir(tmp_path, run_id="crawltest")
+
+    class FakeBrowser:
+        page = object()
+
+        def goto(self, path):
+            if path == "/boom":
+                raise RuntimeError("Page.goto: Timeout 15000ms exceeded.\nCall log: ...")
+            return 200
+
+        def drain(self):
+            return []
+
+        def title(self):
+            return "ok"
+
+    class FakeServer:
+        job_ids = {}
+
+        def server_errors_since(self):
+            return [], None
+
+    # Two seed routes, one of which blows up; no links so BFS doesn't expand.
+    monkeypatch.setattr(explore, "seed_routes", lambda job_ids: ["/ok", "/boom"])
+    monkeypatch.setattr(explore, "index_actions", lambda page: [])
+
+    action_index = explore.crawl(FakeServer(), FakeBrowser(), rd, max_pages=10)
+
+    assert "/ok" in action_index  # the crawl kept going past the failure
+    filed = [json.loads(line) for line in
+             rd.findings_jsonl.read_text().splitlines() if line.strip()]
+    assert any(f["route"] == "/boom" and f["kind"] == "page_error" for f in filed)
+
+
 # ------------------------------------------------------------------- report
 def test_consolidate_merges_jsonl_and_incoming(tmp_path):
     rd = RunDir(tmp_path, run_id="testrun")
