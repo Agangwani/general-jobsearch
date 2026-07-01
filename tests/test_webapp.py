@@ -528,6 +528,13 @@ def test_dashboard_tolerates_malformed_min_fit(tmp_path):
     assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
 
 
+def test_company_with_space_in_key_is_reachable(tmp_path):
+    """A company whose key contains a space (e.g. "goldman sachs") must be
+    reachable from the landing page. The link is a URL *path* segment, so the
+    space has to be percent-encoded ("%20") — quote_plus's "+" is a literal
+    plus in a path and would route to a non-existent key (misleading empty
+    state). The encoded path must round-trip back to the seeded key and render
+    its questions."""
 def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
     """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
     makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
@@ -558,6 +565,27 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
 
+    # Seed a company whose key has a space, with a question to show.
+    db.seed_company_problems(app.state.conn, [{
+        "company": "Goldman Sachs", "company_key": "goldman sachs",
+        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
+        "difficulty": "easy", "frequency": 90.0,
+        "url": "https://leetcode.com/problems/two-sum/",
+    }])
+
+    # The landing card must link to the path-encoded key (%20), not the "+"
+    # form that quote_plus produces and that a URL path treats as a literal.
+    home = client.get("/companies")
+    assert home.status_code == 200
+    assert "/companies/goldman%20sachs" in home.text
+    assert "/companies/goldman+sachs" not in home.text
+
+    # And that encoded path round-trips to the real key and renders the question
+    # (rather than the misleading "No questions yet" empty state).
+    detail = client.get("/companies/goldman%20sachs")
+    assert detail.status_code == 200
+    assert "Two Sum" in detail.text
+    assert "Goldman Sachs" in detail.text
     # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
     resp = client.post(
         "/resume/upload",

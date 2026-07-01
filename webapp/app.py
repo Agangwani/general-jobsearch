@@ -11,7 +11,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -107,6 +107,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["qp"] = quote_plus
+    # `qp`/quote_plus encodes a space as "+", which is correct in a query string
+    # but is a *literal* plus inside a URL path segment — so a key like
+    # "goldman sachs" would build "/companies/goldman+sachs", matching no rows
+    # and showing a misleading empty state. `qpath` is for path segments: it
+    # percent-encodes spaces (and "/") so the link round-trips to the real key.
+    templates.env.filters["qpath"] = lambda s: quote(str(s), safe="")
     templates.env.filters["description_html"] = description_html
     templates.env.filters["prep_markdown"] = prep_markdown
     from jobsearch.utils import normalize_company_name
