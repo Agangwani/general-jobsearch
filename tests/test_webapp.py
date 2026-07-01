@@ -559,36 +559,6 @@ def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
       * default / box checked  → near-miss jobs SHOWN
       * box unchecked (submits near_miss=0) → near-miss jobs HIDDEN
     while a normal (non-near-miss) job stays visible in every case."""
-def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
-    """Regression for UI-QA findings a3273a214cc8 (/clusters/job/{id}) and
-    38e768ed8515 (/jobs/{id}, /jobs/{id}/referrals, /api/apply-status/{id}).
-
-    Every id-typed route takes its id straight from the URL path, where
-    FastAPI's ``int`` accepts an arbitrary-precision integer. An id beyond
-    SQLite's signed 64-bit INTEGER range (>= 2**63) used to overflow the
-    parameterised query and surface as HTTP 500. The routes must instead
-    degrade to their normal not-found behaviour (a 303 redirect, or the empty
-    apply-status payload) — never 500. A valid seeded id still works."""
-def test_company_with_space_in_key_is_reachable(tmp_path):
-    """A company whose key contains a space (e.g. "goldman sachs") must be
-    reachable from the landing page. The link is a URL *path* segment, so the
-    space has to be percent-encoded ("%20") — quote_plus's "+" is a literal
-    plus in a path and would route to a non-existent key (misleading empty
-    state). The encoded path must round-trip back to the seeded key and render
-    its questions."""
-def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
-    """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
-    makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
-    handler's `except ValueError` used to miss, returning HTTP 500. It must
-    instead degrade to the friendly redirect (303 → /resume?error=...) like
-    every other bad upload, and a valid text resume must still succeed."""
-    from urllib.parse import parse_qs, urlsplit
-
-def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
-    """A job with no posting URL must not render dead controls: the "Open
-    posting" link would become href="" (reloads the page) and the apply/re-fill
-    POSTs 404 with no URL. Guard them with {% if job.url %} so URL-less jobs
-    show a muted "no posting link" note instead."""
     from fastapi.testclient import TestClient
     from webapp.app import create_app
 
@@ -634,6 +604,34 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     # The rendered form carries the hidden companion so the browser actually
     # submits near_miss=0 when the box is cleared.
     assert '<input type="hidden" name="near_miss" value="0">' in default.text
+
+
+def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
+    """Regression for UI-QA findings a3273a214cc8 (/clusters/job/{id}) and
+    38e768ed8515 (/jobs/{id}, /jobs/{id}/referrals, /api/apply-status/{id}).
+
+    Every id-typed route takes its id straight from the URL path, where
+    FastAPI's ``int`` accepts an arbitrary-precision integer. An id beyond
+    SQLite's signed 64-bit INTEGER range (>= 2**63) used to overflow the
+    parameterised query and surface as HTTP 500. The routes must instead
+    degrade to their normal not-found behaviour (a 303 redirect, or the empty
+    apply-status payload) — never 500. A valid seeded id still works."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
     db.upsert_job(app.state.conn, record())
     job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
     app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
@@ -657,6 +655,31 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     assert client.get(f"/jobs/{job_id}/referrals", follow_redirects=False).status_code == 200
     assert client.get(f"/api/apply-status/{app_id}").status_code == 200
 
+
+def test_company_with_space_in_key_is_reachable(tmp_path):
+    """A company whose key contains a space (e.g. "goldman sachs") must be
+    reachable from the landing page. The link is a URL *path* segment, so the
+    space has to be percent-encoded ("%20") — quote_plus's "+" is a literal
+    plus in a path and would route to a non-existent key (misleading empty
+    state). The encoded path must round-trip back to the seeded key and render
+    its questions."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
     # Seed a company whose key has a space, with a question to show.
     db.seed_company_problems(app.state.conn, [{
         "company": "Goldman Sachs", "company_key": "goldman sachs",
@@ -678,6 +701,33 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     assert detail.status_code == 200
     assert "Two Sum" in detail.text
     assert "Goldman Sachs" in detail.text
+
+
+def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
+    """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
+    makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
+    handler's `except ValueError` used to miss, returning HTTP 500. It must
+    instead degrade to the friendly redirect (303 → /resume?error=...) like
+    every other bad upload, and a valid text resume must still succeed."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
     # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
     resp = client.post(
         "/resume/upload",
@@ -698,6 +748,29 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     assert ok.status_code == 303
     assert "uploaded=1" in ok.headers["location"]
     assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
+
+
+def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
+    """A job with no posting URL must not render dead controls: the "Open
+    posting" link would become href="" (reloads the page) and the apply/re-fill
+    POSTs 404 with no URL. Guard them with {% if job.url %} so URL-less jobs
+    show a muted "no posting link" note instead."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
     # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
     db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
                                          company="Datadog", url=""))
@@ -721,6 +794,7 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     acme_html = client.get(f"/jobs/{acme_id}").text
     assert "data-apply-btn" in acme_html
     assert 'href="https://acme.com/jobs/1"' in acme_html
+
 
 
 def test_settings_manual_links_have_rel_noopener(tmp_path):
@@ -851,7 +925,6 @@ def test_prep_page_recommends_tracks_for_resume(tmp_path):
     assert html.index('/prep/track/coding"') > divider
 
 
-<<<<<<< uiqa-fix/state-500-stale-id
 def test_state_change_endpoints_tolerate_stale_id(tmp_path):
     """Per-row status/progress toggles carry an id straight from a rendered row.
     If that row was removed (DB reseeded, progress reset, a duplicated tab) the
@@ -937,7 +1010,8 @@ def test_state_change_endpoints_tolerate_stale_id(tmp_path):
                        data={"state": "solved"}, follow_redirects=False).status_code == 303
     assert conn.execute("SELECT state FROM company_problem_progress WHERE company_problem_id = ?",
                         (company_problem_id,)).fetchone()["state"] == "solved"
-=======
+
+
 # ----------------------------------------------------- static / client JS
 def _app_js() -> str:
     return (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.js").read_text()
@@ -971,4 +1045,3 @@ def test_clipboard_has_a_fallback_path():
     only swallow the error, so copy keeps working in non-secure contexts."""
     src = _app_js()
     assert "execCommand" in src, "expected a legacy copy fallback for denied clipboard"
->>>>>>> main
