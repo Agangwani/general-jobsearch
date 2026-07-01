@@ -528,6 +528,16 @@ def test_dashboard_tolerates_malformed_min_fit(tmp_path):
     assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
 
 
+def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
+    """Regression for UI-QA findings a3273a214cc8 (/clusters/job/{id}) and
+    38e768ed8515 (/jobs/{id}, /jobs/{id}/referrals, /api/apply-status/{id}).
+
+    Every id-typed route takes its id straight from the URL path, where
+    FastAPI's ``int`` accepts an arbitrary-precision integer. An id beyond
+    SQLite's signed 64-bit INTEGER range (>= 2**63) used to overflow the
+    parameterised query and surface as HTTP 500. The routes must instead
+    degrade to their normal not-found behaviour (a 303 redirect, or the empty
+    apply-status payload) — never 500. A valid seeded id still works."""
 def test_company_with_space_in_key_is_reachable(tmp_path):
     """A company whose key contains a space (e.g. "goldman sachs") must be
     reachable from the landing page. The link is a URL *path* segment, so the
@@ -564,6 +574,28 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
+    db.upsert_job(app.state.conn, record())
+    job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
+    app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
+
+    big = 2 ** 63  # one past SQLite's signed-64-bit INTEGER max → used to 500
+
+    # HTML id routes: an out-of-range id must redirect (303), not 500.
+    for path in (f"/jobs/{big}", f"/clusters/job/{big}", f"/jobs/{big}/referrals"):
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code != 500, f"{path} should not 500"
+        assert resp.status_code == 303, f"{path} should redirect, got {resp.status_code}"
+
+    # apply-status JSON route: out-of-range id returns its normal empty payload.
+    resp = client.get(f"/api/apply-status/{big}")
+    assert resp.status_code == 200
+    assert resp.json()["application_status"] == "unknown"
+
+    # A valid seeded id still works on every route.
+    assert client.get(f"/jobs/{job_id}", follow_redirects=False).status_code == 200
+    assert client.get(f"/clusters/job/{job_id}", follow_redirects=False).status_code == 200
+    assert client.get(f"/jobs/{job_id}/referrals", follow_redirects=False).status_code == 200
+    assert client.get(f"/api/apply-status/{app_id}").status_code == 200
 
     # Seed a company whose key has a space, with a question to show.
     db.seed_company_problems(app.state.conn, [{
