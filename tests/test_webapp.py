@@ -559,6 +559,53 @@ def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
       * default / box checked  → near-miss jobs SHOWN
       * box unchecked (submits near_miss=0) → near-miss jobs HIDDEN
     while a normal (non-near-miss) job stays visible in every case."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    # A normal job and a near-miss job (non-empty filter_reason). Distinct
+    # titles so we can tell which rows render.
+    db.upsert_job(app.state.conn, record("k-normal", title="Normal Match Engineer"))
+    db.upsert_job(app.state.conn, record("k-near", company="Beta",
+                                         title="Near Miss Engineer",
+                                         filter_reason="UNLEVELED_TITLE"))
+
+    # Default: near-miss shown (handler default near_miss="1").
+    default = client.get("/?run_scope=all")
+    assert default.status_code == 200
+    assert "Normal Match Engineer" in default.text
+    assert "Near Miss Engineer" in default.text
+
+    # Box checked: form submits the hidden "0" then the checkbox "1"; last value
+    # wins → on → still shown.
+    on = client.get("/?run_scope=all&near_miss=0&near_miss=1")
+    assert on.status_code == 200
+    assert "Near Miss Engineer" in on.text
+
+    # Box UNCHECKED: form submits only the hidden "0" → off → near-miss hidden,
+    # but the normal job is unaffected.
+    off = client.get("/?run_scope=all&near_miss=0")
+    assert off.status_code == 200
+    assert "Normal Match Engineer" in off.text
+    assert "Near Miss Engineer" not in off.text
+
+    # The rendered form carries the hidden companion so the browser actually
+    # submits near_miss=0 when the box is cleared.
+    assert '<input type="hidden" name="near_miss" value="0">' in default.text
+
+
 def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
     """Regression for UI-QA findings 5d6cf6e7d60c (/jobs/{id}), 1af76daa1b19
     (/jobs/{id}/referrals), 52c396e7e011 / 9e0f80f360e0 (/clusters/job/{id}) and
@@ -612,6 +659,44 @@ def test_company_with_space_in_key_is_reachable(tmp_path):
     plus in a path and would route to a non-existent key (misleading empty
     state). The encoded path must round-trip back to the seeded key and render
     its questions."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: x\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies: []\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    # Seed a company whose key has a space, with a question to show.
+    db.seed_company_problems(app.state.conn, [{
+        "company": "Goldman Sachs", "company_key": "goldman sachs",
+        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
+        "difficulty": "easy", "frequency": 90.0,
+        "url": "https://leetcode.com/problems/two-sum/",
+    }])
+
+    # The landing card must link to the path-encoded key (%20), not the "+"
+    # form that quote_plus produces and that a URL path treats as a literal.
+    home = client.get("/companies")
+    assert home.status_code == 200
+    assert "/companies/goldman%20sachs" in home.text
+    assert "/companies/goldman+sachs" not in home.text
+
+    # And that encoded path round-trips to the real key and renders the question
+    # (rather than the misleading "No questions yet" empty state).
+    detail = client.get("/companies/goldman%20sachs")
+    assert detail.status_code == 200
+    assert "Two Sum" in detail.text
+    assert "Goldman Sachs" in detail.text
+
+
 def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
     """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
     makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
@@ -619,6 +704,44 @@ def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
     instead degrade to the friendly redirect (303 → /resume?error=...) like
     every other bad upload, and a valid text resume must still succeed."""
     from urllib.parse import parse_qs, urlsplit
+
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: x\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies: []\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
+    # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
+    resp = client.post(
+        "/resume/upload",
+        files={"file": ("malformed.pdf", b"%PDF-1.4 broken", "application/pdf")},
+        follow_redirects=False)
+    assert resp.status_code == 303, f"expected friendly 303, got {resp.status_code}"
+    q = parse_qs(urlsplit(resp.headers["location"]).query)
+    assert "error" in q and q["error"][0]  # carried a user-facing message, not a 500
+
+    # A valid plain-text resume still uploads cleanly (redirects with uploaded=1).
+    ok = client.post(
+        "/resume/upload",
+        files={"file": ("resume.txt",
+                        b"Jane Engineer\nSenior Software Engineer\n\nEXPERIENCE\n"
+                        b"Built distributed backend systems at scale for many years.\n",
+                        "text/plain")},
+        follow_redirects=False)
+    assert ok.status_code == 303
+    assert "uploaded=1" in ok.headers["location"]
+    assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
+
 
 def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     """A job with no posting URL must not render dead controls: the "Open
@@ -641,99 +764,7 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
-    # A normal job and a near-miss job (non-empty filter_reason). Distinct
-    # titles so we can tell which rows render.
-    db.upsert_job(app.state.conn, record("k-normal", title="Normal Match Engineer"))
-    db.upsert_job(app.state.conn, record("k-near", company="Beta",
-                                         title="Near Miss Engineer",
-                                         filter_reason="UNLEVELED_TITLE"))
 
-    # Default: near-miss shown (handler default near_miss="1").
-    default = client.get("/?run_scope=all")
-    assert default.status_code == 200
-    assert "Normal Match Engineer" in default.text
-    assert "Near Miss Engineer" in default.text
-
-    # Box checked: form submits the hidden "0" then the checkbox "1"; last value
-    # wins → on → still shown.
-    on = client.get("/?run_scope=all&near_miss=0&near_miss=1")
-    assert on.status_code == 200
-    assert "Near Miss Engineer" in on.text
-
-    # Box UNCHECKED: form submits only the hidden "0" → off → near-miss hidden,
-    # but the normal job is unaffected. This is the bug fix (was impossible).
-    off = client.get("/?run_scope=all&near_miss=0")
-    assert off.status_code == 200
-    assert "Normal Match Engineer" in off.text
-    assert "Near Miss Engineer" not in off.text
-
-    # The rendered form carries the hidden companion so the browser actually
-    # submits near_miss=0 when the box is cleared.
-    assert '<input type="hidden" name="near_miss" value="0">' in default.text
-    db.upsert_job(app.state.conn, record())
-    job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
-    app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
-
-    big = 2 ** 63  # one past SQLite's signed-64-bit INTEGER max → used to 500
-
-    # HTML id routes: an out-of-range id must redirect (303), not 500.
-    for path in (f"/jobs/{big}", f"/clusters/job/{big}", f"/jobs/{big}/referrals"):
-        resp = client.get(path, follow_redirects=False)
-        assert resp.status_code != 500, f"{path} should not 500"
-        assert resp.status_code == 303, f"{path} should redirect, got {resp.status_code}"
-
-    # apply-status JSON route: out-of-range id returns its normal empty payload.
-    resp = client.get(f"/api/apply-status/{big}")
-    assert resp.status_code == 200
-    assert resp.json()["application_status"] == "unknown"
-
-    # A valid seeded id still works on every route.
-    assert client.get(f"/jobs/{job_id}", follow_redirects=False).status_code == 200
-    assert client.get(f"/clusters/job/{job_id}", follow_redirects=False).status_code == 200
-    assert client.get(f"/jobs/{job_id}/referrals", follow_redirects=False).status_code == 200
-    assert client.get(f"/api/apply-status/{app_id}").status_code == 200
-
-    # Seed a company whose key has a space, with a question to show.
-    db.seed_company_problems(app.state.conn, [{
-        "company": "Goldman Sachs", "company_key": "goldman sachs",
-        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
-        "difficulty": "easy", "frequency": 90.0,
-        "url": "https://leetcode.com/problems/two-sum/",
-    }])
-
-    # The landing card must link to the path-encoded key (%20), not the "+"
-    # form that quote_plus produces and that a URL path treats as a literal.
-    home = client.get("/companies")
-    assert home.status_code == 200
-    assert "/companies/goldman%20sachs" in home.text
-    assert "/companies/goldman+sachs" not in home.text
-
-    # And that encoded path round-trips to the real key and renders the question
-    # (rather than the misleading "No questions yet" empty state).
-    detail = client.get("/companies/goldman%20sachs")
-    assert detail.status_code == 200
-    assert "Two Sum" in detail.text
-    assert "Goldman Sachs" in detail.text
-    # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
-    resp = client.post(
-        "/resume/upload",
-        files={"file": ("malformed.pdf", b"%PDF-1.4 broken", "application/pdf")},
-        follow_redirects=False)
-    assert resp.status_code == 303, f"expected friendly 303, got {resp.status_code}"
-    q = parse_qs(urlsplit(resp.headers["location"]).query)
-    assert "error" in q and q["error"][0]  # carried a user-facing message, not a 500
-
-    # A valid plain-text resume still uploads cleanly (redirects with uploaded=1).
-    ok = client.post(
-        "/resume/upload",
-        files={"file": ("resume.txt",
-                        b"Jane Engineer\nSenior Software Engineer\n\nEXPERIENCE\n"
-                        b"Built distributed backend systems at scale for many years.\n",
-                        "text/plain")},
-        follow_redirects=False)
-    assert ok.status_code == 303
-    assert "uploaded=1" in ok.headers["location"]
-    assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
     # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
     db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
                                          company="Datadog", url=""))
