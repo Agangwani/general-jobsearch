@@ -72,11 +72,15 @@ def test_login_sets_session_and_first_user_is_owner(hosted, tmp_path, monkeypatc
     assert rows[0]["is_admin"] == 1  # first account becomes the owner/admin
 
 
-def test_signups_close_after_the_owner_exists(hosted, monkeypatch):
+def test_signups_open_by_default_and_closable(hosted, monkeypatch):
+    # Per-user data is isolated (Stage 2b), so signups are open by default.
     assert 'name="email"' in hosted.get("/signup").text  # open before any account
     _stub_login(monkeypatch)
     hosted.post("/login", data={"email": "o@e.com", "password": "pw"})
-    assert "closed" in hosted.get("/signup").text.lower()  # closed after owner
+    assert 'name="email"' in hosted.get("/signup").text  # still open after the owner
+    # A private instance closes them to everyone but the (already-existing) owner.
+    monkeypatch.setenv("JOBSEARCH_ALLOW_SIGNUPS", "0")
+    assert "closed" in hosted.get("/signup").text.lower()
 
 
 def test_signup_requiring_confirmation_shows_message(hosted, monkeypatch):

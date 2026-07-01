@@ -11,9 +11,9 @@ through a direct connection (not PostgREST), so it never needs the user's JWT
 after login — which keeps this layer small: no JWT verification, no refresh
 dance, just "Supabase checked the password, here's who they are."
 
-Until per-user data isolation lands (Stage 2b) every account would share one
-dataset, so signups are gated to the first account — the owner. Hosting is then
-a private login wall, not yet an open multi-user product.
+Per-user data is isolated (Stage 2b), so signups are open by default — anyone
+can sign up, upload a résumé, and get their own matches. Set
+``JOBSEARCH_ALLOW_SIGNUPS=0`` to run a private, owner-only instance instead.
 """
 
 from __future__ import annotations
@@ -53,13 +53,17 @@ def is_open_path(path: str) -> bool:
 
 
 def signups_open(conn) -> bool:
-    """Whether new signups are accepted. The first (owner) account is always
-    allowed; after that signups are closed until per-user isolation (Stage 2b),
-    unless explicitly opened with JOBSEARCH_ALLOW_SIGNUPS=1."""
-    if os.environ.get("JOBSEARCH_ALLOW_SIGNUPS") == "1":
-        return True
-    from . import db
-    return db.count_app_users(conn) == 0
+    """Whether new signups are accepted.
+
+    Per-user data is now isolated (Stage 2b: profile, prep/company progress,
+    applications, fit, résumé all scoped by user), so signups are **open by
+    default** — anyone can sign up, upload a résumé, and get their own matches.
+    Set ``JOBSEARCH_ALLOW_SIGNUPS=0`` to run a private instance: signups then
+    close to everyone but the first (owner) account."""
+    if os.environ.get("JOBSEARCH_ALLOW_SIGNUPS") == "0":
+        from . import db
+        return db.count_app_users(conn) == 0
+    return True
 
 
 def session_user(request):

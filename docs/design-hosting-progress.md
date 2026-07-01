@@ -26,9 +26,10 @@ plan; the app host and the code changes are the rest.
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
 | **2a. Auth (login wall)** | Supabase Auth, signed sessions, `app_users`, owner-gated signups | ✅ **Done, tested** |
-| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile, prep/company progress, applications** done; per-user fit next |
-| **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
-| **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
+| **2b. Per-user isolation** | `user_id` scoping (profile, progress, applications, fit, résumé) | ✅ **Done, tested** |
+| **2c. Open signups** | Drop the owner gate now that all per-user data is isolated | ✅ **Done** — open by default; `JOBSEARCH_ALLOW_SIGNUPS=0` for a private instance |
+| **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); ready to go live |
+| **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | 🟦 Partial — `rescore-users` step wired behind `JOBSEARCH_DATABASE_URL`; full report→DB repoint remains |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
 
 ## Stage 1 — Postgres backend + schema (DONE)
