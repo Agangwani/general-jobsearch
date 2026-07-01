@@ -528,6 +528,14 @@ def test_dashboard_tolerates_malformed_min_fit(tmp_path):
     assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
 
 
+def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
+    """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
+    makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
+    handler's `except ValueError` used to miss, returning HTTP 500. It must
+    instead degrade to the friendly redirect (303 → /resume?error=...) like
+    every other bad upload, and a valid text resume must still succeed."""
+    from urllib.parse import parse_qs, urlsplit
+
 def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     """A job with no posting URL must not render dead controls: the "Open
     posting" link would become href="" (reloads the page) and the apply/re-fill
@@ -549,6 +557,27 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
+
+    # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
+    resp = client.post(
+        "/resume/upload",
+        files={"file": ("malformed.pdf", b"%PDF-1.4 broken", "application/pdf")},
+        follow_redirects=False)
+    assert resp.status_code == 303, f"expected friendly 303, got {resp.status_code}"
+    q = parse_qs(urlsplit(resp.headers["location"]).query)
+    assert "error" in q and q["error"][0]  # carried a user-facing message, not a 500
+
+    # A valid plain-text resume still uploads cleanly (redirects with uploaded=1).
+    ok = client.post(
+        "/resume/upload",
+        files={"file": ("resume.txt",
+                        b"Jane Engineer\nSenior Software Engineer\n\nEXPERIENCE\n"
+                        b"Built distributed backend systems at scale for many years.\n",
+                        "text/plain")},
+        follow_redirects=False)
+    assert ok.status_code == 303
+    assert "uploaded=1" in ok.headers["location"]
+    assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
     # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
     db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
                                          company="Datadog", url=""))
