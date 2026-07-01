@@ -1,0 +1,68 @@
+{
+  "_README": "Hand-edit this file to change what the portfolio shows. The 'activity' (latest commits / last-updated) is generated automatically every day by portfolio/update.py into data/activity.json — you do not edit that one. Match a project to its live activity with the 'repo' field ('owner/name').",
+
+  "profile": {
+    "name": "Agangwani",
+    "_name_note": "Replace with your full display name if you'd like (e.g. 'Aakash Gangwani').",
+    "tagline": "I build practical, end-to-end tools — from ML-powered job search to interactive music education.",
+    "location": "New York, NY",
+    "links": {
+      "github": "https://github.com/Agangwani",
+      "email": "gangwanifamily7@gmail.com",
+      "_email_note": "Remove this line if you'd rather not publish an email on a public page.",
+      "linkedin": ""
+    }
+  },
+
+  "resume": {
+    "enabled": true,
+    "file": "resume.pdf",
+    "_file_note": "Drop your resume as portfolio/resume.pdf in this repo and the Download button goes live automatically. If the file is missing the button shows a 'coming soon' state instead.",
+    "blurb": "A snapshot of my background, skills, and the work behind the projects below."
+  },
+
+  "projects": [
+    {
+      "id": "muselearn",
+      "name": "MuseLearn",
+      "emoji": "🎧",
+      "repo": "Agangwani/muselearn",
+      "live": "https://agangwani.github.io/muselearn/",
+      "_live_note": "Goes live after the muselearn Pages workflow runs and Pages is enabled (see the muselearn PR).",
+      "blurb": "A free, interactive platform that takes a complete beginner from “I’ve never opened a DAW” all the way to confidently producing, mixing, and mastering their own music. 34 guided lessons across Foundations, Production, Mixing, and Mastering — plus 8 hands-on audio demos synthesized live in the browser. Self-contained static site: no build, no accounts, progress saved locally.",
+      "highlights": [
+        "34 lessons taught in the order a real track is made",
+        "8 live Web Audio demos — 4-band EQ, compressor visualizer, 16-step beat maker, and more",
+        "Built-in quizzes, a 60+ term glossary, and local progress tracking"
+      ],
+      "tags": ["JavaScript", "Web Audio API", "Static Site", "Education"]
+    },
+    {
+      "id": "jobsearch",
+      "name": "Job Search",
+      "emoji": "🎯",
+      "repo": "Agangwani/general-jobsearch",
+      "live": "",
+      "blurb": "A resume-driven job finder and application tracker. Point it at your resume and it pulls postings directly from ~60 company job boards — no aggregators — then ranks every posting against your resume with TF-IDF + K-means fit scoring and recency weighting. Ships a local web UI to track applications, auto-fill forms from your profile, sync confirmation emails, study a multi-discipline interview-prep curriculum, and see exactly why each job scored what it did.",
+      "highlights": [
+        "Direct-from-source fetching across Greenhouse, Lever, Ashby, Workday + headless-Chromium scraping for boards with no API",
+        "TF-IDF + K-means “Fit map” that explains the score behind every match",
+        "Application tracker with profile auto-fill, email sync, and a parallel startup-only pipeline mined from the YC directory"
+      ],
+      "tags": ["Python", "scikit-learn", "Playwright", "Flask", "Supabase"]
+    },
+    {
+      "id": "marketing",
+      "name": "Marketing",
+      "emoji": "📣",
+      "repo": "",
+      "_repo_note": "Set this to 'Agangwani/<your-marketing-repo>' to wire the card link AND pull its daily activity. Until then the link falls back to the 'url' below.",
+      "url": "https://github.com/Agangwani?tab=repositories",
+      "live": "",
+      "blurb": "Marketing project — add a one-line description here. Set the “repo” field above to your marketing repository and this card will link straight to it and auto-update with its latest commits, just like the others.",
+      "highlights": [],
+      "tags": ["Marketing"],
+      "placeholder": true
+    }
+  ]
+}

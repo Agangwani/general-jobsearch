@@ -11,7 +11,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -107,6 +107,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["qp"] = quote_plus
+    # `qp`/quote_plus encodes a space as "+", which is correct in a query string
+    # but is a *literal* plus inside a URL path segment — so a key like
+    # "goldman sachs" would build "/companies/goldman+sachs", matching no rows
+    # and showing a misleading empty state. `qpath` is for path segments: it
+    # percent-encodes spaces (and "/") so the link round-trips to the real key.
+    templates.env.filters["qpath"] = lambda s: quote(str(s), safe="")
     templates.env.filters["description_html"] = description_html
     templates.env.filters["prep_markdown"] = prep_markdown
     from jobsearch.utils import normalize_company_name
@@ -606,8 +612,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.get("/api/apply-status/{application_id}")
     def apply_status(application_id: int):
         status = sessions.status(application_id)  # includes the fill summary
+        # FastAPI accepts an arbitrary-precision int from the path, but an id
+        # outside SQLite's signed 64-bit INTEGER range overflows the query
+        # rather than just missing — treat it as an unknown (not-found) id.
+        in_range = -(2 ** 63) <= application_id < 2 ** 63
         row = conn.execute("SELECT status FROM applications WHERE id = ?",
-                           (application_id,)).fetchone()
+                           (application_id,)).fetchone() if in_range else None
         status["application_status"] = row["status"] if row else "unknown"
         return JSONResponse(status)
 
@@ -848,8 +858,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                  FROM email_messages m LEFT JOIN jobs j ON j.id = m.job_id"""
         args: list = []
         if q:
-            sql += " WHERE m.subject LIKE ? OR m.from_addr LIKE ? OR m.body LIKE ?"
-            args = [f"%{q}%"] * 3
+            # Escape LIKE wildcards so a typed '%'/'_' matches literally rather
+            # than "anything" (see db.like_term).
+            sql += (" WHERE (m.subject LIKE ? ESCAPE '\\' OR m.from_addr LIKE ? ESCAPE '\\' "
+                    "OR m.body LIKE ? ESCAPE '\\')")
+            args = [db.like_term(q)] * 3
         sql += " ORDER BY m.sent_at DESC LIMIT 200"
         messages = conn.execute(sql, args).fetchall()
         return render(request, "emails.html", connected=connected, messages=messages,

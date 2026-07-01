@@ -37,13 +37,20 @@ _WORD = re.compile(r"[a-zA-Z][a-zA-Z+#.]{1,}")
 
 def pdf_to_text(data: bytes) -> str:
     """Extract plain text from PDF bytes. Raises ValueError when the PDF
-    yields no extractable text (scanned image, encrypted)."""
+    yields no extractable text (scanned image, encrypted) or cannot be parsed
+    (a truncated/corrupt file with a valid %PDF header but an unreadable body —
+    pypdf raises PdfStreamError/PdfReadError, neither a ValueError, so we
+    translate them here so callers get one friendly error to handle)."""
     import io
 
     from pypdf import PdfReader
+    from pypdf.errors import PyPdfError
 
-    reader = PdfReader(io.BytesIO(data))
-    pages = [page.extract_text() or "" for page in reader.pages]
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except PyPdfError as exc:
+        raise ValueError("that file isn't a valid PDF") from exc
     text = "\n".join(pages).strip()
     if len(text) < 100:
         raise ValueError(
