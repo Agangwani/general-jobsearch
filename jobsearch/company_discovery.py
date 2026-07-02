@@ -509,6 +509,23 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
         query = settings.get("search", {}).get("query", "software engineer")
         categories = discovery.get("categories") or infer_categories(
             extract_keywords(resume_text), query)
+    # ats_boards seed = the curated config list + any boards Common Crawl
+    # discovered (data/ats_boards.discovered.yaml, via `discover-ats-boards`),
+    # deduped (config wins) and capped so a large crawl doesn't fan out into
+    # thousands of board fetches per run.
+    from .sources.commoncrawl import DISCOVERED_FILE, load_discovered_boards
+    ats_seed = [b for b in (discovery.get("ats_boards") or [])
+                if isinstance(b, dict) and b.get("ats") and b.get("token")]
+    seen_boards = {(b["ats"], str(b["token"]).lower()) for b in ats_seed}
+    for board in load_discovered_boards(root / DISCOVERED_FILE):
+        key = (board["ats"], str(board["token"]).lower())
+        if key not in seen_boards:
+            seen_boards.add(key)
+            ats_seed.append(board)
+    ats_max = int(discovery.get("ats_boards_max", 150) or 0)
+    if ats_max > 0:
+        ats_seed = ats_seed[:ats_max]
+
     ctx = {
         "query": query,
         "location": track.location,
@@ -516,8 +533,7 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
         "categories": categories,
         "max_pages": int(discovery.get("max_pages", 8)),
         "ycombinator": discovery.get("ycombinator", {}) or {},
-        # Seed ATS boards for the ats_boards source (empty → the source no-ops).
-        "ats_boards": discovery.get("ats_boards") or [],
+        "ats_boards": ats_seed,   # curated seed + Common Crawl discovered, capped
     }
     universe = "startup companies" if track.is_startup else "companies"
     default_sources = (["ycombinator", "hn_hiring", "themuse"]

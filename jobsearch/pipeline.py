@@ -309,6 +309,8 @@ def run(root: Path, track_name: str = "main") -> int:
         corpus=all_jobs,
         cluster_weight=ranking.get("cluster_weight", 0.05),
         decluster_company_signatures=ranking.get("decluster_company_signatures", True),
+        match_backend=ranking.get("match_backend", "tfidf"),
+        embedding_model=ranking.get("embedding_model"),
         return_topics=True,
         return_explanation=True,
     )

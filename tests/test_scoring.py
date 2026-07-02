@@ -146,6 +146,12 @@ def test_decluster_zeroes_company_signature_but_keeps_cross_company_skills(monke
     assert stripped[:6, sig].nnz == 0     # Acme's signature term zeroed on its rows
     assert stripped[:6, skill].nnz == 6   # the cross-company skill term survives
 
+    # Résumé guard: a signature term the résumé itself uses is a real skill, not
+    # boilerplate, and must be protected even though it's company-concentrated.
+    resume_vec = normalize(vec.transform(["acmesignature is my core skill"])).toarray().ravel()
+    guarded = scoring._decluster_company_signatures(X, jobs, resume_vec)
+    assert guarded[:6, sig].nnz == 6      # protected because the résumé uses it
+
 
 def test_boilerplate_changes_scores():
     """Shared marketing text matching the resume must not lift a whole company."""
@@ -164,3 +170,53 @@ def test_boilerplate_changes_scores():
     hype = max(j.fit_score for j in jobs if j.company == "Hype")
     real = max(j.fit_score for j in jobs if j.company == "Real")
     assert real > hype
+
+
+# ---------------------------------------- opt-in embedding backend (Stage 4B) ---
+def test_embedding_backend_falls_back_to_tfidf_when_unavailable(monkeypatch):
+    """match_backend='embedding' with embeddings unavailable must produce the
+    same scores as the default TF-IDF path — never crash or zero out."""
+    import jobsearch.embeddings as emb
+    monkeypatch.setattr(emb, "resume_job_cosine", lambda *a, **k: None)  # unavailable
+    tfidf = score_jobs(RESUME, make_jobs(), clusters=2)
+    tfidf_scores = [j.fit_score for j in tfidf]
+    fallback = score_jobs(RESUME, make_jobs(), clusters=2, match_backend="embedding")
+    assert [j.fit_score for j in fallback] == tfidf_scores
+
+
+def test_embedding_backend_uses_embedding_cosine(monkeypatch):
+    """When embeddings are available, the direct similarity term comes from the
+    embedding cosine: a job the (faked) model rates highest scores highest."""
+    import numpy as np
+
+    import jobsearch.embeddings as emb
+    jobs = make_jobs()
+
+    def fake_cosine(resume_text, job_texts, model_name):
+        # Rate the last job as the strongest match, everything else weak.
+        vals = [0.1] * len(job_texts)
+        vals[-1] = 0.99
+        return np.array(vals, dtype=float)
+
+    monkeypatch.setattr(emb, "resume_job_cosine", fake_cosine)
+    scored = score_jobs(RESUME, jobs, clusters=2, match_backend="embedding")
+    assert scored[-1].fit_score == max(j.fit_score for j in scored)   # embedding-driven
+
+
+def test_embed_texts_none_without_dependency(monkeypatch):
+    """embed_texts returns None (not a crash) when sentence-transformers is
+    absent — the signal scoring uses to fall back."""
+    import builtins
+
+    import jobsearch.embeddings as emb
+    emb._MODEL_CACHE.clear()
+    real_import = builtins.__import__
+
+    def no_st(name, *a, **k):
+        if name.startswith("sentence_transformers"):
+            raise ImportError("not installed")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_st)
+    assert emb.embed_texts(["hello"], model_name="test-model") is None
+    emb._MODEL_CACHE.clear()

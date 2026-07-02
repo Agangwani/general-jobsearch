@@ -60,6 +60,15 @@ search:
   promote_unleveled: true
 
 ranking:
+  # Matching backend for the direct resume↔posting similarity (the dominant fit
+  # term). "tfidf" (default) is the tuned bag-of-words cosine. "embedding" swaps
+  # in a sentence-transformer cosine over the same cleaned posting text (opt-in;
+  # requires `pip install sentence-transformers`, falls back to tfidf if absent).
+  # Clustering stays on TF-IDF either way. Kept off by default: off-the-shelf
+  # embeddings aren't automatically better for resume↔posting matching (see the
+  # deep-research briefing) — validate before making it the default.
+  match_backend: tfidf
+  embedding_model: all-MiniLM-L6-v2
   # Final ordering = fit_score * 0.5 ** (age_days / half_life_days), so a
   # posting loses half its weight every `half_life_days` — this is what
   # "prioritize recently added" means concretely.
@@ -101,7 +110,7 @@ discovery:
   # Lead sources (jobsearch/sources/). themuse and hn_hiring are keyless;
   # adzuna needs ADZUNA_APP_ID / ADZUNA_APP_KEY (free at developer.adzuna.com)
   # and is skipped cleanly without them.
-  sources: [themuse, hn_hiring, adzuna, ats_boards]
+  sources: [themuse, hn_hiring, adzuna, ats_boards, remotive]
   # Seed ATS boards for the `ats_boards` source: companies whose public
   # Greenhouse/Lever/Ashby board you want mined for fresh openings each run.
   # Unlike companies.yaml (always fetched), these are a resume-RANKED candidate
@@ -112,6 +121,11 @@ discovery:
   #     - {ats: lever, token: ramp}
   #     - {ats: ashby, token: linear}
   ats_boards: []
+  # Cap on how many ATS boards the ats_boards source fetches per run (the curated
+  # seed above plus any Common Crawl-discovered boards in
+  # data/ats_boards.discovered.yaml, written by `discover-ats-boards`). Keeps a
+  # large crawl from fanning out into thousands of board fetches. 0 = no cap.
+  ats_boards_max: 150
   # Canonical location string sent to aggregator APIs (Muse `location`,
   # Adzuna `where`). Postings are still filtered against search.locations.
   location: New York, NY
@@ -159,7 +173,7 @@ startups:
   # directory — keyless, the canonical "all startups" list) is startup-specific;
   # hn_hiring and themuse add startups posting right now. adzuna also works if
   # you have a key, but it isn't startup-aware so it's off by default.
-  sources: [ycombinator, hn_hiring, themuse]
+  sources: [ycombinator, hn_hiring, themuse, remotive]
   # How many startups one discovery run may add to the startup registry. The
   # startup universe is large, so this is higher than the main default. Raised
   # to widen the pool so more (typically smaller) startups clear the ranking

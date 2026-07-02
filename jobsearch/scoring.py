@@ -115,13 +115,18 @@ def _doc(job: JobPosting, descriptions: dict[str, str], name_res: dict[str, re.P
 # A term in at least this share of ONE company's postings but in less than
 # COMPANY_SIGNATURE_GLOBAL_DF of the whole corpus identifies that company (its
 # product names, mission phrasing, benefits/interview templates) rather than a
-# transferable skill — see _decluster_company_signatures.
-COMPANY_SIGNATURE_IN_DF = 0.6
-COMPANY_SIGNATURE_GLOBAL_DF = 0.05
+# transferable skill — see _decluster_company_signatures. Tuned loose enough to
+# catch stubborn per-company boilerplate (ESPP "purchase plan", "covey", "remote
+# eligible") that a tighter gate left forming its own single-company clusters;
+# over-stripping a non-résumé skill term is provably harmless (it has zero
+# cluster-affinity weight and the direct cosine is untouched), and résumé terms
+# are protected outright.
+COMPANY_SIGNATURE_IN_DF = 0.5
+COMPANY_SIGNATURE_GLOBAL_DF = 0.08
 COMPANY_SIGNATURE_MIN_POSTINGS = 5
 
 
-def _decluster_company_signatures(X, corpus: list[JobPosting]):
+def _decluster_company_signatures(X, corpus: list[JobPosting], resume_vec=None):
     """Return a copy of the TF-IDF matrix with each company's *signature* terms
     zeroed on that company's own rows, then re-normalized — used for CLUSTERING
     ONLY. Left in, these terms make K-means recover company authorship: several
@@ -129,12 +134,18 @@ def _decluster_company_signatures(X, corpus: list[JobPosting]):
     affinity then reflects the company's average posting, demoting genuinely
     strong roles there (docs/analysis-scoring-skew.md). The direct resume cosine
     is computed from the untouched matrix, so this changes only which cluster a
-    posting lands in, never its (dominant) similarity term."""
+    posting lands in, never its (dominant) similarity term.
+
+    A term the resume itself uses is protected: it's a relevant skill signal, not
+    company boilerplate, even when one company happens to concentrate it (e.g.
+    'fraud' at a fraud-detection company). Without this, K-means could stop
+    grouping such roles by that skill."""
     from scipy.sparse import csr_matrix
 
     n = X.shape[0]
     present = X > 0
     global_df = np.asarray(present.sum(axis=0)).ravel() / n
+    resume_terms = resume_vec > 0 if resume_vec is not None else np.zeros(X.shape[1], dtype=bool)
     rows_by_company: dict[str, list[int]] = defaultdict(list)
     for i, job in enumerate(corpus):
         rows_by_company[job.company].append(i)
@@ -146,7 +157,8 @@ def _decluster_company_signatures(X, corpus: list[JobPosting]):
             continue
         in_df = np.asarray(present[rows].sum(axis=0)).ravel() / len(rows)
         signature = np.where((in_df >= COMPANY_SIGNATURE_IN_DF) &
-                             (global_df < COMPANY_SIGNATURE_GLOBAL_DF))[0]
+                             (global_df < COMPANY_SIGNATURE_GLOBAL_DF) &
+                             ~resume_terms)[0]
         if not len(signature):
             continue
         for r in rows:
@@ -352,6 +364,8 @@ def score_jobs(
     decluster_company_signatures: bool = True,
     return_topics: bool = False,
     return_explanation: bool = False,
+    match_backend: str = "tfidf",
+    embedding_model: str | None = None,
 ):
     """Assign fit_score (0-100) and cluster labels to every job in `jobs`,
     in place.
@@ -394,7 +408,7 @@ def score_jobs(
     # Cluster on a company-de-signatured copy so K-means groups by transferable
     # skill vocabulary, not company authorship; keep the untouched X_corpus for
     # the direct resume cosine (the dominant fit term).
-    X_cluster = (_decluster_company_signatures(X_corpus, corpus)
+    X_cluster = (_decluster_company_signatures(X_corpus, corpus, resume_vec)
                  if decluster_company_signatures else X_corpus)
 
     n_clusters = pick_cluster_count(len(corpus), clusters)
@@ -425,6 +439,17 @@ def score_jobs(
 
     cosine_weight = 1.0 - cluster_weight
     cosine = np.asarray(X_jobs @ resume_vec).ravel()
+    # Opt-in: replace the dominant direct-similarity term with a semantic
+    # embedding cosine over the SAME cleaned posting text (title+description,
+    # location excluded), keeping clustering on TF-IDF. Falls back silently to
+    # the TF-IDF cosine above if sentence-transformers / the model is absent.
+    if match_backend == "embedding":
+        from .embeddings import DEFAULT_MODEL, resume_job_cosine
+        job_texts = [_doc(j, descriptions, name_res) for j in jobs]
+        emb_cosine = resume_job_cosine(resume_text, job_texts,
+                                       embedding_model or DEFAULT_MODEL)
+        if emb_cosine is not None and len(emb_cosine) == len(jobs):
+            cosine = emb_cosine
     raw = cosine_weight * cosine + cluster_weight * cluster_affinity[labels]
 
     top = float(raw.max())
