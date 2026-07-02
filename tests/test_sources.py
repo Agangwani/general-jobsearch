@@ -135,3 +135,71 @@ def test_pick_hiring_thread_skips_sibling_bot_threads():
     }
     assert pick_hiring_thread(payload) == 222
     assert pick_hiring_thread({"hits": []}) is None
+
+
+# --------------------------------------------------------------- ATS boards ---
+from jobsearch.sources.ats_boards import (  # noqa: E402
+    fetch as ats_fetch, parse_ashby, parse_greenhouse, parse_lever,
+)
+
+
+def test_ats_greenhouse_parse_filters_location_and_builds_evidence():
+    payload = {"jobs": [
+        {"title": "Senior Backend Engineer", "absolute_url": "https://gh/acme/1",
+         "location": {"name": "New York, NY"},
+         "content": "<p>Build <b>distributed</b> systems.</p>"},
+        {"title": "Barista", "absolute_url": "https://gh/acme/2",
+         "location": {"name": "Austin, TX"}, "content": "Coffee."},
+    ]}
+    leads = parse_greenhouse(payload, "Acme", "acme", NYC)
+    assert [l.name for l in leads] == ["Acme"]               # Austin filtered out
+    lead = leads[0]
+    assert lead.sources == ["ats_boards"]
+    assert lead.titles == ["Senior Backend Engineer"]
+    assert lead.snippets == ["Build distributed systems."]   # HTML stripped
+    assert "https://job-boards.greenhouse.io/acme" in lead.urls   # board url → free resolve
+
+
+def test_ats_lever_parse_list_payload():
+    payload = [
+        {"text": "Staff Engineer", "hostedUrl": "https://jobs.lever.co/ramp/1",
+         "categories": {"location": "New York"}, "descriptionPlain": "Payments infra."},
+        {"text": "Remote SRE", "categories": {"location": "Remote - US"},
+         "descriptionPlain": "On-call."},
+    ]
+    leads = parse_lever(payload, "Ramp", "ramp", NYC)
+    assert [l.titles[0] for l in leads] == ["Staff Engineer"]   # only NYC kept
+    assert "https://jobs.lever.co/ramp" in leads[0].urls
+
+
+def test_ats_ashby_prefers_payload_org_name():
+    payload = {"name": "Linear", "jobs": [
+        {"title": "Product Engineer", "location": "New York, NY",
+         "jobUrl": "https://jobs.ashbyhq.com/linear/1",
+         "descriptionPlain": "Ship product."}]}
+    leads = parse_ashby(payload, "seed-name", "linear", NYC)
+    assert leads[0].name == "Linear"                          # payload name wins over seed
+
+
+def test_ats_no_location_filter_keeps_all():
+    payload = {"jobs": [{"title": "Anything", "location": {"name": "Nowhere"},
+                         "content": "x", "absolute_url": ""}]}
+    assert len(parse_greenhouse(payload, "Acme", "acme", [])) == 1
+
+
+def test_ats_fetch_skips_dead_boards_and_unknown_ats(monkeypatch):
+    import jobsearch.sources.ats_boards as mod
+    def fake_get_json(session, url):
+        if "ramp" in url:
+            raise RuntimeError("502")                          # dead board
+        return {"jobs": [{"title": "Eng", "location": {"name": "New York"},
+                          "content": "x", "absolute_url": ""}]}
+    monkeypatch.setattr(mod, "get_json", fake_get_json)
+    ctx = {"location_subs": NYC, "ats_boards": [
+        {"ats": "greenhouse", "token": "acme", "name": "Acme"},
+        {"ats": "lever", "token": "ramp"},                    # errors → skipped
+        {"ats": "workday", "token": "x"},                     # unknown ats → skipped
+        {"ats": "greenhouse"},                                # no token → skipped
+    ]}
+    leads = ats_fetch(None, ctx)
+    assert [l.name for l in leads] == ["Acme"]                # only the healthy board

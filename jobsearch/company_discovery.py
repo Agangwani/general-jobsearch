@@ -516,6 +516,8 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
         "categories": categories,
         "max_pages": int(discovery.get("max_pages", 8)),
         "ycombinator": discovery.get("ycombinator", {}) or {},
+        # Seed ATS boards for the ats_boards source (empty → the source no-ops).
+        "ats_boards": discovery.get("ats_boards") or [],
     }
     universe = "startup companies" if track.is_startup else "companies"
     default_sources = (["ycombinator", "hn_hiring", "themuse"]
