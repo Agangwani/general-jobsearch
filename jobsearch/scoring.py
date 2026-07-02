@@ -24,13 +24,15 @@ from collections import Counter, defaultdict
 
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 from sklearn.preprocessing import normalize
 
 from .models import JobPosting
+from .utils import strip_html
 
-COSINE_WEIGHT = 0.85
-CLUSTER_WEIGHT = 0.15
+COSINE_WEIGHT = 0.95
+CLUSTER_WEIGHT = 0.05
 
 # Posting-boilerplate vocabulary (compensation, EEO, benefits) — says nothing
 # about the role, but survives sentence-level boilerplate stripping because the
@@ -97,9 +99,76 @@ def _company_name_re(company: str) -> re.Pattern | None:
 
 def _doc(job: JobPosting, descriptions: dict[str, str], name_res: dict[str, re.Pattern | None]) -> str:
     desc = descriptions.get(job.key, job.description)
-    text = f"{job.title}\n{job.location}\n{desc}"[:20000]
+    # Location is deliberately excluded: it's already a hard filter (every scored
+    # posting has passed the location gate), so city tokens carry no *fit* signal
+    # among the survivors — they only let K-means carve out spurious location
+    # clusters ("new york, york, locations") that bucket strong skill matches by
+    # city instead of role and demote them. Title + description only.
+    # Safety net: strip_html here too, so a fetcher that forgets to strip_html (or
+    # a cached corpus from before it was fixed) can't let tag/style tokens (li, h3,
+    # span style, font weight, nbsp) dominate the space. Idempotent on plain text.
+    text = strip_html(f"{job.title}\n{desc}")[:20000]
     name_re = name_res.get(job.company)
     return name_re.sub(" ", text) if name_re else text
+
+
+# A term in at least this share of ONE company's postings but in less than
+# COMPANY_SIGNATURE_GLOBAL_DF of the whole corpus identifies that company (its
+# product names, mission phrasing, benefits/interview templates) rather than a
+# transferable skill — see _decluster_company_signatures. Tuned loose enough to
+# catch stubborn per-company boilerplate (ESPP "purchase plan", "covey", "remote
+# eligible") that a tighter gate left forming its own single-company clusters;
+# over-stripping a non-résumé skill term is provably harmless (it has zero
+# cluster-affinity weight and the direct cosine is untouched), and résumé terms
+# are protected outright.
+COMPANY_SIGNATURE_IN_DF = 0.5
+COMPANY_SIGNATURE_GLOBAL_DF = 0.08
+COMPANY_SIGNATURE_MIN_POSTINGS = 5
+
+
+def _decluster_company_signatures(X, corpus: list[JobPosting], resume_vec=None):
+    """Return a copy of the TF-IDF matrix with each company's *signature* terms
+    zeroed on that company's own rows, then re-normalized — used for CLUSTERING
+    ONLY. Left in, these terms make K-means recover company authorship: several
+    clusters collapse to a single company (Asana, Lyft, Jane Street), and their
+    affinity then reflects the company's average posting, demoting genuinely
+    strong roles there (docs/analysis-scoring-skew.md). The direct resume cosine
+    is computed from the untouched matrix, so this changes only which cluster a
+    posting lands in, never its (dominant) similarity term.
+
+    A term the resume itself uses is protected: it's a relevant skill signal, not
+    company boilerplate, even when one company happens to concentrate it (e.g.
+    'fraud' at a fraud-detection company). Without this, K-means could stop
+    grouping such roles by that skill."""
+    from scipy.sparse import csr_matrix
+
+    n = X.shape[0]
+    present = X > 0
+    global_df = np.asarray(present.sum(axis=0)).ravel() / n
+    resume_terms = resume_vec > 0 if resume_vec is not None else np.zeros(X.shape[1], dtype=bool)
+    rows_by_company: dict[str, list[int]] = defaultdict(list)
+    for i, job in enumerate(corpus):
+        rows_by_company[job.company].append(i)
+
+    rows_idx: list[int] = []
+    cols_idx: list[int] = []
+    for rows in rows_by_company.values():
+        if len(rows) < COMPANY_SIGNATURE_MIN_POSTINGS:
+            continue
+        in_df = np.asarray(present[rows].sum(axis=0)).ravel() / len(rows)
+        signature = np.where((in_df >= COMPANY_SIGNATURE_IN_DF) &
+                             (global_df < COMPANY_SIGNATURE_GLOBAL_DF) &
+                             ~resume_terms)[0]
+        if not len(signature):
+            continue
+        for r in rows:
+            rows_idx.extend([r] * len(signature))
+            cols_idx.extend(signature.tolist())
+
+    if not rows_idx:
+        return X
+    mask = csr_matrix((np.ones(len(rows_idx)), (rows_idx, cols_idx)), shape=X.shape)
+    return normalize(X - X.multiply(mask))
 
 
 def pick_cluster_count(n_jobs: int, configured) -> int:
@@ -120,13 +189,183 @@ def cluster_topics(vectorizer: TfidfVectorizer, centroids: np.ndarray, n_terms: 
     return topics
 
 
+# --------------------------------------------------------------- explanation ---
+# Everything below powers the "how was this fit scored?" visualization
+# (webapp /clusters): a 2-D map of the TF-IDF space plus a per-job breakdown of
+# the cosine + cluster terms that produced each score. It re-uses the exact
+# vectors score_jobs already computed, so the numbers shown always match the
+# fit_score the pipeline assigned.
+
+def _empty_explanation() -> dict:
+    """Shape returned for an empty job set, so callers can unpack unconditionally."""
+    from datetime import datetime, timezone
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "params": {"n_clusters": 0, "cosine_weight": 0.0, "cluster_weight": 0.0,
+                   "corpus_size": 0, "scored": 0, "scale": 0.0, "top_raw": 0.0,
+                   "has_map": False},
+        "resume": {"x": None, "y": None, "cluster": 0},
+        "clusters": [],
+        "jobs": [],
+    }
+
+
+def _top_terms_from_centroid(centroid: np.ndarray, terms: np.ndarray, n: int = 8) -> list[str]:
+    order = np.argsort(centroid)[::-1][:n]
+    return [str(terms[i]) for i in order if centroid[i] > 0]
+
+
+def _doc_top_terms(row, terms: np.ndarray, n: int = 8) -> list[str]:
+    """The heaviest TF-IDF terms in one posting's own vector — what the model
+    'reads' the posting as being about."""
+    if row.nnz == 0:
+        return []
+    order = np.argsort(row.data)[::-1][:n]
+    return [str(terms[row.indices[i]]) for i in order]
+
+
+def _match_terms(row, resume_vec: np.ndarray, terms: np.ndarray, n: int = 8) -> list[list]:
+    """Terms shared by the posting and the resume, ranked by how much each
+    contributed to the cosine similarity (posting_weight × resume_weight). The
+    sum of all such products *is* the cosine, so these are literally the words
+    that earned the match."""
+    if row.nnz == 0:
+        return []
+    contrib = row.data * resume_vec[row.indices]
+    order = np.argsort(contrib)[::-1][:n]
+    out = []
+    for i in order:
+        if contrib[i] <= 0:
+            break
+        out.append([str(terms[row.indices[i]]), round(float(contrib[i]), 4)])
+    return out
+
+
+def _project_2d(X_corpus, X_jobs, resume_vec: np.ndarray, centroids):
+    """Project the TF-IDF space onto 2 dimensions (LSA) so the corpus can be
+    drawn as a scatter. Fit on the corpus, then transform the things we plot:
+    the scored jobs, the resume, and the cluster centroids. Returns None when
+    the corpus is too small to decompose (the views then skip the map)."""
+    n_samples, n_features = X_corpus.shape
+    if n_samples <= 2 or n_features <= 2:
+        return None
+    svd = TruncatedSVD(n_components=2, random_state=0)
+    # On degenerate tiny corpora sklearn divides by a zero total variance while
+    # computing explained_variance_ratio_ (unused here) — quiet that warning.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        svd.fit(X_corpus)
+    jobs_xy = svd.transform(X_jobs)
+    resume_xy = svd.transform(resume_vec.reshape(1, -1))[0]
+    centroids_xy = svd.transform(centroids) if centroids is not None else None
+    return {"jobs": jobs_xy, "resume": resume_xy, "centroids": centroids_xy}
+
+
+def _xy(point) -> dict | None:
+    return None if point is None else {"x": round(float(point[0]), 4),
+                                       "y": round(float(point[1]), 4)}
+
+
+def _build_explanation(*, jobs, X_jobs, labels, cosine, raw, scale, resume_vec,
+                       cosine_weight, cluster_weight, cluster_affinity, topics,
+                       corpus, corpus_labels, centroids, n_clusters, vectorizer,
+                       X_corpus) -> dict:
+    """Assemble the per-run clustering record consumed by the visualization."""
+    from datetime import datetime, timezone
+
+    terms = vectorizer.get_feature_names_out()
+    coords = _project_2d(X_corpus, X_jobs, resume_vec, centroids)
+    job_xy = coords["jobs"] if coords else None
+    resume_point = _xy(coords["resume"]) if coords else None
+
+    scored_sizes = Counter(int(c) for c in labels)
+    corpus_sizes = Counter(int(c) for c in corpus_labels)
+    resume_cluster = int(np.argmax(cluster_affinity)) if len(cluster_affinity) else 0
+
+    clusters = []
+    for c in range(n_clusters):
+        if coords and coords["centroids"] is not None:
+            centroid_xy = _xy(coords["centroids"][c])
+        elif coords and job_xy is not None and scored_sizes.get(c):
+            # Single-cluster runs have no centroid — sit it at its members' mean.
+            members = [job_xy[i] for i in range(len(jobs)) if int(labels[i]) == c]
+            centroid_xy = _xy(np.mean(members, axis=0)) if members else None
+        else:
+            centroid_xy = None
+        clusters.append({
+            "id": c,
+            "label": topics.get(c) or "all postings",
+            "terms": (_top_terms_from_centroid(centroids[c], terms)
+                      if centroids is not None else []),
+            "size": scored_sizes.get(c, 0),
+            "corpus_size": corpus_sizes.get(c, 0),
+            "affinity": round(float(cluster_affinity[c]), 4),
+            "is_resume_cluster": c == resume_cluster,
+            "centroid": centroid_xy,
+        })
+
+    order = sorted(range(len(jobs)), key=lambda i: -jobs[i].fit_score)
+    rank_of = {i: r + 1 for r, i in enumerate(order)}
+    jobs_out = []
+    for i, job in enumerate(jobs):
+        c = int(labels[i])
+        cos = float(cosine[i])
+        aff = float(cluster_affinity[c])
+        # Round the two parts, then derive raw from them so the breakdown adds
+        # up exactly on the per-job page (it differs from the true raw only in
+        # the 4th decimal; the displayed fit comes from the true fit_score).
+        cos_contribution = round(cosine_weight * cos, 4)
+        cluster_contribution = round(cluster_weight * aff, 4)
+        jobs_out.append({
+            "key": job.key,
+            "company": job.company,
+            "title": job.title,
+            "location": job.location,
+            "cluster": c,
+            "cosine": round(cos, 4),
+            "affinity": round(aff, 4),
+            "cosine_contribution": cos_contribution,
+            "cluster_contribution": cluster_contribution,
+            "raw": round(cos_contribution + cluster_contribution, 4),
+            "fit": job.fit_score,
+            "rank": rank_of[i],
+            "near_miss": bool(job.filter_reason),
+            "filter_reason": job.filter_reason,
+            "match_terms": _match_terms(X_jobs[i], resume_vec, terms),
+            "top_terms": _doc_top_terms(X_jobs[i], terms),
+            # Map coords; None on corpora too small to project (params.has_map).
+            **((_xy(job_xy[i]) if job_xy is not None else None) or {"x": None, "y": None}),
+        })
+
+    return {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "params": {
+            "n_clusters": n_clusters,
+            "cosine_weight": round(float(cosine_weight), 3),
+            "cluster_weight": round(float(cluster_weight), 3),
+            "corpus_size": len(corpus),
+            "scored": len(jobs),
+            "scale": round(float(scale), 4),
+            "top_raw": round(float(raw.max()), 4) if len(raw) else 0.0,
+            "has_map": coords is not None,
+        },
+        "resume": {**(resume_point or {"x": None, "y": None}),
+                   "cluster": resume_cluster},
+        "clusters": clusters,
+        "jobs": jobs_out,
+    }
+
+
 def score_jobs(
     resume_text: str,
     jobs: list[JobPosting],
     clusters="auto",
     corpus: list[JobPosting] | None = None,
     cluster_weight: float = CLUSTER_WEIGHT,
+    decluster_company_signatures: bool = True,
     return_topics: bool = False,
+    return_explanation: bool = False,
+    match_backend: str = "tfidf",
+    embedding_model: str | None = None,
 ):
     """Assign fit_score (0-100) and cluster labels to every job in `jobs`,
     in place.
@@ -135,9 +374,23 @@ def score_jobs(
     pass the full fetched corpus so IDF and clusters are estimated from
     thousands of postings rather than the filtered few. `jobs` must be a
     subset of `corpus` (or corpus=None to fit on `jobs` themselves).
+
+    Return shape grows with the optional flags (jobs are always mutated in
+    place): `jobs`, then `topics` if `return_topics`, then a clustering
+    `explanation` dict if `return_explanation` — the latter powering the
+    /clusters visualization (a 2-D map + a per-job score breakdown).
     """
+    def _result(explanation=None):
+        out = [jobs]
+        if return_topics:
+            out.append(topics)
+        if return_explanation:
+            out.append(explanation if explanation is not None else _empty_explanation())
+        return tuple(out) if len(out) > 1 else jobs
+
     if not jobs:
-        return (jobs, {}) if return_topics else jobs
+        topics = {}
+        return _result()
     corpus = corpus if corpus else jobs
 
     descriptions = strip_company_boilerplate(corpus)
@@ -152,14 +405,21 @@ def score_jobs(
     X_corpus = normalize(vectorizer.fit_transform([_doc(j, descriptions, name_res) for j in corpus]))
     resume_vec = normalize(vectorizer.transform([resume_text])).toarray().ravel()
 
+    # Cluster on a company-de-signatured copy so K-means groups by transferable
+    # skill vocabulary, not company authorship; keep the untouched X_corpus for
+    # the direct resume cosine (the dominant fit term).
+    X_cluster = (_decluster_company_signatures(X_corpus, corpus, resume_vec)
+                 if decluster_company_signatures else X_corpus)
+
     n_clusters = pick_cluster_count(len(corpus), clusters)
+    centroids = None
     if n_clusters > 1:
         km = KMeans(
             n_clusters=n_clusters,
             n_init=3 if len(corpus) > 2000 else 10,
             random_state=0,
         )
-        corpus_labels = km.fit_predict(X_corpus)
+        corpus_labels = km.fit_predict(X_cluster)
         centroids = normalize(km.cluster_centers_)
         cluster_affinity = centroids @ resume_vec
         topics = cluster_topics(vectorizer, centroids)
@@ -179,6 +439,17 @@ def score_jobs(
 
     cosine_weight = 1.0 - cluster_weight
     cosine = np.asarray(X_jobs @ resume_vec).ravel()
+    # Opt-in: replace the dominant direct-similarity term with a semantic
+    # embedding cosine over the SAME cleaned posting text (title+description,
+    # location excluded), keeping clustering on TF-IDF. Falls back silently to
+    # the TF-IDF cosine above if sentence-transformers / the model is absent.
+    if match_backend == "embedding":
+        from .embeddings import DEFAULT_MODEL, resume_job_cosine
+        job_texts = [_doc(j, descriptions, name_res) for j in jobs]
+        emb_cosine = resume_job_cosine(resume_text, job_texts,
+                                       embedding_model or DEFAULT_MODEL)
+        if emb_cosine is not None and len(emb_cosine) == len(jobs):
+            cosine = emb_cosine
     raw = cosine_weight * cosine + cluster_weight * cluster_affinity[labels]
 
     top = float(raw.max())
@@ -186,7 +457,17 @@ def score_jobs(
     for job, score, label in zip(jobs, raw, labels):
         job.fit_score = round(float(score) * scale, 1)
         job.cluster = int(label)
-    return (jobs, topics) if return_topics else jobs
+
+    explanation = None
+    if return_explanation:
+        explanation = _build_explanation(
+            jobs=jobs, X_jobs=X_jobs, labels=labels, cosine=cosine, raw=raw,
+            scale=scale, resume_vec=resume_vec, cosine_weight=cosine_weight,
+            cluster_weight=cluster_weight, cluster_affinity=cluster_affinity,
+            topics=topics, corpus=corpus, corpus_labels=corpus_labels,
+            centroids=centroids, n_clusters=n_clusters, vectorizer=vectorizer,
+            X_corpus=X_corpus)
+    return _result(explanation)
 
 
 def apply_recency(jobs: list[JobPosting], half_life_days: float = 7.0, unknown_age_days: float = 14.0) -> list[JobPosting]:

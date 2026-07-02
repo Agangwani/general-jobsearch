@@ -11,7 +11,7 @@ from .fetchers import BROWSER_FETCHERS, FETCHERS
 from .filters import MATCH, NEAR_LOCATION, NEAR_TITLE, JobFilter, build_funnel
 from .http import make_session
 from .models import Company, FetchError, JobPosting
-from .report import render_markdown, write_reports, write_run_log
+from .report import render_markdown, write_clustering, write_reports, write_run_log
 from .scoring import apply_recency, rank_companies, score_jobs
 from .state import load_seen, mark_new, update_seen
 from .validation import (
@@ -154,13 +154,77 @@ def _write_role_profile(root: Path, settings: dict, profile) -> None:
     path.write_text(json.dumps(profile.to_dict(), indent=2))
 
 
-def run(root: Path) -> int:
+def apply_startup_search_knobs(settings: dict, cfg: dict) -> None:
+    """Apply the startup track's relaxed search/ranking knobs onto `settings`
+    in place, only for keys the startups: config actually sets. Safe to call
+    before role targeting — none of these are overwritten by apply_profile."""
+    search = settings.setdefault("search", {})
+    ranking = settings.setdefault("ranking", {})
+    if "include_remote" in cfg:
+        search["include_remote"] = bool(cfg["include_remote"])
+    if "remote_min_pay" in cfg:
+        search["remote_min_pay"] = int(cfg["remote_min_pay"] or 0)
+    for key in ("max_age_days", "near_miss_count"):
+        if key in cfg:
+            ranking[key] = cfg[key]
+
+
+_ENGINEERING_HINTS = (
+    "engineer", "developer", "software", "data", "machine learning",
+    "ml", "devops", "sre", "programmer", "technical",
+)
+
+
+def _profile_is_engineering(profile) -> bool:
+    """Whether the resume-matched role is engineering-ish, so the SWE-flavored
+    extra_title_include patterns are appropriate. A None profile means manual /
+    low-confidence targeting, which falls back to the SWE-default settings, so
+    appending is consistent there too."""
+    if profile is None:
+        return True
+    hay = " ".join(getattr(profile, "occupations", []) or []).lower()
+    return any(hint in hay for hint in _ENGINEERING_HINTS)
+
+
+def append_startup_titles(settings: dict, cfg: dict) -> int:
+    """Append cfg['extra_title_include'] onto the (already role-targeted)
+    title_include in place. Returns how many patterns were added. Must run
+    AFTER apply_profile so the patterns survive its overwrite."""
+    extra = cfg.get("extra_title_include") or []
+    if not extra:
+        return 0
+    search = settings.setdefault("search", {})
+    search["title_include"] = list(search.get("title_include") or []) + list(extra)
+    return len(extra)
+
+
+def run(root: Path, track_name: str = "main", user_id: str = "local") -> int:
+    from .tracks import build_track
+
     settings = load_settings(root / "config" / "settings.yaml")
-    # Curated companies.yaml + the resume-tailored generated registry, if a
-    # `discover-companies` run has produced one.
-    companies, manual_check = load_registry(root, settings)
+    track = build_track(root, settings, track_name, user_id)
+    # The startups track chases its own city and can loosen the role/location
+    # gate independently of the strict main search — startups are remote-heavy,
+    # post flatter/unleveled titles, and post less frequently. These overrides
+    # read from the startups: config block and touch only this run's in-memory
+    # settings, so the two pipelines stay isolated (separate reports/seen/corpus).
+    if track.is_startup:
+        if track.locations:
+            settings["search"]["locations"] = track.locations
+        apply_startup_search_knobs(settings, track.discovery)
+    # Fresh companies every run: refresh the discovered registry before loading
+    # it (gated by <track>.on_run + throttled by min_interval_minutes; best-
+    # effort, so a discovery failure leaves the existing registry in place).
+    from .company_discovery import maybe_run_discovery
+    maybe_run_discovery(root, settings, track)
+    # main: curated companies.yaml + the resume-tailored generated registry.
+    # startups: the startup registry built by `discover-startups`.
+    companies, manual_check = load_registry(root, settings, track)
+    if track.is_startup:
+        print(f"Startup track: {sum(c.enabled for c in companies)} startup "
+              f"companies in scope (from {track.registry_file.name}).", file=sys.stderr)
     from .resume import load_resume_text
-    resume_text, is_sample = load_resume_text(root, settings)
+    resume_text, is_sample = load_resume_text(root, settings, user_id)
     if is_sample:
         print("NOTE: no resume found at data/resume.txt — scoring against the "
               "bundled sample resume. Upload yours on the /resume page of the "
@@ -194,14 +258,25 @@ def run(root: Path) -> int:
         print("Role targeting off (manual or low-confidence match) — using the "
               "title filters in config/settings.yaml.", file=sys.stderr)
 
+    # Startup-only extra title patterns (Founding / Forward-Deployed / Member of
+    # Technical Staff / de-leveled SWE). Appended AFTER apply_profile, which
+    # overwrites title_include with the occupation's senior-biased patterns, so
+    # these survive and admit the flatter titles startups actually post. Gated on
+    # an engineering-ish resume so a non-engineering profile (e.g. Customer
+    # Success) doesn't get software-engineer titles grafted into its startup search.
+    if track.is_startup and _profile_is_engineering(profile):
+        added = append_startup_titles(settings, track.discovery)
+        if added:
+            print(f"Startup track: +{added} extra title patterns "
+                  "(founding/forward-deployed/de-leveled).", file=sys.stderr)
+
     print(f"Fetching boards for {sum(c.enabled for c in companies)} companies...", file=sys.stderr)
     all_jobs, errors = fetch_all(companies, settings)
     all_jobs = dedupe(all_jobs)
     print(f"Fetched {len(all_jobs)} postings; filtering...", file=sys.stderr)
 
     output = settings.get("output", {})
-    corpus_dir = root / output.get("corpus_dir", "data/corpus")
-    snapshot = write_snapshot(all_jobs, corpus_dir, output.get("corpus_retention_days", 14))
+    snapshot = write_snapshot(all_jobs, track.corpus_dir, output.get("corpus_retention_days", 14))
     print(f"Corpus snapshot: {snapshot}", file=sys.stderr)
 
     job_filter = JobFilter(settings["search"])
@@ -226,13 +301,18 @@ def run(root: Path) -> int:
 
     # Vectorizer + K-means are fit on the full fetched corpus; matched and
     # near-miss jobs are scored inside that space (docs/analysis-scoring-skew.md).
-    _, cluster_names = score_jobs(
+    # The explanation captures the same vectors for the /clusters visualization.
+    _, cluster_names, clustering = score_jobs(
         resume_text,
         jobs + near_miss,
         clusters=ranking.get("clusters", "auto"),
         corpus=all_jobs,
-        cluster_weight=ranking.get("cluster_weight", 0.15),
+        cluster_weight=ranking.get("cluster_weight", 0.05),
+        decluster_company_signatures=ranking.get("decluster_company_signatures", True),
+        match_backend=ranking.get("match_backend", "tfidf"),
+        embedding_model=ranking.get("embedding_model"),
         return_topics=True,
+        return_explanation=True,
     )
     apply_recency(
         jobs,
@@ -243,17 +323,23 @@ def run(root: Path) -> int:
     near_miss = near_miss[: ranking.get("near_miss_count", 20)]
     company_fit = rank_companies(jobs, top_n=ranking.get("company_top_n", 3))
 
-    state_path = root / settings["output"].get("state_file", "data/seen_jobs.tsv")
+    state_path = track.state_file
     seen = load_seen(state_path)
     mark_new(jobs, seen)
     update_seen(jobs, seen, state_path)
 
     # Merge any fresh Claude verdicts (data/validation.json, written by the
     # /validate-jobs command) and archive them for the precision time series.
-    validation_path = root / output.get("validation_file", "data/validation.json")
+    # The startups track keeps its own verdict file so the two never collide.
+    if track.is_startup:
+        validation_path = root / "data" / "validation.startups.json"
+        validation_history = root / "data" / "validation-history-startups"
+    else:
+        validation_path = root / output.get("validation_file", "data/validation.json")
+        validation_history = root / output.get("validation_history_dir", "data/validation-history")
     verdicts = load_verdicts(validation_path)
     tally = apply_verdicts(jobs + near_miss, verdicts)
-    archive_validation(validation_path, root / output.get("validation_history_dir", "data/validation-history"))
+    archive_validation(validation_path, validation_history)
     if verdicts:
         print(f"Validation: {tally}", file=sys.stderr)
 
@@ -265,8 +351,12 @@ def run(root: Path) -> int:
         cluster_names=cluster_names,
         targeting=targeting,
     )
-    out_dir = root / settings["output"].get("reports_dir", "reports")
+    out_dir = track.reports_dir
     written = write_reports(out_dir, markdown, jobs, company_fit, near_miss=near_miss, funnel=funnel)
+
+    clustering_path = write_clustering(out_dir, clustering)
+    if clustering_path:
+        written.append(clustering_path)
 
     runlog = _build_runlog(
         targeting, resume_text, is_sample, settings, companies, all_jobs,
@@ -282,11 +372,14 @@ def run(root: Path) -> int:
     return 0
 
 
-def verify(root: Path) -> int:
+def verify(root: Path, track_name: str = "main") -> int:
     """Hit every enabled board once and report reachability — run this after
     editing companies.yaml to catch wrong board slugs."""
+    from .tracks import build_track
+
     settings = load_settings(root / "config" / "settings.yaml")
-    companies, _ = load_registry(root, settings)
+    track = build_track(root, settings, track_name)
+    companies, _ = load_registry(root, settings, track)
     jobs, errors = fetch_all(companies, settings)
     ok = {c.name for c in companies if c.enabled} - {e.company for e in errors}
     print(f"\nOK ({len(ok)}): {', '.join(sorted(ok))}")

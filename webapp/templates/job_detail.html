@@ -3,35 +3,55 @@
 {% block content %}
 
 <header class="page-head">
-  <div>
-    <h1>{{ job.title }}</h1>
-    <div class="subtitle">
-      <strong>{{ job.company }}</strong> · {{ job.location }} ·
-      fit {{ '%.0f'|format(job.fit_score) if job.fit_score is not none else '—' }}
-      {% if job.filter_reason %}<span class="tag tag-amber">{{ job.filter_reason }}</span>{% endif %}
-      {% if job.validation %}<span class="tag">{{ job.validation }}{% if job.validation_note %}: {{ job.validation_note }}{% endif %}</span>{% endif %}
+  <div class="job-head">
+    {% if job.fit_score is not none %}
+    <span class="fit-ring fit-ring-lg" style="--fit:{{ '%.0f'|format(job.fit_score) }}"
+          data-tier="{{ 'high' if job.fit_score >= 75 else 'mid' if job.fit_score >= 50 else 'low' }}"
+          title="fit {{ '%.0f'|format(job.fit_score) }} / 100">
+      <span class="fit-val">{{ '%.0f'|format(job.fit_score) }}</span>
+    </span>
+    {% endif %}
+    <div>
+      <h1>{{ job.title }}</h1>
+      <div class="subtitle">
+        <strong>{{ job.company }}</strong> · {{ job.location }}
+        {% if job.filter_reason %}<span class="tag tag-amber">{{ job.filter_reason }}</span>{% endif %}
+        {% if job.validation %}<span class="tag">{{ job.validation }}{% if job.validation_note %}: {{ job.validation_note }}{% endif %}</span>{% endif %}
+      </div>
+      <div class="muted">posted {{ job.posted_at or 'unknown' }} ·
+        first seen {{ job.first_seen_at }} · last seen {{ job.last_seen_at }} ·
+        <code>{{ job.key }}</code></div>
     </div>
-    <div class="muted">posted {{ job.posted_at or 'unknown' }} ·
-      first seen {{ job.first_seen_at }} · last seen {{ job.last_seen_at }} ·
-      <code>{{ job.key }}</code></div>
   </div>
   <div class="actions">
     <span class="status status-{{ job.status }}">{{ job.status.replace('_',' ') }}</span>
+    {% if job.fit_score is not none %}
+    <a class="btn btn-ghost" href="/clusters/job/{{ job.id }}"
+       title="See exactly how this posting's fit score was computed — the resume-similarity and cluster terms behind it.">
+      📊 Why this fit?
+    </a>
+    {% endif %}
+    {% if job.url %}
     <button class="btn btn-primary" data-apply-btn
-            data-job-id="{{ job.id }}" data-application-id="{{ job.application_id }}"
+            data-job-id="{{ job.id }}"
             title="Opens a tab in the integrated browser and auto-fills your profile into the form. Never submits — you review and click submit.">
       ⚡ Auto-fill apply
     </button>
     <button class="btn btn-ghost" data-refill-btn
-            data-job-id="{{ job.id }}" data-application-id="{{ job.application_id }}"
+            data-job-id="{{ job.id }}"
             title="Re-run auto-fill on this job's already-open tab — useful after the form finishes loading or you've updated your profile. Opens a tab if none is open.">
       ↻ Re-fill open tab
     </button>
+    {% endif %}
     <a class="btn btn-ghost" href="/jobs/{{ job.id }}/referrals"
        title="Find current employees who can refer you. Searches LinkedIn for people on this team and ranks them by job fit + match to your background.">
       🤝 Find a referral
     </a>
+    {% if job.url %}
     <a class="btn btn-ghost" href="{{ job.url }}" target="_blank" rel="noopener">Open posting ↗</a>
+    {% else %}
+    <span class="muted">no posting link</span>
+    {% endif %}
   </div>
 </header>
 <p class="muted">⚡ opens a tab in the integrated browser and auto-fills your profile into the
@@ -46,6 +66,31 @@
     {% else %}
       <p class="muted">No description captured for this posting — open the posting link.
          (Descriptions come from the local corpus snapshot of the run that found the job.)</p>
+    {% endif %}
+
+    <h2>LeetCode questions {{ job.company }} asks</h2>
+    {% if lc_questions %}
+    <p class="muted">The problems {{ job.company }} is known to ask most often —
+       drill these before the interview.</p>
+    <table class="prob-table">
+      <thead><tr><th>#</th><th>Problem</th><th>Difficulty</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for p in lc_questions %}
+        <tr>
+          <td class="muted">{{ p.leetcode_number or '—' }}</td>
+          <td><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }} ↗</a></td>
+          <td class="diff-{{ p.difficulty }}">{{ p.difficulty }}</td>
+          <td><span class="state {{ p.state }}">{{ p.state|replace('_',' ') }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <a class="btn btn-ghost" href="/companies/{{ company_key|qp }}">
+      See all {{ lc_total }} {{ job.company }} questions →</a>
+    {% else %}
+    <p class="muted">No LeetCode questions tracked for {{ job.company }} yet.
+       <a href="/companies/{{ company_key|qp }}">Open the company page</a> and hit
+       <strong>⟳ Refresh questions</strong> to try pulling a list.</p>
     {% endif %}
 
     <h2>History</h2>
@@ -70,8 +115,34 @@
   </section>
 
   <aside class="col-side">
+    {% if startup %}
+    <details class="startup-panel" open>
+      <summary><h2 style="display:inline">🚀 Startup facts</h2></summary>
+      <p class="muted">{{ startup.one_liner }}</p>
+      <dl class="facts">
+        {% if startup.employees %}<dt>Employees</dt><dd>{{ startup.employees }}</dd>{% endif %}
+        {% if startup.founded %}<dt>Founded</dt><dd>{{ startup.founded }}</dd>{% endif %}
+        {% if startup.batch %}<dt>YC batch</dt><dd>{{ startup.batch }}</dd>{% endif %}
+        {% if startup.stage %}<dt>Stage</dt><dd>{{ startup.stage }}</dd>{% endif %}
+        {% if startup.last_round %}<dt>Last round</dt><dd>{{ startup.last_round }}{% if startup.last_round_amount %} ({{ startup.last_round_amount }}){% endif %}</dd>{% endif %}
+        {% if startup.total_raised %}<dt>Total raised</dt><dd>{{ startup.total_raised }}</dd>{% endif %}
+        {% if startup.investors %}<dt>Investors</dt><dd>{{ startup.investors|join(', ') }}</dd>{% endif %}
+        {% if startup.notable_people %}<dt>Notable people</dt><dd>{{ startup.notable_people|join('; ') }}</dd>{% endif %}
+        {% if startup.industry %}<dt>Industry</dt><dd>{{ startup.industry }}</dd>{% endif %}
+        {% if startup.status %}<dt>Status</dt><dd>{{ startup.status }}{% if startup.top_company %} · ⭐ top company{% endif %}</dd>{% endif %}
+      </dl>
+      <div class="startup-links">
+        {% if startup.website %}<a class="btn btn-ghost" href="{{ startup.website }}" target="_blank" rel="noopener">Website ↗</a>{% endif %}
+        {% if startup.yc_url %}<a class="btn btn-ghost" href="{{ startup.yc_url }}" target="_blank" rel="noopener">YC profile ↗</a>{% endif %}
+        <a class="btn btn-ghost" href="/startups/{{ startup.company_key|qp }}">Edit / full page →</a>
+      </div>
+      {% if startup.notes %}<p class="muted"><strong>Notes:</strong> {{ startup.notes }}</p>{% endif %}
+      <p class="muted source-note">source: {{ startup.source or 'unknown' }}{% if not startup.user_edited %} · funding/people are best-effort; edit on the <a href="/startups/{{ startup.company_key|qp }}">startup page</a>{% endif %}</p>
+    </details>
+    {% endif %}
+
     <h2>Update status</h2>
-    <form method="post" action="/applications/{{ job.application_id }}/status" class="stack-form">
+    <form method="post" action="/jobs/{{ job.id }}/status" class="stack-form">
       <select name="status">
         {% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == job.status }}>{{ s.replace('_',' ') }}</option>{% endfor %}
       </select>

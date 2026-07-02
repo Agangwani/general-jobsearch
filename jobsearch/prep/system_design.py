@@ -6,6 +6,7 @@ TRACK_SYSTEM_DESIGN = {
     "slug": "system-design",
     "title": "System Design",
     "description": "Designing systems the way interviews test it: a repeatable framework, the building blocks (load balancers, caches, sharding, queues), and worked designs from Alex Xu's System Design Interview Vol. 1, plus the Grokking RESHADED method. LeetCode design problems drill each topic.",
+    "disciplines": ["software"],
     "modules": [
         {
             "slug": "sdi-framework",

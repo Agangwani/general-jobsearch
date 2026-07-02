@@ -107,6 +107,7 @@ SRC_CONFIG="$(cat <<JSON
     "ImageConfiguration": {
       "Port": "8080",
       "RuntimeEnvironmentVariables": {
+        "PORT": "8080",
         "JOBSEARCH_BASIC_AUTH_USER": "${AUTH_USER}",
         "JOBSEARCH_BASIC_AUTH_PASSWORD": "${AUTH_PW}"
       }

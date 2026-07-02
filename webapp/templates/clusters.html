@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Fit map — how jobs are scored{% endblock %}
+{% block content %}
+
+<header class="page-head">
+  <div>
+    <h1>Fit map <span class="muted">({{ points|length or (clustering.jobs|length if clustering else 0) }} postings)</span></h1>
+    <div class="subtitle muted">
+      Every posting is turned into a bag of weighted keywords (TF-IDF), grouped
+      into topic <strong>clusters</strong> with K-means, and scored by how close
+      it sits to <strong>your resume</strong> in that space. This is that space,
+      flattened to two dimensions — closer means more similar wording.
+    </div>
+  </div>
+  <div class="actions">
+    {% if has_startups %}
+    <div class="segmented" role="tablist" aria-label="Fit map track">
+      <a class="seg {{ 'is-active' if track != 'startups' }}" href="/clusters" role="tab"
+         aria-selected="{{ 'true' if track != 'startups' else 'false' }}">All jobs</a>
+      <a class="seg {{ 'is-active' if track == 'startups' }}" href="/clusters?track=startups" role="tab"
+         aria-selected="{{ 'true' if track == 'startups' else 'false' }}">🚀 Startups</a>
+    </div>
+    {% endif %}
+    <a class="btn btn-ghost" href="/">← Back to jobs</a>
+  </div>
+</header>
+{% if track == 'startups' %}
+<div class="banner">Showing the <strong>startup</strong> run's fit map — startups
+  scored against your resume. <a href="/clusters">Switch to all jobs →</a></div>
+{% endif %}
+
+{% if not clustering or not clustering.jobs %}
+  <div class="setup-box">
+    <h3 style="margin-top:0">No {{ 'startup ' if track == 'startups' }}fit map yet</h3>
+    <p class="muted">The map is built every time the pipeline scores a batch of
+      postings against your resume. Run it, then come back here.</p>
+    {% if track == 'startups' %}
+    <p class="muted">Run <code>python -m jobsearch discover-startups</code> then
+      <code>python -m jobsearch run-startups</code> (or <strong>▶ Run startup
+      pipeline</strong> on the <a href="/startups">Startups page</a>), then
+      <strong>⟳ Ingest</strong>.</p>
+    {% else %}
+    <p class="muted">Hit <strong>▶ Run pipeline</strong> in the top bar (or
+      <code>python -m jobsearch run</code>), then <strong>⟳ Ingest</strong>.</p>
+    {% endif %}
+  </div>
+{% else %}
+  {% set p = clustering.params %}
+  {% set max_aff = (clustering.clusters | map(attribute='affinity') | max) or 1 %}
+
+  <div class="formula-strip">
+    <span class="fchip">
+      fit&nbsp;=&nbsp;<b>{{ (p.cosine_weight * 100) | round | int }}%</b>&nbsp;resume similarity
+      &nbsp;+&nbsp;<b>{{ (p.cluster_weight * 100) | round | int }}%</b>&nbsp;cluster fit
+    </span>
+    <span class="fchip">{{ p.n_clusters }} cluster{{ 's' if p.n_clusters != 1 }}</span>
+    <span class="fchip">{{ p.corpus_size }} postings in the model</span>
+    <span class="fchip">{{ p.scored }} scored &amp; mapped</span>
+  </div>
+
+  <div class="map-legend-key muted">
+    <span><span class="key-dot key-job"></span> posting</span>
+    <span><span class="key-dot key-near"></span> near-miss</span>
+    <span><span class="key-dot key-centroid"></span> cluster center</span>
+    <span><span class="key-dot key-resume"></span> your resume</span>
+    <span class="map-hint">Hover a point for details · click to open its breakdown · hover a cluster below to highlight it</span>
+  </div>
+
+  {% if points %}
+  <div class="cluster-map" id="cluster-map" data-variant="overview"></div>
+  <script type="application/json" id="cluster-map-data">
+    {{ {"points": points, "clusters": clustering.clusters, "resume": clustering.resume, "highlight": none} | tojson }}
+  </script>
+  {% else %}
+  <div class="banner warn">This run was too small to lay out on a 2-D map, but the
+    clusters and per-job breakdowns below still work.</div>
+  {% endif %}
+
+  <h2>Clusters {{ clustering.resume.cluster is not none and '· ★ = your resume’s home cluster' or '' }}</h2>
+  <p class="muted">Each cluster is a topic the model found in the postings. Its
+    <em>affinity</em> is how well your resume matches that topic — the home
+    cluster (highest affinity) contributes the cluster-fit part of every score.</p>
+
+  <div class="prep-grid cluster-grid">
+    {% for c in clustering.clusters | sort(attribute='affinity', reverse=true) %}
+    <div class="card cluster-card {{ 'is-home' if c.is_resume_cluster }}"
+         data-cluster-legend="{{ c.id }}" style="--i:{{ loop.index0 }}">
+      <div class="cluster-card-head">
+        <span class="cl-swatch" data-cluster-swatch="{{ c.id }}"></span>
+        <h3>Cluster {{ c.id }}{% if c.is_resume_cluster %} <span class="tag tag-green">★ your home</span>{% endif %}</h3>
+      </div>
+      <p class="desc">{{ c.terms | join(' · ') if c.terms else c.label }}</p>
+      <div class="affinity-row">
+        <span class="muted">resume affinity</span>
+        <div class="freq-bar" title="{{ '%.3f'|format(c.affinity) }} cosine to centroid">
+          <span style="width: {{ (c.affinity / max_aff * 100) | round(1) }}%"></span>
+        </div>
+        <b class="affinity-val">{{ '%.2f'|format(c.affinity) }}</b>
+      </div>
+      <div class="meta">
+        <span><b>{{ c.size }}</b> scored here</span>
+        <span><b>{{ c.corpus_size }}</b> in corpus</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2>How a score is built</h2>
+  <div class="explainer">
+    <ol>
+      <li><strong>Vectorize.</strong> Every posting and your resume become
+        TF-IDF vectors — each keyword weighted by how distinctive it is.
+        Per-company boilerplate (benefits, EEO text) is stripped first so a
+        company can’t inflate all its postings at once.</li>
+      <li><strong>Cluster.</strong> K-means groups the {{ p.corpus_size }}
+        postings into {{ p.n_clusters }} topic cluster{{ 's' if p.n_clusters != 1 }}.
+        Your resume’s affinity to each cluster’s center is precomputed.</li>
+      <li><strong>Score.</strong> A posting’s raw fit is
+        <code>{{ (p.cosine_weight * 100) | round | int }}% × cosine(resume, posting)
+        + {{ (p.cluster_weight * 100) | round | int }}% × affinity(resume, its&nbsp;cluster)</code>.</li>
+      <li><strong>Scale.</strong> Raw scores are divided by the day’s best so the
+        top match reads <strong>100</strong> — scores are relative ranks, not
+        absolute percentages. Open any posting’s breakdown to see its exact math.</li>
+    </ol>
+  </div>
+{% endif %}
+
+{% endblock %}

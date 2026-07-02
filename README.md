@@ -27,6 +27,15 @@ The default search targets senior software engineering roles in NYC — edit
 `config/settings.yaml` (title/location filters, remote-pay policy) and
 `config/companies.yaml` (which boards to pull) to retarget it.
 
+## Understanding the codebase
+
+This README is the quick tour. For a thorough, current-state map of the repo,
+read **[`docs/`](docs/README.md)** — start with
+**[`docs/architecture.md`](docs/architecture.md)** (the whole system on one
+page) and branch into the pipeline deep dive, the web app deep dive, end-to-end
+user flows, known limitations, and refactoring notes. The summary below is the
+condensed version of that.
+
 ## How it works
 
 1. **Company registry** — `config/companies.yaml` holds ~60 curated
@@ -62,10 +71,11 @@ The default search targets senior software engineering roles in NYC — edit
    regexes instead. Location matching stays in `config/settings.yaml`.
 4. **Rank by fit** — all postings are embedded in a shared TF-IDF token
    space and clustered with **K-means**; the resume is projected into the
-   same space. A posting's fit = 0.7 × cosine similarity to the resume +
-   0.3 × the resume's affinity to the posting's cluster, scaled so the best
+   same space. A posting's fit = 0.85 × cosine similarity to the resume +
+   0.15 × the resume's affinity to the posting's cluster, scaled so the best
    match of the day is 100. Company fit = mean of its top-3 postings, which
-   is how the company list in the report is sorted.
+   is how the company list in the report is sorted. The **Fit map** tab in the
+   UI visualizes this whole space and breaks down any single score (see below).
 5. **Prioritize recency** — job order uses
    `rank_score = fit × 0.5^(age_days / 7)`: a posting loses half its weight
    every week, so fresh postings rise to the top. Jobs the pipeline has
@@ -124,7 +134,12 @@ python -m jobsearch discover "Warby Parker"   # auto-detect a company's ATS boar
 python -m jobsearch discover-companies        # mine generalized boards for companies
                                               # matching YOUR resume; --dry-run to preview
 
-python -m jobsearch ingest   # pull the latest run into the application database
+python -m jobsearch discover-startups         # mine the YC directory (+HN, Muse) for
+                                              # STARTUPS matching your resume, with metadata
+python -m jobsearch run-startups              # run the parallel startup pipeline
+                                              # → reports/startups/
+
+python -m jobsearch ingest   # pull the latest runs (main + startups) into the database
 python -m jobsearch ui       # application-tracking UI → http://127.0.0.1:8484
 ```
 
@@ -139,6 +154,99 @@ yourself.
 
 If Chromium isn't installed the run still works — browser-scraped boards are
 skipped with an actionable note in the report instead of failing the run.
+
+### Startup pipeline (a second, startup-only search)
+
+A parallel pipeline searches **startups in a given city** (New York by default)
+and scores them with the *same* TF-IDF + K-means fit map as the main run, while
+tracking the facts you weigh for a startup — **employees, funding stage + round
+size, investors, notable people, industry**:
+
+```bash
+python -m jobsearch discover-startups   # build the startup registry + metadata
+python -m jobsearch run-startups        # fetch + score their roles → reports/startups/
+python -m jobsearch ingest              # load BOTH pipelines into the tracker
+```
+
+The startup universe comes from the **Y Combinator company directory** (a
+keyless public JSON mirror — the canonical "all startups" list), plus HN "Who is
+hiring?" and The Muse for startups posting right now, all ranked against your
+resume. Each resolves to its own ATS board, so applications still go to the
+company's own site. Everything is configured under `startups:` in
+`config/settings.yaml` (city, sources, YC slice/status filters); generated files
+are gitignored, like the main pipeline's.
+
+In the UI, startup and non-startup jobs share **one tracker** with a three-way
+toggle — **all companies · 🚀 startups only · 🏢 hide startups** — and the home
+page's big numbers split startup vs. established. Startup rows carry a 🚀 badge
+with employees/stage inline; the **Startups** tab (`/startups`) is a directory of
+tracked startups with their facts and open roles (editable — your edits survive
+re-ingest), and the Fit map has a startup track. Honest caveat: employees/batch/
+stage come straight from YC, but **funding amounts, investors, and notable
+people are best-effort** (mined from public blurbs) — precise cap-table data
+needs a paid source, so those fields are editable by hand. Full design:
+`docs/design-startup-pipeline.md`.
+
+### Interview prep curriculum
+
+The **Prep** tab is a resumable, cited curriculum that now spans disciplines, not
+just software. A universal **Behavioral Interviews** track (STAR / Nugget-First,
+a 50+ question bank by competency, Amazon's Leadership Principles, "tell me about
+yourself"/weakness/salary) sits alongside the original software tracks (coding,
+system design, distributed systems) and new discipline tracks: **Case Interviews**
+(consulting/strategy/ops), **Finance & Investment Banking**, **Product
+Management**, **Data & Analytics**, **Sales/CS/Account Management**, **Marketing**,
+**Design**, and **Industry-Specific** (healthcare, legal, education, HR). Content
+is authored in `jobsearch/prep/` and each lesson cites its source.
+
+Prep is the one part of the flow that is *not specific to your resume's role* —
+every track is available to everyone — but the `/prep` page now **recommends**
+the tracks relevant to your resume: Behavioral for every resume, plus the
+discipline track(s) for your matched occupation (a consultant sees Case
+Interviews first; a nurse sees Industry-Specific). The occupation→discipline
+mapping lives in `jobsearch/prep/disciplines.py`.
+
+### Company interview questions (LeetCode)
+
+The **Companies** tab tracks *what each company actually asks* on LeetCode.
+Online, every big employer is known for a recognisable set of problems
+(Amazon → LRU Cache / Number of Islands, Meta → Min Remove to Make Valid
+Parentheses, …). The app ships a curated, **offline** set per company and
+shows them ranked by how often that company asks them, with mark-solved /
+attempted tracking that persists across runs (`/companies` → pick a company).
+Every **job detail page** also surfaces the top questions for that posting's
+company, so the prep is right next to the application.
+
+Hit **⟳ Refresh questions** on a company to pull a larger, frequency-measured
+list from a community "company-wise LeetCode" dataset (one CSV per company).
+It's network-optional — exactly like a broken board never sinks a run: if the
+dataset can't be reached the bundled list stays and the reason shows in the
+UI. Point it at a different dataset or time window under `company_questions:`
+in `config/settings.yaml`. Bundled content lives in
+`jobsearch/company_questions/` (curated set + the refresh loader).
+
+### Fit map — why a job scored what it did
+
+Fit scores are easy to distrust when they're just a number. The **Fit map**
+tab (`/clusters`) opens up the TF-IDF + K-means model:
+
+- A **high-level view**: every scored posting plotted as a 2-D scatter (LSA
+  projection of the TF-IDF space), coloured by the K-means cluster it landed
+  in, with **your resume** drawn in the same space — closer means more similar
+  wording. Each cluster is labelled with its topic terms and how strongly your
+  resume matches it (the "home" cluster is the one feeding the cluster-fit term
+  of every score). Hover a cluster to highlight its postings; click any point
+  to drill in.
+- A **per-job view** (`/clusters/job/{id}`, also the "📊 Why this fit?" button
+  on every job page): the exact arithmetic behind one posting's score — the
+  `0.85 × cosine + 0.15 × cluster-affinity` split shown as a stacked bar, the
+  overlapping keywords that earned the cosine (each literally a term in the
+  similarity sum), and where the posting sits relative to your resume on the
+  map.
+
+Each run writes the model snapshot to `reports/clustering.json` (local-only,
+like the other reports), and the scorer emits it straight from the vectors it
+already computed, so the numbers shown always match the assigned `fit_score`.
 
 > **Note:** ATS board slugs in `companies.yaml` are best-effort and companies
 > migrate ATS vendors over time. Run `python -m jobsearch verify` (or just
@@ -198,12 +306,18 @@ data/companies.discovered.yaml  generated registry (discover-companies), gitigno
 data/seen_jobs.json      state: job IDs seen on previous runs
 jobsearch/fetchers/      one adapter per ATS / company API
 jobsearch/sources/       company-lead sources: generalized boards (Muse, HN, Adzuna)
+jobsearch/company_questions/  curated company→LeetCode sets + the refresh loader
 jobsearch/role_profile.py       resume → occupation matching (TF-IDF / MiniLM)
 jobsearch/company_discovery.py  resume-tailored registry generation
 tools/build_occupations.py      expand config/occupations.yaml from O*NET
-jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting
+jobsearch/scoring.py     TF-IDF + K-means fit scoring, recency weighting, the /clusters explanation
 jobsearch/pipeline.py    orchestration
+webapp/clusters.py       loads reports/clustering.json for the Fit map views
 reports/                 daily output (markdown, CSV, JSON, run-log)
 reports/run-log.json     per-run diagnostics: what was targeted, board results, funnel
+reports/clustering.json  per-run fit map: 2-D projection + per-job score breakdown
+jobsearch/prep/          multi-discipline interview-prep curriculum (behavioral, case, finance, …)
 tests/                   offline tests (no network needed)
+tests/fixtures/resumes/  20 industry resumes (one per top NYC industry) for the suite
+tests/industry_fixtures.py  manifest behind tests/test_industry_resumes.py
 ```

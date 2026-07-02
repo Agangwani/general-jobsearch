@@ -6,6 +6,9 @@ from jobsearch.filters import (
     MATCH, NEAR_LOCATION, NEAR_TITLE, OUT, JobFilter, build_funnel, extract_max_pay,
 )
 from jobsearch.models import JobPosting
+from jobsearch.pipeline import (
+    _profile_is_engineering, append_startup_titles, apply_startup_search_knobs,
+)
 
 SETTINGS = yaml.safe_load((Path(__file__).parent.parent / "config" / "settings.yaml").read_text())
 FILTER = JobFilter(SETTINGS["search"])
@@ -17,6 +20,45 @@ STRICT = JobFilter({**SETTINGS["search"], "remote_min_pay": 0, "promote_unlevele
 def job(title, location="New York, NY", description=""):
     return JobPosting(company="X", title=title, location=location, url="", job_id="1",
                       description=description)
+
+
+def test_startup_relaxation_admits_flat_titles_and_remote():
+    """The startup-track knobs (from settings.yaml startups:) admit the flatter
+    titles and remote roles that the strict main filter buries in near-miss."""
+    cfg = SETTINGS["startups"]
+    settings = {"search": dict(SETTINGS["search"]), "ranking": dict(SETTINGS["ranking"])}
+    apply_startup_search_knobs(settings, cfg)
+    added = append_startup_titles(settings, cfg)
+
+    assert added == len(cfg["extra_title_include"])
+    assert settings["search"]["include_remote"] is True
+    assert settings["search"]["remote_min_pay"] == 0
+    assert settings["ranking"]["max_age_days"] == 90
+
+    relaxed = JobFilter(settings["search"])
+    remote_founding = job("Founding Engineer", location="Remote - US")
+    ml_nyc = job("Machine Learning Engineer", location="New York, NY")
+    # Both are matches under the relaxed startup filter...
+    assert relaxed.classify(remote_founding)[0] == MATCH
+    assert relaxed.classify(ml_nyc)[0] == MATCH
+    # ...but the strict main filter does NOT match the remote founding role
+    # (fails-before evidence that the relaxation is what admits it).
+    assert FILTER.classify(remote_founding)[0] != MATCH
+
+
+class _Profile:
+    def __init__(self, occupations):
+        self.occupations = occupations
+
+
+def test_profile_is_engineering_gates_startup_titles():
+    # None (manual/low-confidence) -> True (settings default to SWE patterns).
+    assert _profile_is_engineering(None) is True
+    assert _profile_is_engineering(_Profile(["Software Engineer", "Data Engineer"]))
+    assert _profile_is_engineering(_Profile(["Machine Learning Engineer"]))
+    # A non-engineering resume must NOT get software-engineer titles grafted in.
+    assert not _profile_is_engineering(_Profile(["Customer Success Manager"]))
+    assert not _profile_is_engineering(_Profile(["Registered Nurse"]))
 
 
 def test_senior_swe_titles_pass():

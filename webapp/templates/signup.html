@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sign up · jobsearch</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ css_v }}">
+  <style>
+    .auth-wrap { min-height: 100dvh; display: grid; place-items: center; padding: 2rem; }
+    .auth-card { width: 100%; max-width: 22rem; display: flex; flex-direction: column;
+                 gap: .85rem; padding: 1.75rem; border: 1px solid var(--border, #2a2a33);
+                 border-radius: 14px; background: var(--surface, #16161c); }
+    .auth-card h1 { margin: 0 0 .25rem; font-size: 1.35rem; }
+    .auth-card label { display: flex; flex-direction: column; gap: .3rem; font-size: .85rem; }
+    .auth-card input { padding: .6rem .7rem; border-radius: 8px;
+                       border: 1px solid var(--border, #2a2a33); background: transparent;
+                       color: inherit; font: inherit; }
+    .auth-card button { margin-top: .35rem; }
+    .auth-error { margin: 0; padding: .55rem .7rem; border-radius: 8px;
+                  background: rgba(220,90,90,.15); font-size: .85rem; }
+    .auth-note { margin: 0; font-size: .8rem; opacity: .75; }
+    .auth-alt { margin: .25rem 0 0; font-size: .85rem; opacity: .85; }
+  </style>
+</head>
+<body>
+  <main class="auth-wrap">
+    <form class="auth-card" method="post" action="/signup">
+      <h1>Create your account</h1>
+      {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
+      {% if open %}
+        <label>Email
+          <input type="email" name="email" autocomplete="email" required autofocus>
+        </label>
+        <label>Password
+          <input type="password" name="password" autocomplete="new-password"
+                 minlength="8" required>
+        </label>
+        <button class="btn btn-primary" type="submit">Sign up</button>
+        <p class="auth-note">At least 8 characters.</p>
+      {% else %}
+        <p class="auth-error">Signups are currently closed.</p>
+      {% endif %}
+      <p class="auth-alt">Already have an account? <a href="/login">Log in</a></p>
+    </form>
+  </main>
+</body>
+</html>

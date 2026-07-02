@@ -40,20 +40,22 @@ def upsert_candidate(conn: sqlite3.Connection, company: str, hit: CandidateHit) 
         (hit.linkedin_url,),
     ).fetchone()
     if row is None:
-        cur = conn.execute(
+        # RETURNING id is portable across SQLite (3.35+) and Postgres; psycopg
+        # has no cursor.lastrowid, so the new id is read back explicitly.
+        row = conn.execute(
             """INSERT INTO referral_candidates
-                 (company, name, headline, linkedin_url, current_role,
+                 (company, name, headline, linkedin_url, "current_role",
                   current_company, location, summary, raw_json,
                   first_seen_at, last_refreshed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
             (company, hit.name, hit.headline, hit.linkedin_url, hit.current_role,
              hit.current_company, hit.location, "", raw, now, now),
-        )
+        ).fetchone()
         conn.commit()
-        return cur.lastrowid
+        return row["id"]
     conn.execute(
         """UPDATE referral_candidates
-              SET company = ?, name = ?, headline = ?, current_role = ?,
+              SET company = ?, name = ?, headline = ?, "current_role" = ?,
                   current_company = ?, location = ?, raw_json = ?,
                   last_refreshed_at = ?
             WHERE id = ?""",
@@ -114,12 +116,13 @@ def candidates_for_job(conn: sqlite3.Connection, job_id: int) -> list[sqlite3.Ro
 # state while a background thread is searching.
 
 def start_run(conn: sqlite3.Connection, job_id: int) -> int:
-    cur = conn.execute(
-        "INSERT INTO referral_runs (job_id, state, started_at) VALUES (?, 'running', ?)",
+    row = conn.execute(
+        "INSERT INTO referral_runs (job_id, state, started_at) "
+        "VALUES (?, 'running', ?) RETURNING id",
         (job_id, _utcnow()),
-    )
+    ).fetchone()
     conn.commit()
-    return cur.lastrowid
+    return row["id"]
 
 
 def finish_run(conn: sqlite3.Connection, run_id: int, detail: str = "") -> None:

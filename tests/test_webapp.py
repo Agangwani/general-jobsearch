@@ -5,6 +5,7 @@ import gzip
 import json
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -72,8 +73,13 @@ def test_patch_never_erases_description(conn):
 def test_status_lifecycle_and_stacks(conn):
     db.upsert_job(conn, record("greenhouse:Acme:1"))
     db.upsert_job(conn, record("greenhouse:Beta:2", company="Beta"))
-    assert db.stack_counts(conn) == {"to_apply": 2, "in_progress": 0, "applied": 0,
-                                     "by_status": {"not_applied": 2}}
+    # stack_counts splits startup vs. non-startup; with no startups all land in `other`.
+    assert db.stack_counts(conn) == {
+        "to_apply": 2, "in_progress": 0, "applied": 0,
+        "by_status": {"not_applied": 2},
+        "startup": {"to_apply": 0, "in_progress": 0, "applied": 0},
+        "other": {"to_apply": 2, "in_progress": 0, "applied": 0},
+        "startup_total": 0, "other_total": 2}
     app_id = conn.execute("SELECT id FROM applications LIMIT 1").fetchone()["id"]
     db.set_application_status(conn, app_id, "applied", via="integrated_browser")
     counts = db.stack_counts(conn)
@@ -459,24 +465,26 @@ def test_routes(tmp_path):
     declined = client.post("/api/apply-all").json()
     assert declined["requested"] is False and "browser" in declined["detail"]
 
-    app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
-    resp = client.post(f"/applications/{app_id}/status",
+    # Status is keyed by job id now (an application is per-user and lazy); the
+    # server materializes the current user's application and sets its status.
+    job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
+    resp = client.post(f"/jobs/{job_id}/status",
                        data={"status": "applied", "note": "done"}, follow_redirects=False)
     assert resp.status_code == 303
 
-    # bulk status: mark several applications applied in one post (checkbox values)
+    # bulk status: mark several jobs applied in one post (checkbox values are job ids)
     db.upsert_job(app.state.conn, record("k-bulk", company="Beta"))
-    aids = [str(r["id"]) for r in app.state.conn.execute("SELECT id FROM applications").fetchall()]
-    assert len(aids) >= 2
+    jids = [str(r["id"]) for r in app.state.conn.execute("SELECT id FROM jobs").fetchall()]
+    assert len(jids) >= 2
     # A non-existent id and a non-integer must NOT 500 or abort the batch.
     rb = client.post("/applications/bulk-status",
-                     data={"application_id": aids + ["999999", "abc"], "status": "applied"},
+                     data={"job_id": jids + ["999999", "abc"], "status": "applied"},
                      follow_redirects=False)
     assert rb.status_code == 303
     rows = app.state.conn.execute("SELECT status FROM applications").fetchall()
     assert all(r["status"] == "applied" for r in rows)
     # An invalid status is rejected (no write).
-    client.post("/applications/bulk-status", data={"application_id": aids, "status": "bogus"})
+    client.post("/applications/bulk-status", data={"job_id": jids, "status": "bogus"})
     assert all(r["status"] == "applied" for r in
                app.state.conn.execute("SELECT status FROM applications").fetchall())
     assert app.state.conn.execute(
@@ -486,6 +494,321 @@ def test_routes(tmp_path):
     client.post("/profile", data={"full_name": "Test User", "email": "t@x.com"})
     fields = {f["field"]: f["value"] for f in profile.all_fields(app.state.conn)}
     assert fields["email"] == "t@x.com"
+
+
+def test_dashboard_tolerates_malformed_min_fit(tmp_path):
+    """The dashboard's min_fit query param comes straight from the URL, so
+    non-numeric/whitespace/malformed values must fall back to "no filter"
+    (HTTP 200) instead of crashing the float parse with a 500. A valid value
+    still filters."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    db.upsert_job(app.state.conn, record("k1", fit_score=80.0))
+    db.upsert_job(app.state.conn, record("k2", company="Beta", fit_score=60.0))
+
+    # Malformed values must NOT 500; they degrade to no min-fit filter (200).
+    for bad in ("abc", "%20%20%20", "12.5.6"):
+        resp = client.get(f"/?min_fit={bad}")
+        assert resp.status_code == 200, f"min_fit={bad!r} should be 200, got {resp.status_code}"
+
+    # A valid threshold still returns 200 and still filters out the 60-fit job.
+    ok = client.get("/?min_fit=70")
+    assert ok.status_code == 200
+    assert "Senior Software Engineer" in ok.text          # the 80-fit job survives
+
+
+def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
+    """The Filter form's "near-miss" checkbox must round-trip both ways.
+
+    An unchecked HTML checkbox is omitted from the GET query, so without a
+    hidden companion the handler's near_miss="1" default kept near-miss jobs
+    visible forever (the box could never be turned off). With the companion
+    `<input type="hidden" name="near_miss" value="0">`:
+      * default / box checked  → near-miss jobs SHOWN
+      * box unchecked (submits near_miss=0) → near-miss jobs HIDDEN
+    while a normal (non-near-miss) job stays visible in every case."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    # A normal job and a near-miss job (non-empty filter_reason). Distinct
+    # titles so we can tell which rows render.
+    db.upsert_job(app.state.conn, record("k-normal", title="Normal Match Engineer"))
+    db.upsert_job(app.state.conn, record("k-near", company="Beta",
+                                         title="Near Miss Engineer",
+                                         filter_reason="UNLEVELED_TITLE"))
+
+    # Default: near-miss shown (handler default near_miss="1").
+    default = client.get("/?run_scope=all")
+    assert default.status_code == 200
+    assert "Normal Match Engineer" in default.text
+    assert "Near Miss Engineer" in default.text
+
+    # Box checked: form submits the hidden "0" then the checkbox "1"; last value
+    # wins → on → still shown.
+    on = client.get("/?run_scope=all&near_miss=0&near_miss=1")
+    assert on.status_code == 200
+    assert "Near Miss Engineer" in on.text
+
+    # Box UNCHECKED: form submits only the hidden "0" → off → near-miss hidden,
+    # but the normal job is unaffected.
+    off = client.get("/?run_scope=all&near_miss=0")
+    assert off.status_code == 200
+    assert "Normal Match Engineer" in off.text
+    assert "Near Miss Engineer" not in off.text
+
+    # The rendered form carries the hidden companion so the browser actually
+    # submits near_miss=0 when the box is cleared.
+    assert '<input type="hidden" name="near_miss" value="0">' in default.text
+
+
+def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
+    """Regression for UI-QA findings 5d6cf6e7d60c (/jobs/{id}), 1af76daa1b19
+    (/jobs/{id}/referrals), 52c396e7e011 / 9e0f80f360e0 (/clusters/job/{id}) and
+    6792550db789 (/api/jobs/{id}/history).
+
+    Every id-typed route takes its id straight from the URL path, where
+    FastAPI's ``int`` accepts an arbitrary-precision integer. An id beyond
+    SQLite's signed 64-bit INTEGER range (>= 2**63) used to overflow the
+    parameterised query and surface as HTTP 500. The routes must instead
+    degrade to their normal not-found behaviour (a 303 redirect for the HTML
+    pages, an empty JSON history for the API) — never 500. A valid seeded id
+    still works."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: x\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies: []\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    db.upsert_job(app.state.conn, record())
+    good_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
+
+    # Two out-of-range ids: one just past the signed-64-bit boundary (2**63)
+    # and one far beyond it.
+    for bad in ("9223372036854775808", "999999999999999999999999"):
+        for path in (f"/jobs/{bad}", f"/jobs/{bad}/referrals",
+                     f"/clusters/job/{bad}"):
+            resp = client.get(path, follow_redirects=False)
+            assert resp.status_code == 303, (path, resp.status_code)
+        hist = client.get(f"/api/jobs/{bad}/history")
+        assert hist.status_code == 200, (bad, hist.status_code)
+        assert hist.json() == []
+
+    # A valid, in-range id still resolves normally (no over-eager rejection).
+    assert client.get(f"/jobs/{good_id}").status_code == 200
+    assert client.get(f"/api/jobs/{good_id}/history").status_code == 200
+
+
+def test_company_with_space_in_key_is_reachable(tmp_path):
+    """A company whose key contains a space (e.g. "goldman sachs") must be
+    reachable from the landing page. The link is a URL *path* segment, so the
+    space has to be percent-encoded ("%20") — quote_plus's "+" is a literal
+    plus in a path and would route to a non-existent key (misleading empty
+    state). The encoded path must round-trip back to the seeded key and render
+    its questions."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: x\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies: []\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    # Seed a company whose key has a space, with a question to show.
+    db.seed_company_problems(app.state.conn, [{
+        "company": "Goldman Sachs", "company_key": "goldman sachs",
+        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
+        "difficulty": "easy", "frequency": 90.0,
+        "url": "https://leetcode.com/problems/two-sum/",
+    }])
+
+    # The landing card must link to the path-encoded key (%20), not the "+"
+    # form that quote_plus produces and that a URL path treats as a literal.
+    home = client.get("/companies")
+    assert home.status_code == 200
+    assert "/companies/goldman%20sachs" in home.text
+    assert "/companies/goldman+sachs" not in home.text
+
+    # And that encoded path round-trips to the real key and renders the question
+    # (rather than the misleading "No questions yet" empty state).
+    detail = client.get("/companies/goldman%20sachs")
+    assert detail.status_code == 200
+    assert "Two Sum" in detail.text
+    assert "Goldman Sachs" in detail.text
+
+
+def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
+    """A corrupt/truncated PDF — valid `%PDF` header but an unparseable body —
+    makes pypdf raise PdfStreamError (NOT a ValueError), which the upload
+    handler's `except ValueError` used to miss, returning HTTP 500. It must
+    instead degrade to the friendly redirect (303 → /resume?error=...) like
+    every other bad upload, and a valid text resume must still succeed."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: x\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies: []\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
+    # Corrupt PDF: passes the %PDF magic-byte check, then fails pypdf parsing.
+    resp = client.post(
+        "/resume/upload",
+        files={"file": ("malformed.pdf", b"%PDF-1.4 broken", "application/pdf")},
+        follow_redirects=False)
+    assert resp.status_code == 303, f"expected friendly 303, got {resp.status_code}"
+    q = parse_qs(urlsplit(resp.headers["location"]).query)
+    assert "error" in q and q["error"][0]  # carried a user-facing message, not a 500
+
+    # A valid plain-text resume still uploads cleanly (redirects with uploaded=1).
+    ok = client.post(
+        "/resume/upload",
+        files={"file": ("resume.txt",
+                        b"Jane Engineer\nSenior Software Engineer\n\nEXPERIENCE\n"
+                        b"Built distributed backend systems at scale for many years.\n",
+                        "text/plain")},
+        follow_redirects=False)
+    assert ok.status_code == 303
+    assert "uploaded=1" in ok.headers["location"]
+    assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
+
+
+def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
+    """A job with no posting URL must not render dead controls: the "Open
+    posting" link would become href="" (reloads the page) and the apply/re-fill
+    POSTs 404 with no URL. Guard them with {% if job.url %} so URL-less jobs
+    show a muted "no posting link" note instead."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+
+    # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
+                                         company="Datadog", url=""))
+    job_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Datadog'").fetchone()["id"]
+
+    detail = client.get(f"/jobs/{job_id}")
+    assert detail.status_code == 200
+    html = detail.text
+    assert 'href=""' not in html                      # no dead "Open posting" link
+    assert "Open posting" not in html                 # the link itself is gone
+    assert "data-apply-btn" not in html               # no Auto-fill apply button
+    assert "data-refill-btn" not in html              # no Re-fill button
+    assert "no posting link" in html                  # muted note shown instead
+
+    # Sanity: a job *with* a URL still shows the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Acme:1",
+                                         company="Acme", url="https://acme.com/jobs/1"))
+    acme_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Acme'").fetchone()["id"]
+    acme_html = client.get(f"/jobs/{acme_id}").text
+    assert "data-apply-btn" in acme_html
+    assert 'href="https://acme.com/jobs/1"' in acme_html
+
+
+
+def test_settings_manual_links_have_rel_noopener(tmp_path):
+    """The "Manual check" external links open in a new tab; without rel="noopener"
+    the opened page gets window.opener access. Assert the rendered links carry it."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\n"
+        "manual_check:\n  - name: Stripe\n    careers_url: https://stripe.com/jobs\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    html = client.get("/settings").text
+    assert "https://stripe.com/jobs" in html           # the manual-check link rendered
+    # The target=_blank link must carry rel="noopener" (no target="_blank" without it).
+    assert 'target="_blank" rel="noopener"' in html
+    assert 'href="https://stripe.com/jobs" target="_blank" rel="noopener"' in html
+
+
+def test_fit_map_resume_star_is_click_through():
+    """The résumé star (.cmap-resume) is painted over the highest-fit dots; without
+    pointer-events:none it swallows clicks meant for those top posting dots. Assert
+    the CSS rule disables pointer events on the star."""
+    css = (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.css").read_text()
+    rule = next(line for line in css.splitlines()
+                if line.lstrip().startswith(".cmap-resume "))
+    normalized = rule.replace(" ", "")
+    assert "pointer-events:none" in normalized, rule
 
 
 def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
@@ -534,3 +857,395 @@ def test_resume_role_panel_and_run_trigger(tmp_path, monkeypatch):
             break
         time.sleep(0.02)
     assert calls == [root]
+
+
+def test_prep_page_recommends_tracks_for_resume(tmp_path):
+    """The /prep page tailors which tracks it recommends to the resume's roles —
+    Behavioral for everyone, the discipline track for the resume — while still
+    showing the full catalog (software tracks remain available to a non-engineer)."""
+    from fastapi.testclient import TestClient
+
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    repo_root = Path(__file__).resolve().parent.parent
+    (root / "config" / "occupations.yaml").write_text(
+        (repo_root / "config" / "occupations.yaml").read_text())
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  role_targeting: auto\n  role_match_backend: tfidf\n"
+        "  query: x\n  locations: [new york]\n"
+        "role:\n  occupations_file: config/occupations.yaml\n"
+        "ranking:\n  half_life_days: 7\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+    # A finance (investment banking) resume → the Finance track is recommended.
+    (root / "data" / "resume.txt").write_text(
+        (repo_root / "tests" / "fixtures" / "resumes" / "01-financial-services.txt").read_text())
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    html = client.get("/prep").text
+
+    assert "Recommended for your resume" in html
+    assert "All other tracks" in html
+    divider = html.index("All other tracks")
+    # Finance is recommended (its card appears before the "All other tracks" divider).
+    assert html.index('/prep/track/finance"') < divider
+    # Behavioral is universal — recommended for this resume too.
+    assert html.index('/prep/track/behavioral"') < divider
+    # The full catalog is intact: the software track is still on the page, just
+    # below the divider (not recommended for a finance resume).
+    assert '/prep/track/coding"' in html
+    assert html.index('/prep/track/coding"') > divider
+
+
+# --------------------------------------------------------- UI-QA regressions
+# Route-level regression tests for the confirmed UI-QA findings (run
+# reports/uiqa/20260628-140428), one per fixed bug. The status/apply actions are
+# keyed by job_id (per-user lazy applications), so these post job ids.
+def _webapp_client(tmp_path):
+    """A throwaway app + TestClient for the route-level UI-QA regressions."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text(
+        "Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  locations: [new york]\n"
+        "ranking:\n  half_life_days: 7\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+    app = create_app(root, db_path=root / "data" / "test.db")
+    return root, app, TestClient(app)
+
+
+def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
+    """UI-QA 8dab56ecae18: the Filter form's "near-miss" checkbox must round-trip
+    both ways. An unchecked HTML checkbox is omitted from the GET query, so
+    without a hidden companion the handler's near_miss="1" default kept near-miss
+    jobs visible forever. With <input type="hidden" name="near_miss" value="0">
+    the box can finally be turned off; a normal job stays visible throughout."""
+    root, app, client = _webapp_client(tmp_path)
+    db.upsert_job(app.state.conn, record("k-normal", title="Normal Match Engineer"))
+    db.upsert_job(app.state.conn, record("k-near", company="Beta",
+                                         title="Near Miss Engineer",
+                                         filter_reason="UNLEVELED_TITLE"))
+
+    # Default: near-miss shown (handler default near_miss="1").
+    default = client.get("/?run_scope=all")
+    assert default.status_code == 200
+    assert "Normal Match Engineer" in default.text
+    assert "Near Miss Engineer" in default.text
+
+    # Box checked: form submits the hidden "0" then the checkbox "1"; last wins → on.
+    on = client.get("/?run_scope=all&near_miss=0&near_miss=1")
+    assert on.status_code == 200
+    assert "Near Miss Engineer" in on.text
+
+    # Box UNCHECKED: only the hidden "0" is submitted → off → near-miss hidden,
+    # but the normal job is unaffected (this was previously impossible).
+    off = client.get("/?run_scope=all&near_miss=0")
+    assert off.status_code == 200
+    assert "Normal Match Engineer" in off.text
+    assert "Near Miss Engineer" not in off.text
+
+    # The rendered form carries the hidden companion that makes it work.
+    assert '<input type="hidden" name="near_miss" value="0">' in default.text
+
+
+def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
+    """UI-QA a3273a214cc8 / 38e768ed8515: a job id >= 2**63 (past SQLite's
+    signed-64-bit INTEGER) used to raise OverflowError → HTTP 500. The id routes
+    must degrade to their not-found redirect (303) and the apply-status JSON
+    route to its empty payload, while a valid id still works everywhere."""
+    root, app, client = _webapp_client(tmp_path)
+    db.upsert_job(app.state.conn, record())
+    job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
+    # The local owner's application is auto-created on insert (lazy model).
+    app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
+
+    big = 2 ** 63  # one past SQLite's signed-64-bit INTEGER max → used to 500
+
+    for path in (f"/jobs/{big}", f"/clusters/job/{big}", f"/jobs/{big}/referrals"):
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code != 500, f"{path} should not 500"
+        assert resp.status_code == 303, f"{path} should redirect, got {resp.status_code}"
+
+    resp = client.get(f"/api/apply-status/{big}")
+    assert resp.status_code == 200
+    assert resp.json()["application_status"] == "unknown"
+
+    assert client.get(f"/jobs/{job_id}", follow_redirects=False).status_code == 200
+    assert client.get(f"/clusters/job/{job_id}", follow_redirects=False).status_code == 200
+    assert client.get(f"/jobs/{job_id}/referrals", follow_redirects=False).status_code == 200
+    assert client.get(f"/api/apply-status/{app_id}").status_code == 200
+
+
+def test_company_with_space_in_key_is_reachable(tmp_path):
+    """UI-QA 4f9bcc77c904: a company whose key contains a space ("goldman sachs")
+    must be reachable from the landing page. The link is a URL *path* segment, so
+    the space is percent-encoded ("%20"), not quote_plus's "+" (a literal plus in
+    a path, which routed to a non-existent key and a misleading empty state). The
+    encoded path round-trips back to the seeded key and renders its question."""
+    root, app, client = _webapp_client(tmp_path)
+    db.seed_company_problems(app.state.conn, [{
+        "company": "Goldman Sachs", "company_key": "goldman sachs",
+        "leetcode_number": 1, "leetcode_slug": "two-sum", "title": "Two Sum",
+        "difficulty": "easy", "frequency": 90.0,
+        "url": "https://leetcode.com/problems/two-sum/",
+    }])
+
+    home = client.get("/companies")
+    assert home.status_code == 200
+    assert "/companies/goldman%20sachs" in home.text
+    assert "/companies/goldman+sachs" not in home.text
+
+    detail = client.get("/companies/goldman%20sachs")
+    assert detail.status_code == 200
+    assert "Two Sum" in detail.text
+    assert "Goldman Sachs" in detail.text
+
+
+def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
+    """UI-QA 8567376de307: a corrupt/truncated PDF (valid %PDF header, unparseable
+    body) makes pypdf raise PdfStreamError (not ValueError), which the handler's
+    `except ValueError` used to miss → HTTP 500. It must degrade to the friendly
+    303 redirect like every other bad upload; a valid text resume still uploads."""
+    root, app, client = _webapp_client(tmp_path)
+
+    resp = client.post(
+        "/resume/upload",
+        files={"file": ("malformed.pdf", b"%PDF-1.4 broken", "application/pdf")},
+        follow_redirects=False)
+    assert resp.status_code == 303, f"expected friendly 303, got {resp.status_code}"
+    q = parse_qs(urlsplit(resp.headers["location"]).query)
+    assert "error" in q and q["error"][0]  # a user-facing message, not a 500
+
+    ok = client.post(
+        "/resume/upload",
+        files={"file": ("resume.txt",
+                        b"Jane Engineer\nSenior Software Engineer\n\nEXPERIENCE\n"
+                        b"Built distributed backend systems at scale for many years.\n",
+                        "text/plain")},
+        follow_redirects=False)
+    assert ok.status_code == 303
+    assert "uploaded=1" in ok.headers["location"]
+    assert (root / "data" / "resume.txt").read_text().startswith("Jane Engineer")
+
+
+def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
+    """UI-QA 3945061baf6f: a job with no posting URL must not render dead controls.
+    The "Open posting" link would become href="" (reloads the page) and the
+    apply/re-fill POSTs 404 with no URL. Guard them with {% if job.url %} so
+    URL-less jobs show a muted "no posting link" note instead; a job *with* a URL
+    still shows the controls."""
+    root, app, client = _webapp_client(tmp_path)
+    # url="" suppresses the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
+                                         company="Datadog", url=""))
+    job_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Datadog'").fetchone()["id"]
+
+    html = client.get(f"/jobs/{job_id}").text
+    assert 'href=""' not in html          # no dead "Open posting" link
+    assert "Open posting" not in html     # the link itself is gone
+    assert "data-apply-btn" not in html   # no Auto-fill apply button
+    assert "data-refill-btn" not in html  # no Re-fill button
+    assert "no posting link" in html      # muted note shown instead
+
+    # Sanity: a job *with* a URL still shows the posting controls.
+    db.upsert_job(app.state.conn, record(key="greenhouse:Acme:1",
+                                         company="Acme", url="https://acme.com/jobs/1"))
+    acme_id = app.state.conn.execute(
+        "SELECT id FROM jobs WHERE company = 'Acme'").fetchone()["id"]
+    acme_html = client.get(f"/jobs/{acme_id}").text
+    assert "data-apply-btn" in acme_html
+    assert 'href="https://acme.com/jobs/1"' in acme_html
+
+
+# ------------------------------------------------ dashboard search escaping
+def test_search_escapes_like_wildcards(conn):
+    """A user search term is a literal substring, not a LIKE pattern. Bare '%'
+    or '_' must NOT act as wildcards: q='%' should match nothing (no job has a
+    literal percent) rather than returning every row, and 'N_w' must not match
+    'New York' via the single-char wildcard. Literal '%'/'_' match literally."""
+    db.upsert_job(conn, record("k1", title="Senior Backend Engineer",
+                               location="New York, NY", description="payments fraud"))
+    db.upsert_job(conn, record("k2", company="Beta", title="Senior ML Engineer",
+                               location="Remote", description="50% travel"))
+    # '%' is escaped → matches a literal percent sign only (k2's "50% travel"),
+    # NOT every row.
+    pct = db.search_jobs(conn, q="%")
+    assert {r["key"] for r in pct} == {"k2"}
+    assert len(pct) < 2                                   # crucially: not "all rows"
+    # '_' is escaped → 'N_w' is a literal, so it does NOT match "New York".
+    assert db.search_jobs(conn, q="N_w") == []
+    # A real substring still matches (escaping doesn't break normal search).
+    assert {r["key"] for r in db.search_jobs(conn, q="New York")} == {"k1"}
+    assert {r["key"] for r in db.search_jobs(conn, q="50%")} == {"k2"}
+
+
+def test_settings_manual_links_have_rel_noopener(tmp_path):
+    """The "Manual check" external links open in a new tab; without rel="noopener"
+    the opened page gets window.opener access. Assert the rendered links carry it."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
+        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\n"
+        "manual_check:\n  - name: Stripe\n    careers_url: https://stripe.com/jobs\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    client = TestClient(app)
+    html = client.get("/settings").text
+    assert "https://stripe.com/jobs" in html           # the manual-check link rendered
+    # The target=_blank link must carry rel="noopener" (no target="_blank" without it).
+    assert 'target="_blank" rel="noopener"' in html
+    assert 'href="https://stripe.com/jobs" target="_blank" rel="noopener"' in html
+
+
+def test_fit_map_resume_star_is_click_through():
+    """The résumé star (.cmap-resume) is painted over the highest-fit dots; without
+    pointer-events:none it swallows clicks meant for those top posting dots. Assert
+    the CSS rule disables pointer events on the star."""
+    css = (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.css").read_text()
+    rule = next(line for line in css.splitlines()
+                if line.lstrip().startswith(".cmap-resume "))
+    normalized = rule.replace(" ", "")
+    assert "pointer-events:none" in normalized, rule
+
+
+def test_state_change_endpoints_tolerate_stale_id(tmp_path):
+    """Per-row status/progress toggles carry an id straight from a rendered row.
+    If that row was removed (DB reseeded, progress reset, a duplicated tab) the
+    id is stale: the setter no-ops the parent UPDATE but its event/progress
+    INSERT would violate the FK. That must degrade to a 303 redirect, never a
+    500 (matching the bulk-status and company-problem paths). Covers SQLite,
+    the default test backend; the Postgres-parity check lives in
+    test_postgres_backend.py. A valid id on each endpoint still persists."""
+    from fastapi.testclient import TestClient
+    from webapp.app import create_app
+
+    root = tmp_path
+    (root / "data").mkdir()
+    (root / "config").mkdir()
+    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "config" / "settings.yaml").write_text(
+        "search:\n  query: senior software engineer\n  locations: [new york]\n"
+        "ranking:\n  half_life_days: 7\n")
+    (root / "config" / "companies.yaml").write_text(
+        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+
+    app = create_app(root, db_path=root / "data" / "test.db")
+    conn = app.state.conn
+    client = TestClient(app)
+    db.upsert_job(conn, record())
+
+    # A huge, non-existent id with a *valid* state on every state-change POST.
+    STALE = 99999999
+    stale_cases = [
+        # Status is keyed by job_id now (per-user lazy applications); a stale job id
+        # makes get_or_create_application return None -> 303 no-op, no orphan row.
+        (f"/jobs/{STALE}/status", {"status": "applied", "note": "from a stale row"}),
+        (f"/prep/lessons/{STALE}/state", {"state": "completed", "next": "/prep"}),
+        (f"/prep/problems/{STALE}/state", {"state": "solved", "next": "/prep"}),
+        (f"/prep/ctci-problems/{STALE}/state", {"state": "solved", "next": "/prep"}),
+        (f"/company-problems/{STALE}/state", {"state": "solved", "next": "/companies"}),
+    ]
+    for path, data in stale_cases:
+        resp = client.post(path, data=data, follow_redirects=False)
+        assert resp.status_code == 303, f"{path} on a stale id should 303, got {resp.status_code}"
+    # No orphan progress/event rows were written for the stale id.
+    assert conn.execute("SELECT COUNT(*) c FROM application_events "
+                        "WHERE application_id = ?", (STALE,)).fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM prep_lesson_progress "
+                        "WHERE lesson_id = ?", (STALE,)).fetchone()["c"] == 0
+
+    # And a *valid* id on each endpoint still works and persists the new state.
+    job_id = conn.execute("SELECT id FROM jobs LIMIT 1").fetchone()["id"]
+    lesson_id = conn.execute("SELECT id FROM prep_lessons LIMIT 1").fetchone()["id"]
+    problem_id = conn.execute("SELECT id FROM prep_problems LIMIT 1").fetchone()["id"]
+    company_problem_id = conn.execute("SELECT id FROM company_problems LIMIT 1").fetchone()["id"]
+    # The seeded corpus has no CtCI problems, so add a real parent row to also
+    # exercise the valid-id path for that endpoint.
+    module_id = conn.execute("SELECT id FROM prep_modules LIMIT 1").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO prep_ctci_problems "
+        "(module_id, slug, ctci_id, title, prompt_md, solution_md) "
+        "VALUES (?, 'is-unique', '1.1', 'Is Unique', 'prompt', 'solution')",
+        (module_id,))
+    conn.commit()
+    ctci_id = conn.execute("SELECT id FROM prep_ctci_problems LIMIT 1").fetchone()["id"]
+
+    assert client.post(f"/jobs/{job_id}/status",
+                       data={"status": "applied", "note": "real"},
+                       follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT status FROM applications WHERE job_id = ?",
+                        (job_id,)).fetchone()["status"] == "applied"
+
+    assert client.post(f"/prep/lessons/{lesson_id}/state",
+                       data={"state": "completed"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM prep_lesson_progress WHERE lesson_id = ?",
+                        (lesson_id,)).fetchone()["state"] == "completed"
+
+    assert client.post(f"/prep/problems/{problem_id}/state",
+                       data={"state": "solved"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM prep_problem_progress WHERE problem_id = ?",
+                        (problem_id,)).fetchone()["state"] == "solved"
+
+    assert client.post(f"/prep/ctci-problems/{ctci_id}/state",
+                       data={"state": "solved"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM prep_ctci_problem_progress WHERE ctci_problem_id = ?",
+                        (ctci_id,)).fetchone()["state"] == "solved"
+
+    assert client.post(f"/company-problems/{company_problem_id}/state",
+                       data={"state": "solved"}, follow_redirects=False).status_code == 303
+    assert conn.execute("SELECT state FROM company_problem_progress WHERE company_problem_id = ?",
+                        (company_problem_id,)).fetchone()["state"] == "solved"
+
+
+# ----------------------------------------------------- static / client JS
+def _app_js() -> str:
+    return (Path(__file__).resolve().parent.parent / "webapp" / "static" / "app.js").read_text()
+
+
+def test_clipboard_writes_are_guarded():
+    """Regression for UI-QA findings 47847ee469f0 (jobs copy panel) and
+    63d83e6dcc22 (resume copy buttons): a denied/unavailable Clipboard API used
+    to reject with no .catch(), so the copy failed silently and the rejection
+    escaped as an uncaught page error. Every navigator.clipboard.writeText(...)
+    call must be guarded by a .catch() (a graceful fallback / user feedback).
+
+    Static-text assertion (this is client-side JS) kept robust to formatting by
+    scanning each writeText call's promise chain up to the next one for .catch(.
+    """
+    src = _app_js()
+    needle = "navigator.clipboard.writeText("
+    starts = [i for i in range(len(src)) if src.startswith(needle, i)]
+    assert starts, "expected the clipboard copy code to still use writeText()"
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(src)
+        chain = src[start:end]
+        assert ".catch(" in chain, (
+            "navigator.clipboard.writeText() at offset "
+            f"{start} has no .catch() — a denied clipboard would throw uncaught"
+        )
+
+
+def test_clipboard_has_a_fallback_path():
+    """The fix should degrade gracefully (legacy execCommand path) rather than
+    only swallow the error, so copy keeps working in non-secure contexts."""
+    src = _app_js()
+    assert "execCommand" in src, "expected a legacy copy fallback for denied clipboard"

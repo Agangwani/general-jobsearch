@@ -19,9 +19,20 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parent.parent,
         help="Project root containing config/, data/, reports/ (default: repo root)",
     )
+    parser.add_argument(
+        "--user",
+        default="local",
+        help="Run for a specific user id (hosted multi-user). Namespaces this "
+        "user's resume, registry, reports, and seen-state; defaults to the "
+        "single-user 'local' owner.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Fetch, rank, and write the daily report")
-    sub.add_parser("verify", help="Check that every configured job board is reachable")
+    sub.add_parser("run-startups", help="Run the parallel startup pipeline "
+                   "(reports/startups/) over the startup registry")
+    ver = sub.add_parser("verify", help="Check that every configured job board is reachable")
+    ver.add_argument("--startups", action="store_true",
+                     help="Verify the startup registry instead of the main one")
     disc = sub.add_parser("discover", help="Auto-discover a company's ATS board slug")
     disc.add_argument("company", help="Company name (quoted if multi-word)")
     disc.add_argument("--url", default="", help="Careers page URL (default: from companies.yaml)")
@@ -34,7 +45,26 @@ def main(argv: list[str] | None = None) -> int:
                        help="Max companies to add (default: discovery.max_companies)")
     dcomp.add_argument("--dry-run", action="store_true",
                        help="Print the generated registry instead of writing it")
-    sub.add_parser("ingest", help="Pull reports/latest.json into the application database")
+    dstart = sub.add_parser(
+        "discover-startups",
+        help="Mine the Y Combinator directory (+ HN, The Muse) for startup "
+        "companies matching your resume, with employee/funding/investor metadata",
+    )
+    dstart.add_argument("--limit", type=int, default=0,
+                        help="Max startups to add (default: startups.max_companies)")
+    dstart.add_argument("--dry-run", action="store_true",
+                        help="Print the generated registry instead of writing it")
+    dboards = sub.add_parser(
+        "discover-ats-boards",
+        help="Mine the Common Crawl index for public ATS board tokens "
+        "(Greenhouse/Lever/Ashby) and write them to the ats_boards seed",
+    )
+    dboards.add_argument("--limit", type=int, default=500,
+                         help="Max board URLs to pull per ATS domain (default: 500)")
+    sub.add_parser("ingest", help="Pull the latest reports (main + startups) "
+                   "into the application database")
+    sub.add_parser("rescore-users", help="Re-score every active user's résumé "
+                   "against the current job corpus (daily worker; runs after ingest)")
     ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
     ui.add_argument("--port", type=int, default=8484)
     ui.add_argument("--host", default="127.0.0.1")
@@ -46,20 +76,38 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return pipeline.run(args.root)
+        return pipeline.run(args.root, user_id=args.user)
+    if args.command == "run-startups":
+        return pipeline.run(args.root, track_name="startups", user_id=args.user)
     if args.command == "verify":
-        return pipeline.verify(args.root)
+        return pipeline.verify(args.root, track_name="startups" if args.startups else "main")
     if args.command == "discover":
         from .discover import discover
         return discover(args.root, args.company, careers_url=args.url)
     if args.command == "discover-companies":
         from .company_discovery import discover_companies
-        return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run)
+        return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run,
+                                  user_id=args.user)
+    if args.command == "discover-startups":
+        from .company_discovery import discover_companies
+        return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run,
+                                  track_name="startups", user_id=args.user)
+    if args.command == "discover-ats-boards":
+        from .sources.commoncrawl import discover_ats_boards_command
+        return discover_ats_boards_command(args.root, limit=args.limit)
     if args.command == "ingest":
         from webapp import db as webdb
         from webapp.ingest import ingest_latest
         conn = webdb.connect(args.root / "data" / "jobsearch.db")
-        ingest_latest(args.root, conn)
+        ingest_latest(args.root, conn, user_id=args.user)
+        return 0
+    if args.command == "rescore-users":
+        from webapp import db as webdb
+        from webapp.fit import rescore_all_active_users
+        conn = webdb.connect(args.root / "data" / "jobsearch.db")
+        results = rescore_all_active_users(conn)
+        print(f"Re-scored {len(results)} user(s), "
+              f"{sum(results.values())} job-fit rows updated.", file=sys.stderr)
         return 0
     if args.command == "ui":
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.allow_remote:

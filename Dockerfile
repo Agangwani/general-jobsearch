@@ -1,31 +1,37 @@
-# Container image for the jobsearch web UI, sized for an AWS App Runner MVP.
+# Run the jobsearch web app on any managed container host (Render, Google Cloud
+# Run, Fly, Railway, a VPS …). The app reads JOBSEARCH_DATABASE_URL at runtime
+# and connects to Postgres (Supabase); with it unset it would fall back to local
+# SQLite inside the container, which is ephemeral — so always set it in hosting.
+# Full walkthrough: docs/deploy.md.
 #
-# Notes:
-# - Binds 0.0.0.0:8080 (App Runner's default port) with --allow-remote, since
-#   the app otherwise refuses any non-loopback bind.
-# - A password gate is enforced at runtime via JOBSEARCH_BASIC_AUTH_PASSWORD
-#   (set in the App Runner service config) so the public URL isn't wide open.
-# - The Playwright *package* is installed (it's an import-time dependency) but
-#   the Chromium *binary* is intentionally not downloaded: the dashboard UI and
-#   API-based boards work without it, and browser-scraped boards / auto-fill
-#   degrade gracefully. This keeps the image small and the build fast.
+# NOTE: the browser-driven features (auto-fill apply, LinkedIn referral
+# discovery) are local-only by design and are NOT part of a hosted deployment —
+# this image intentionally ships no Chromium.
 FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Belt-and-suspenders: never let any transitive Playwright step pull browser
+    # binaries into this image (they aren't used server-side).
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# Dependencies first, so the (slow) pip layer is cached across code changes.
+COPY requirements.txt .
+RUN pip install -r requirements.txt
 
+# Application code (everything not excluded by .dockerignore).
 COPY . .
 
-# Runtime dirs (the SQLite DB and uploaded resume live here; ephemeral on
-# App Runner — re-upload after a redeploy/restart).
-RUN mkdir -p data reports
+# Managed hosts inject the listening port via $PORT; default to 8484 so a plain
+# `docker run -p 8484:8484` works locally too.
+ENV PORT=8484
+EXPOSE 8484
 
-EXPOSE 8080
-
-CMD ["python", "-m", "jobsearch", "ui", "--host", "0.0.0.0", "--port", "8080", "--allow-remote"]
+# `--allow-remote` is required to bind a non-loopback address; the app refuses
+# otherwise. ⚠️ The UI is UNAUTHENTICATED today — do not expose this publicly
+# until the auth stage lands (docs/design-hosting-progress.md, Stage 2).
+CMD ["sh", "-c", "python -m jobsearch ui --host 0.0.0.0 --port ${PORT:-8484} --allow-remote"]

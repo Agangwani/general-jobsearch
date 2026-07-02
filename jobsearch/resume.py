@@ -16,6 +16,7 @@ This module supplies the missing intake pieces:
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 SAMPLE_RESUME = "data/sample_resume.txt"
+LOCAL_USER = "local"
 
 # Resume-boilerplate words that say nothing about the candidate's domain.
 _RESUME_STOP = frozenset({
@@ -37,13 +39,20 @@ _WORD = re.compile(r"[a-zA-Z][a-zA-Z+#.]{1,}")
 
 def pdf_to_text(data: bytes) -> str:
     """Extract plain text from PDF bytes. Raises ValueError when the PDF
-    yields no extractable text (scanned image, encrypted)."""
+    yields no extractable text (scanned image, encrypted) or cannot be parsed
+    (a truncated/corrupt file with a valid %PDF header but an unreadable body —
+    pypdf raises PdfStreamError/PdfReadError, neither a ValueError, so we
+    translate them here so callers get one friendly error to handle)."""
     import io
 
     from pypdf import PdfReader
+    from pypdf.errors import PyPdfError
 
-    reader = PdfReader(io.BytesIO(data))
-    pages = [page.extract_text() or "" for page in reader.pages]
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except PyPdfError as exc:
+        raise ValueError("that file isn't a valid PDF") from exc
     text = "\n".join(pages).strip()
     if len(text) < 100:
         raise ValueError(
@@ -81,12 +90,48 @@ def extract_keywords(text: str, top_n: int = 24) -> list[str]:
     return result
 
 
-def load_resume_text(root: Path, settings: dict) -> tuple[str, bool]:
-    """Return (resume text, is_sample). Resolution order: the configured
-    resume path (data/resume.txt — written by the UI upload), then the
-    bundled sample so first runs work out of the box."""
-    configured = root / settings.get("resume", "data/resume.txt")
-    if configured.exists():
-        return configured.read_text(), False
+def _resume_from_db(root: Path, user_id: str) -> str | None:
+    """The user's resume text from the application DB, or None. Best-effort: the
+    DB is only consulted when it already exists (hosted, or a webapp user) so a
+    pure-CLI clone with no DB stays entirely file-based; any failure falls back
+    to the file/sample."""
+    db_path = root / "data" / "jobsearch.db"
+    if not db_path.exists() and not os.environ.get("JOBSEARCH_DATABASE_URL"):
+        return None
+    try:
+        from webapp import db
+        conn = db.connect(db_path)
+        try:
+            return db.get_resume(conn, user_id)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - DB unavailable → fall back to the file
+        return None
+
+
+def load_resume_text(root: Path, settings: dict,
+                     user_id: str = LOCAL_USER) -> tuple[str, bool]:
+    """Return (resume text, is_sample) for a user.
+
+    - Local (single-user): data/resume.txt is the source of truth — a hand-edit
+      to it must win (jobsearch/CLAUDE.md) — then the DB, then the bundled
+      sample. Unchanged from before per-user support.
+    - Hosted per-user: the resume stored in the DB (durable — the filesystem is
+      ephemeral on hosted deploys), then the bundled sample. It must NEVER fall
+      back to the shared data/resume.txt, which is another user's resume.
+
+    The bundled sample keeps a fresh clone working before anything is uploaded."""
     sample = root / SAMPLE_RESUME
+    if user_id == LOCAL_USER:
+        configured = root / settings.get("resume", "data/resume.txt")
+        if configured.exists():
+            return configured.read_text(), False
+        stored = _resume_from_db(root, user_id)
+        if stored:
+            return stored, False
+        return sample.read_text(), True
+    # Non-local: DB only, then the neutral sample — never the owner's file.
+    stored = _resume_from_db(root, user_id)
+    if stored:
+        return stored, False
     return sample.read_text(), True

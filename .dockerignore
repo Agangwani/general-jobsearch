@@ -1,15 +1,23 @@
+# Keep the build context (and image) lean and free of local/runtime state.
 .git
 .github
-.venv
-**/__pycache__
+.claude
+__pycache__/
+**/__pycache__/
 *.pyc
-.pytest_cache
-tests
-docs
-# Personal runtime data — never bake into the image. Resume/profile/DB get
-# uploaded at runtime through the UI instead.
-data/*
-!data/.gitkeep
-!data/sample_resume.txt
-reports/*
-!reports/.gitkeep
+.venv
+venv/
+node_modules/
+
+# Local-only runtime state — never bake into a hosted image.
+data/*.db
+data/*.sqlite*
+data/token.json
+data/*.json
+reports/
+
+# Dev-only.
+tests/
+uiqa/
+*.md
+docs/

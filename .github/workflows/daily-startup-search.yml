@@ -1,0 +1,76 @@
+name: Startup job search
+
+# Manual by default — run it from the Actions tab (workflow_dispatch). Uncomment
+# the schedule to run it daily like the main search; it commits reports/startups
+# and the startup registry/state back to the repo.
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "43 11 * * *"   # 7:43am ET, just after the main run
+
+permissions:
+  contents: write
+
+concurrency:
+  group: startup-job-search
+  cancel-in-progress: false
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Get Playwright version
+        id: playwright-version
+        run: echo "version=$(pip show playwright | awk '/^Version:/{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Chromium for browser-scraped boards
+        run: playwright install --with-deps chromium
+
+      - name: Run tests
+        run: pip install pytest && python -m pytest -q
+
+      - name: Discover startups (build the registry + metadata)
+        run: python -m jobsearch discover-startups
+
+      - name: Run the startup job search
+        run: python -m jobsearch run-startups
+
+      # Mirrors daily-job-search.yml. The startup registry + metadata sidecar
+      # (data/companies.startups.yaml, data/startup_meta.json) are deliberately
+      # NOT committed — they derive from your resume and are gitignored. The
+      # report below is the delivery; the artifact upload is the durable copy.
+      - name: Commit startup report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/startups data/seen_jobs.startups.tsv
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Startup job report $(date -u +%F)"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload startup report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-job-report
+          path: reports/startups/latest.*

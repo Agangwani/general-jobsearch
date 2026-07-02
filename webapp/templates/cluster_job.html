@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Why this fit — {{ job.company }} · {{ job.title }}{% endblock %}
+{% block content %}
+
+<div class="crumb"><a href="/clusters">Fit map</a> › <a href="/jobs/{{ job.id }}">{{ job.company }}</a> › Why this fit</div>
+
+<header class="page-head">
+  <div class="job-head">
+    {% if job.fit_score is not none %}
+    <span class="fit-ring fit-ring-lg" style="--fit:{{ '%.0f'|format(job.fit_score) }}"
+          data-tier="{{ 'high' if job.fit_score >= 75 else 'mid' if job.fit_score >= 50 else 'low' }}"
+          title="fit {{ '%.0f'|format(job.fit_score) }} / 100">
+      <span class="fit-val">{{ '%.0f'|format(job.fit_score) }}</span>
+    </span>
+    {% endif %}
+    <div>
+      <h1>Why this fit is {{ '%.0f'|format(job.fit_score) if job.fit_score is not none else '—' }}</h1>
+      <div class="subtitle">
+        <strong>{{ job.company }}</strong> · {{ job.title }}
+        {% if breakdown %}<span class="tag">rank #{{ breakdown.rank }} of {{ clustering.params.scored }} scored</span>{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="actions">
+    <a class="btn btn-ghost" href="/jobs/{{ job.id }}">← Job detail</a>
+    <a class="btn btn-ghost" href="/clusters">Full map →</a>
+  </div>
+</header>
+
+{% if not breakdown %}
+  <div class="setup-box">
+    <h3 style="margin-top:0">No breakdown for this posting</h3>
+    <p class="muted">The fit map shows the <em>latest</em> pipeline run. This job
+      was scored on an earlier run, so its exact math isn’t in the current map.
+      Run the pipeline again to refresh it, or
+      <a href="/clusters">open the current map</a>.</p>
+  </div>
+{% else %}
+  {% set b = breakdown %}
+  {% set p = clustering.params %}
+  {% set cos_pct = (b.cosine_contribution / b.raw * 100) if b.raw else 0 %}
+  {% set clu_pct = (b.cluster_contribution / b.raw * 100) if b.raw else 0 %}
+
+  <section class="score-build">
+    <h2>How the score was built</h2>
+    <p class="muted">Two ingredients combine into a raw score, which is then
+      scaled so the day’s best match reads 100.</p>
+
+    <div class="contrib-bar" title="raw score {{ b.raw }}">
+      <span class="contrib contrib-cos" style="width: {{ cos_pct | round(1) }}%">
+        <span class="contrib-lab">resume similarity</span>
+      </span>
+      <span class="contrib contrib-clu" style="width: {{ clu_pct | round(1) }}%">
+        <span class="contrib-lab">cluster fit</span>
+      </span>
+    </div>
+
+    <div class="formula-line">
+      <code>raw =
+        {{ (p.cosine_weight * 100) | round | int }}% × {{ '%.3f'|format(b.cosine) }}
+        + {{ (p.cluster_weight * 100) | round | int }}% × {{ '%.3f'|format(b.affinity) }}
+        = {{ '%.3f'|format(b.raw) }}</code>
+      <span class="formula-arrow">→</span>
+      <code>fit = {{ '%.3f'|format(b.raw) }} × {{ '%.1f'|format(p.scale) }}
+        = <b>{{ '%.0f'|format(b.fit) }}</b></code>
+    </div>
+
+    <div class="metric-cards">
+      <div class="metric-card">
+        <span class="metric-label">Resume similarity (cosine)</span>
+        <span class="metric-num">{{ '%.3f'|format(b.cosine) }}</span>
+        <span class="metric-foot">Direct keyword overlap between this posting and
+          your resume. Worth {{ (p.cosine_weight * 100) | round | int }}% of the score —
+          contributed <b>{{ '%.3f'|format(b.cosine_contribution) }}</b>.</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Cluster fit (affinity)</span>
+        <span class="metric-num">{{ '%.3f'|format(b.affinity) }}</span>
+        <span class="metric-foot">How well your resume matches this posting’s topic
+          group{% if cluster %} (“{{ cluster.terms[:3] | join(', ') if cluster.terms else cluster.label }}”){% endif %}.
+          Worth {{ (p.cluster_weight * 100) | round | int }}% — contributed
+          <b>{{ '%.3f'|format(b.cluster_contribution) }}</b>.</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Keywords that earned the match</h2>
+    {% if b.match_terms %}
+    <p class="muted">The terms shared with your resume, ranked by how much each
+      added to the similarity above. These literally sum to the cosine score.</p>
+    {% set top_w = b.match_terms[0][1] or 1 %}
+    <div class="term-chips">
+      {% for term, weight in b.match_terms %}
+      <span class="term-chip" title="contributed {{ '%.4f'|format(weight) }} to the cosine">
+        <span class="term-chip-bar" style="width: {{ (weight / top_w * 100) | round(1) }}%"></span>
+        <span class="term-chip-text">{{ term }}</span>
+      </span>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">No strongly-overlapping keywords — this posting’s vocabulary
+      barely intersects your resume, which is why the similarity is low.</p>
+    {% endif %}
+
+    {% if b.top_terms %}
+    <p class="muted" style="margin-top:var(--sp-4)">For context, the model reads
+      <strong>this posting</strong> as being mostly about:
+      {% for t in b.top_terms %}<code>{{ t }}</code>{{ ' ' }}{% endfor %}</p>
+    {% endif %}
+  </section>
+
+  {% if cluster %}
+  <section>
+    <h2>This posting’s cluster</h2>
+    <div class="card cluster-card {{ 'is-home' if cluster.is_resume_cluster }}" style="max-width:520px">
+      <div class="cluster-card-head">
+        <span class="cl-swatch" data-cluster-swatch="{{ cluster.id }}"></span>
+        <h3>Cluster {{ cluster.id }}{% if cluster.is_resume_cluster %} <span class="tag tag-green">★ your home cluster</span>{% endif %}</h3>
+      </div>
+      <p class="desc">{{ cluster.terms | join(' · ') if cluster.terms else cluster.label }}</p>
+      <div class="meta">
+        <span>resume affinity <b>{{ '%.2f'|format(cluster.affinity) }}</b></span>
+        <span><b>{{ cluster.size }}</b> postings scored here</span>
+      </div>
+      {% if not cluster.is_resume_cluster %}
+      <p class="src" style="margin-top:var(--sp-3)">Not your home cluster, so the
+        cluster-fit term is modest here — most of this score is direct keyword
+        similarity.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if points %}
+  <section>
+    <h2>Where it sits on the map</h2>
+    <p class="muted">This posting (ringed) relative to your resume (★) and the
+      rest of its cluster. Distance ≈ dissimilarity.</p>
+    <div class="cluster-map cluster-map-mini" id="cluster-map" data-variant="focus"></div>
+    <script type="application/json" id="cluster-map-data">
+      {{ {"points": points, "clusters": clustering.clusters, "resume": clustering.resume, "highlight": job.key} | tojson }}
+    </script>
+  </section>
+  {% endif %}
+{% endif %}
+
+{% endblock %}

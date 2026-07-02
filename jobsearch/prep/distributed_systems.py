@@ -6,6 +6,7 @@ TRACK_DISTRIBUTED = {
     "slug": "distributed-systems",
     "title": "Distributed Systems & Data",
     "description": "The theory under the systems: data models, storage engines, replication, partitioning, transactions, and consensus — from Kleppmann's Designing Data-Intensive Applications. The 'why' behind the System Design track.",
+    "disciplines": ["software", "data"],
     "modules": [
         {
             "slug": "reliable-scalable-maintainable",

@@ -11,14 +11,17 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from jobsearch.prep.seed import seed_into_db
 from jobsearch.referrals import discover as referrals_discover
@@ -26,7 +29,9 @@ from jobsearch.referrals import store as referrals_store
 from jobsearch.referrals.sources.linkedin import LinkedinDiscoverer
 from jobsearch.resume import extract_keywords, pdf_to_text
 
-from . import db, emailmod, gmail, ingest, prep_sources, profile
+from jobsearch.company_questions import canonical_key
+
+from . import auth, clusters, company_questions, db, emailmod, fit, gmail, ingest, prep_sources, profile
 from .apply_browser import SessionRegistry
 from .runner import PipelineRunner
 from .textfmt import description_html, prep_markdown
@@ -44,9 +49,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="jobsearch UI")
 
     # Optional HTTP Basic-auth gate. Off by default (local-only use needs no
-    # password); set JOBSEARCH_BASIC_AUTH_PASSWORD to require credentials, which
-    # is what the public cloud deploy does so the unauthenticated UI — profile
-    # PII, resume, Gmail, browser control — isn't exposed to anyone with the URL.
+    # password); set JOBSEARCH_BASIC_AUTH_PASSWORD to require credentials —
+    # the single-tenant cloud deploy (deploy/aws-apprunner.sh) does this so the
+    # UI — profile PII, resume, Gmail, browser control — isn't exposed to
+    # anyone with the URL. Composes with the Supabase login wall below: either
+    # can be enabled independently.
     _auth_pw = os.environ.get("JOBSEARCH_BASIC_AUTH_PASSWORD")
     if _auth_pw:
         _auth_user = os.environ.get("JOBSEARCH_BASIC_AUTH_USER", "demo")
@@ -65,8 +72,29 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                     return await call_next(request)
             return Response(
                 status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="jobsearch"'},
-            )
+                headers={"WWW-Authenticate": 'Basic realm="jobsearch"'})
+
+    # Auth (webapp/auth.py). Hosted mode (Supabase Auth configured) puts the app
+    # behind a login wall; local mode leaves it open and the wall is inert. The
+    # wall reads request.session, so SessionMiddleware is added *after* it
+    # (Starlette runs the last-added middleware outermost).
+    @app.middleware("http")
+    async def _auth_wall(request: Request, call_next):
+        if (auth.is_hosted() and not auth.is_open_path(request.url.path)
+                and not auth.session_user(request)):
+            return RedirectResponse("/login", status_code=303)
+        return await call_next(request)
+
+    if auth.is_hosted() and not os.environ.get("JOBSEARCH_SESSION_SECRET"):
+        print("WARNING: JOBSEARCH_SESSION_SECRET unset — using an insecure "
+              "default. Set a long random value before exposing this publicly.")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=os.environ.get("JOBSEARCH_SESSION_SECRET", "dev-insecure-session-key"),
+        same_site="lax",
+        https_only=bool(os.environ.get("JOBSEARCH_HTTPS_ONLY")),
+    )
+
     db_path = db_path or root / "data" / "jobsearch.db"
     conn = db.connect(db_path)
     profile.ensure_seeded(conn, root)
@@ -75,10 +103,20 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     # and idempotent (a content hash skips the work when nothing changed); user
     # progress lives in separate tables and is never wiped.
     seed_into_db(conn)
+    # Load the curated company → LeetCode question sets (idempotent; user
+    # solve-progress in company_problem_progress is never wiped).
+    company_questions.seed_bundled(conn)
     sessions = SessionRegistry(db_path, root / "data" / "browser_profile",
                                data_dir=root / "data")
     runner = PipelineRunner(root)
+    # The startup pipeline runs the same way under its own subcommand; both
+    # share the one ingest pass (ingest_latest pulls every track), so whichever
+    # finishes triggers a full refresh.
+    startup_runner = PipelineRunner(
+        root, cmd=[sys.executable, "-u", "-m", "jobsearch", "run-startups"])
+    runners = {"main": runner, "startups": startup_runner}
     app.state.runner = runner
+    app.state.startup_runner = startup_runner
 
     # Lazy LinkedIn referral discoverer — Playwright doesn't start until the
     # first /referrals/discover request, so this adds no startup cost.
@@ -98,36 +136,121 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.filters["qp"] = quote_plus
+    # `qp`/quote_plus encodes a space as "+", which is correct in a query string
+    # but is a *literal* plus inside a URL path segment — so a key like
+    # "goldman sachs" would build "/companies/goldman+sachs", matching no rows
+    # and showing a misleading empty state. `qpath` is for path segments: it
+    # percent-encodes spaces (and "/") so the link round-trips to the real key.
+    templates.env.filters["qpath"] = lambda s: quote(str(s), safe="")
     templates.env.filters["description_html"] = description_html
     templates.env.filters["prep_markdown"] = prep_markdown
+    from jobsearch.utils import normalize_company_name
+    templates.env.filters["normalize_company"] = normalize_company_name
     # Cache-bust the stylesheet by file mtime so CSS edits show up without a
     # manual hard-refresh (StaticFiles otherwise lets browsers serve it stale).
     templates.env.globals["css_v"] = str(int((HERE / "static" / "app.css").stat().st_mtime))
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
-        ctx.setdefault("counts", db.stack_counts(conn))
-        ctx.setdefault("prep_counts", db.prep_overall_counts(conn))
+        uid = auth.current_user_id(request)
+        ctx.setdefault("counts", db.stack_counts(conn, uid))
+        ctx.setdefault("prep_counts", db.prep_overall_counts(conn, uid))
+        ctx.setdefault("company_counts", db.company_overall_counts(conn, uid))
+        ctx.setdefault("current_user", auth.session_user(request))
+        ctx.setdefault("hosted", auth.is_hosted())
         return templates.TemplateResponse(request, template, ctx)
+
+    # ----------------------------------------------------------------- auth
+    # These routes are reachable without a session (the wall allows them); they
+    # are inert in local mode, where there is no login.
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(request: Request, error: str = "", msg: str = ""):
+        return templates.TemplateResponse(request, "login.html",
+                                          {"error": error, "msg": msg})
+
+    @app.post("/login")
+    def login_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+        try:
+            user = auth.sign_in(email.strip(), password)
+        except auth.AuthError as exc:
+            return templates.TemplateResponse(
+                request, "login.html", {"error": str(exc)}, status_code=400)
+        request.session["user"] = user
+        # First account to log in becomes the owner/admin.
+        db.upsert_app_user(conn, user["id"], user["email"],
+                           is_admin=db.count_app_users(conn) == 0)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/signup", response_class=HTMLResponse)
+    def signup_form(request: Request, error: str = ""):
+        return templates.TemplateResponse(
+            request, "signup.html", {"error": error, "open": auth.signups_open(conn)})
+
+    @app.post("/signup")
+    def signup_submit(request: Request, email: str = Form(...), password: str = Form(...)):
+        if not auth.signups_open(conn):
+            return templates.TemplateResponse(
+                request, "signup.html",
+                {"error": "Signups are currently closed.", "open": False},
+                status_code=403)
+        try:
+            user, needs_confirmation = auth.sign_up(email.strip(), password)
+        except auth.AuthError as exc:
+            return templates.TemplateResponse(
+                request, "signup.html", {"error": str(exc), "open": True},
+                status_code=400)
+        if needs_confirmation:
+            return templates.TemplateResponse(request, "login.html", {
+                "msg": "Account created — check your email to confirm, then log in."})
+        request.session["user"] = user
+        db.upsert_app_user(conn, user["id"], user["email"],
+                           is_admin=db.count_app_users(conn) == 0)
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/logout")
+    @app.post("/logout")
+    def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    @app.get("/healthz")
+    def healthz():
+        return JSONResponse({"ok": True})
 
     # ------------------------------------------------------------ dashboard
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, q: str = "", company: str = "", stack: str = "",
                   near_miss: str = "1", sort_by: str = "", sort_dir: str = "",
-                  min_fit: str = "", status_filter: str = "", run_scope: str = "latest"):
-        min_fit_val = float(min_fit) if min_fit else None
+                  min_fit: str = "", status_filter: str = "", run_scope: str = "latest",
+                  startup_scope: str = ""):
+        # Parse the user-supplied min-fit defensively: blank, whitespace, or
+        # malformed input (e.g. "abc", "12.5.6") means "no min-fit filter"
+        # rather than a 500.
+        try:
+            min_fit_val = float(min_fit) if min_fit.strip() else None
+        except (ValueError, TypeError):
+            min_fit_val = None
         # Default to the latest run so stale to-apply jobs from earlier,
         # differently-targeted runs don't pile up; run_scope=all shows everything.
+        uid = auth.current_user_id(request)
         latest_at = db.latest_run_ingested_at(conn)
         since = latest_at if (run_scope == "latest" and latest_at) else ""
         jobs = db.search_jobs(conn, q=q, company=company, stack=stack,
                               include_near_miss=near_miss == "1",
                               sort_by=sort_by, sort_dir=sort_dir,
                               min_fit=min_fit_val, status_filter=status_filter,
-                              since=since)
+                              since=since, startup_scope=startup_scope, user_id=uid)
+        # Startup facts for the rows shown, so the table can badge a startup and
+        # surface its employees/stage inline. Only the startup rows are queried.
+        startups: dict = {}
+        for j in jobs:
+            if j["is_startup"]:
+                su = db.startup_company_for(conn, j["company"])
+                if su:
+                    startups[su["company_key"]] = su
         # Company filter scoped to the current section (To apply / Applied), so
         # it only lists companies with jobs there. Keep a stale selection visible.
-        companies = db.companies_for_stack(conn, stack)
+        companies = db.companies_for_stack(conn, stack, uid)
         if company and company not in companies:
             companies = sorted(set(companies) | {company})
         last_run = conn.execute(
@@ -137,12 +260,14 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       last_run=last_run, sort_by=sort_by, sort_dir=sort_dir,
                       min_fit=min_fit, status_filter=status_filter,
                       run_scope=run_scope, has_runs=bool(latest_at),
+                      startup_scope=startup_scope, startups=startups,
                       all_statuses=db.APP_STATUSES)
 
     # ------------------------------------------------------------ job detail
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(request: Request, job_id: int):
-        job = db.job_with_application(conn, job_id)
+        uid = auth.current_user_id(request)
+        job = db.job_with_application(conn, job_id, uid)
         if job is None:
             return RedirectResponse("/", status_code=303)
         events = conn.execute(
@@ -156,14 +281,24 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         emails = conn.execute(
             "SELECT * FROM email_messages WHERE job_id = ? ORDER BY sent_at DESC",
             (job_id,)).fetchall()
+        # The LeetCode questions this company is known to ask (top few), plus a
+        # link to the full company page. Empty for companies not in the registry.
+        company_key = canonical_key(job["company"])
+        lc_questions = db.company_problems_for(conn, company_key, limit=6, user_id=uid)
+        lc_total = db.company_problem_count(conn, company_key)
+        # Startup facts (employees, funding, investors, …) for this company when
+        # it's a known startup — shown and editable in a sidebar panel.
+        startup = db.startup_company_for(conn, job["company"]) if job["is_startup"] else None
         return render(request, "job_detail.html", job=job, events=events,
                       emails=emails, statuses=db.APP_STATUSES,
-                      profile_fields=profile.panel_fields(conn))
+                      profile_fields=profile.panel_fields(conn, uid),
+                      lc_questions=lc_questions, lc_total=lc_total,
+                      company_key=company_key, startup=startup)
 
     # ----------------------------------------------------------- referrals
     @app.get("/jobs/{job_id}/referrals", response_class=HTMLResponse)
     def job_referrals(request: Request, job_id: int):
-        job = db.job_with_application(conn, job_id)
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None:
             return RedirectResponse("/", status_code=303)
         candidates = referrals_store.candidates_for_job(conn, job_id)
@@ -191,13 +326,124 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         threading.Thread(target=_go, daemon=True).start()
         return RedirectResponse(f"/jobs/{job_id}/referrals", status_code=303)
 
-    # ------------------------------------------------- software interview prep
+    # ----------------------------------------------- fit clustering visualization
+    @app.get("/clusters", response_class=HTMLResponse)
+    def clusters_home(request: Request, track: str = "main"):
+        """High-level view: a 2-D map of every scored posting, coloured by the
+        K-means cluster it landed in, with the resume plotted in the same space
+        and each cluster's topic terms + resume-affinity called out. `track`
+        switches between the main run and the startup run's fit map."""
+        track = "startups" if track == "startups" else "main"
+        clustering = clusters.load_clustering(root, track)
+        ids_by_key = (db.job_ids_by_key(conn, (j["key"] for j in clustering["jobs"]))
+                      if clustering else {})
+        return render(request, "clusters.html", clustering=clustering, track=track,
+                      has_startups=bool(clusters.load_clustering(root, "startups")),
+                      points=clusters.map_points(clustering, ids_by_key))
+
+    @app.get("/clusters/job/{job_id}", response_class=HTMLResponse)
+    def cluster_job(request: Request, job_id: int):
+        """Per-job view: exactly how this posting's fit score was built — the
+        cosine-similarity and cluster-affinity terms, the overlapping keywords
+        that drove the match, and where the posting sits on the map. A startup
+        job is read from the startup run's fit map."""
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
+        if job is None:
+            return RedirectResponse("/clusters", status_code=303)
+        track = "startups" if job["is_startup"] else "main"
+        clustering = clusters.load_clustering(root, track)
+        breakdown = clusters.job_breakdown(clustering, job["key"])
+        cluster = clusters.cluster_by_id(clustering, breakdown["cluster"]) if breakdown else None
+        ids_by_key = (db.job_ids_by_key(conn, (j["key"] for j in clustering["jobs"]))
+                      if clustering else {})
+        return render(request, "cluster_job.html", job=job, clustering=clustering,
+                      track=track, breakdown=breakdown, cluster=cluster,
+                      points=clusters.map_points(clustering, ids_by_key))
+
+    # ------------------------------------------------------------ startups
+    @app.get("/startups", response_class=HTMLResponse)
+    def startups_directory(request: Request, q: str = ""):
+        """The startup directory: every tracked startup with its helpful facts
+        (employees, funding, investors, notable people) and open-job counts.
+        Editable per company; populated by `discover-startups` + ingest."""
+        uid = auth.current_user_id(request)
+        rows = db.list_startups(conn, q=q, user_id=uid)
+        startup_clustering = bool(clusters.load_clustering(root, "startups"))
+        return render(request, "startups.html", startups=rows, q=q,
+                      has_startup_fitmap=startup_clustering,
+                      counts_startup=db.stack_counts(conn, uid))
+
+    @app.get("/startups/{company_key}", response_class=HTMLResponse)
+    def startup_detail(request: Request, company_key: str):
+        startup = db.startup_company(conn, company_key)
+        if startup is None:
+            return RedirectResponse("/startups", status_code=303)
+        jobs = db.search_jobs(conn, company=startup["name"], startup_scope="only",
+                              user_id=auth.current_user_id(request))
+        return render(request, "startup_detail.html", startup=startup, jobs=jobs)
+
+    @app.post("/startups/{company_key}/edit")
+    async def edit_startup(company_key: str, request: Request):
+        """Save manual edits to a startup's facts. Sets the user_edited guard so
+        a later ingest never clobbers what you typed."""
+        form = await request.form()
+        existing = db.startup_company(conn, company_key)
+        if existing is None:
+            return RedirectResponse("/startups", status_code=303)
+        meta = {"name": existing["name"]}
+        for field in db.STARTUP_SCALAR:
+            meta[field] = (form.get(field) or "").strip()
+        for field in db.STARTUP_LIST:
+            # comma- or newline-separated → list
+            raw = (form.get(field) or "").replace("\n", ",")
+            meta[field] = [p.strip() for p in raw.split(",") if p.strip()]
+        for field in db.STARTUP_BOOL:
+            meta[field] = form.get(field) in ("1", "on", "true")
+        db.upsert_startup_company(conn, meta, from_user=True)
+        return RedirectResponse(f"/startups/{quote_plus(company_key)}", status_code=303)
+
+    # ------------------------------------------------- interview prep
+    def _resume_disciplines() -> list[str]:
+        """The prep disciplines the current resume maps to, used to highlight
+        relevant tracks on /prep. Best-effort and offline — returns [] when
+        there's no resume or no confident occupation match (then the page shows
+        the full catalog without singling anything out)."""
+        try:
+            from jobsearch.config import load_settings
+            from jobsearch.prep.disciplines import disciplines_for_occupations
+            from jobsearch.resume import load_resume_text
+            from jobsearch.role_profile import resolve_profile
+            settings = load_settings(root / "config" / "settings.yaml")
+            resume_text, _ = load_resume_text(root, settings)
+            profile = resolve_profile(root, settings, resume_text)
+            return disciplines_for_occupations(profile.occupations) if profile else []
+        except Exception:  # noqa: BLE001 — prep must render even if matching hiccups
+            return []
+
+    def _split_prep_tracks(tracks: list[dict], disciplines: list[str]):
+        """Attach each track's disciplines (from the authored content) and split
+        into (recommended_for_resume, other)."""
+        from jobsearch.prep import ALL_TRACKS
+        from jobsearch.prep.disciplines import split_tracks
+        by_slug = {t["slug"]: (t.get("disciplines") or []) for t in ALL_TRACKS}
+        for row in tracks:
+            row["disciplines"] = by_slug.get(row["slug"], [])
+        return split_tracks(tracks, disciplines)
+
     @app.get("/prep", response_class=HTMLResponse)
     def prep_home(request: Request):
+        uid = auth.current_user_id(request)
+        tracks = db.prep_tracks_overview(conn, uid)
+        disciplines = _resume_disciplines()
+        recommended, other = _split_prep_tracks(tracks, disciplines)
         return render(request, "prep.html",
-                      tracks=db.prep_tracks_overview(conn),
-                      resume_target=db.prep_resume_target(conn),
-                      overall=db.prep_overall_counts(conn))
+                      tracks=tracks,
+                      recommended_tracks=recommended,
+                      other_tracks=other,
+                      resume_disciplines=disciplines,
+                      resume_target=db.prep_resume_target(conn, uid),
+                      overall=db.prep_overall_counts(conn, uid),
+                      companies=db.companies_overview(conn, uid))
 
     @app.get("/prep/track/{track_slug}", response_class=HTMLResponse)
     def prep_track(request: Request, track_slug: str):
@@ -206,11 +452,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         if track is None:
             return RedirectResponse("/prep", status_code=303)
         return render(request, "prep_track.html", track=dict(track),
-                      modules=db.prep_modules_for_track(conn, track["id"]))
+                      modules=db.prep_modules_for_track(
+                          conn, track["id"], auth.current_user_id(request)))
 
     @app.get("/prep/module/{module_slug}", response_class=HTMLResponse)
     def prep_module(request: Request, module_slug: str):
-        detail = db.prep_module_detail(conn, module_slug)
+        detail = db.prep_module_detail(conn, module_slug, auth.current_user_id(request))
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
         detail["has_source"] = prep_sources.available(root, detail["module"]["source_refs"])
@@ -243,14 +490,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/prep/module/{module_slug}/lesson/{lesson_slug}", response_class=HTMLResponse)
     def prep_lesson(request: Request, module_slug: str, lesson_slug: str):
-        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug)
+        uid = auth.current_user_id(request)
+        detail = db.prep_lesson_detail(conn, module_slug, lesson_slug, uid)
         if detail is None:
             return RedirectResponse("/prep", status_code=303)
         lesson = detail["lesson"]
         # Opening a fresh lesson marks it in-progress so the /prep landing can
         # resume you here. Already-completed lessons are left as-is.
         if lesson["state"] == "not_started":
-            db.set_lesson_state(conn, lesson["id"], "in_progress")
+            db.set_lesson_state(conn, lesson["id"], "in_progress", user_id=uid)
             lesson["state"] = "in_progress"
         try:
             takeaways = json.loads(lesson.get("key_takeaways") or "[]")
@@ -264,31 +512,34 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       has_source=has_source)
 
     @app.post("/prep/lessons/{lesson_id}/state")
-    def prep_set_lesson(lesson_id: int, state: str = Form(...),
+    def prep_set_lesson(request: Request, lesson_id: int, state: str = Form(...),
                         notes: str = Form(None), next: str = Form("/prep")):
         try:
-            db.set_lesson_state(conn, lesson_id, state, notes=notes)
+            db.set_lesson_state(conn, lesson_id, state, notes=notes,
+                                user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.post("/prep/problems/{problem_id}/state")
-    def prep_set_problem(problem_id: int, state: str = Form(...),
+    def prep_set_problem(request: Request, problem_id: int, state: str = Form(...),
                          next: str = Form("/prep")):
         try:
-            db.set_problem_state(conn, problem_id, state)
+            db.set_problem_state(conn, problem_id, state,
+                                 user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
     @app.get("/prep/module/{module_slug}/ctci/{problem_slug}", response_class=HTMLResponse)
     def prep_ctci_problem(request: Request, module_slug: str, problem_slug: str):
-        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug)
+        uid = auth.current_user_id(request)
+        detail = db.prep_ctci_problem_detail(conn, module_slug, problem_slug, uid)
         if detail is None:
             return RedirectResponse(f"/prep/module/{module_slug}", status_code=303)
         problem = detail["problem"]
         if problem["state"] == "not_started":
-            db.set_ctci_problem_state(conn, problem["id"], "attempted")
+            db.set_ctci_problem_state(conn, problem["id"], "attempted", user_id=uid)
             problem["state"] = "attempted"
         try:
             hints = json.loads(problem.get("hints") or "[]")
@@ -298,37 +549,115 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       siblings=detail["siblings"], hints=hints)
 
     @app.post("/prep/ctci-problems/{ctci_problem_id}/state")
-    def prep_set_ctci_problem(ctci_problem_id: int, state: str = Form(...),
+    def prep_set_ctci_problem(request: Request, ctci_problem_id: int,
+                              state: str = Form(...),
                               notes: str = Form(None), next: str = Form("/prep")):
         try:
-            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes)
+            db.set_ctci_problem_state(conn, ctci_problem_id, state, notes=notes,
+                                      user_id=auth.current_user_id(request))
         except ValueError:
             pass
         return RedirectResponse(_safe_next(next), status_code=303)
 
+    # ----------------------------------------------- company LeetCode questions
+    @app.get("/companies", response_class=HTMLResponse)
+    def companies_home(request: Request):
+        # render() already injects company_counts (used by the nav badge and the
+        # page header), so no need to recompute it here.
+        return render(request, "companies.html",
+                      companies=db.companies_overview(conn, auth.current_user_id(request)))
+
+    @app.get("/companies/{company_key}", response_class=HTMLResponse)
+    def company_detail(request: Request, company_key: str, difficulty: str = ""):
+        problems = db.company_problems_for(conn, company_key, difficulty=difficulty,
+                                           user_id=auth.current_user_id(request))
+        # The empty state (unknown company / no problems) is handled in-template
+        # with a "⟳ Refresh questions" CTA, so no special-casing is needed here.
+        return render(request, "company.html",
+                      company=db.company_display_name(conn, company_key),
+                      company_key=company_key, problems=problems,
+                      difficulty=difficulty,
+                      run=db.latest_company_refresh(conn, company_key),
+                      is_running=db.company_refresh_running(conn, company_key),
+                      all_problem_count=db.company_problem_count(conn, company_key))
+
+    def _start_refresh(company: str, company_key: str) -> bool:
+        if db.company_refresh_running(conn, company_key):
+            return False
+        import threading
+
+        def _go():
+            worker_conn = db.connect(db_path)
+            try:
+                company_questions.run_refresh(worker_conn, root, company, company_key)
+            finally:
+                worker_conn.close()
+        threading.Thread(target=_go, daemon=True).start()
+        return True
+
+    @app.post("/companies/{company_key}/refresh")
+    def refresh_company(company_key: str, company: str = Form("")):
+        name = company or db.company_display_name(conn, company_key)
+        _start_refresh(name, company_key)
+        return RedirectResponse(f"/companies/{company_key}", status_code=303)
+
+    @app.post("/company-problems/{problem_id}/state")
+    def set_company_problem(request: Request, problem_id: int, state: str = Form(...),
+                            next: str = Form("/companies")):
+        try:
+            db.set_company_problem_state(conn, problem_id, state,
+                                         user_id=auth.current_user_id(request))
+        except (ValueError, sqlite3.Error):
+            # Bad state value, or a stale id whose problem row is gone (the
+            # progress FK fails) — ignore and redirect rather than 500.
+            pass
+        return RedirectResponse(_safe_next(next), status_code=303)
+
+    @app.get("/api/companies/{company_key}/refresh-status")
+    def company_refresh_status(company_key: str):
+        run = db.latest_company_refresh(conn, company_key)
+        return JSONResponse({
+            "running": db.company_refresh_running(conn, company_key),
+            "state": run["state"] if run else "",
+            "detail": run["detail"] if run else "",
+            "problem_count": len(db.company_problems_for(conn, company_key)),
+        })
+
     # --------------------------------------------------------------- actions
     @app.post("/jobs/{job_id}/apply")
-    def apply(job_id: int):
-        job = db.job_with_application(conn, job_id)
+    def apply(request: Request, job_id: int):
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None or not job["url"]:
             return JSONResponse({"error": "job or url missing"}, status_code=404)
-        session = sessions.launch(job["application_id"], job["url"])
-        return JSONResponse({"state": session.state})
+        # Lazily materialize this user's application so the apply-browser session
+        # (keyed by application_id) and the status poller have a stable id.
+        app_id = db.get_or_create_application(conn, job_id, auth.current_user_id(request))
+        if app_id is None:
+            return JSONResponse({"error": "job missing"}, status_code=404)
+        session = sessions.launch(app_id, job["url"])
+        return JSONResponse({"state": session.state, "application_id": app_id})
 
     @app.post("/jobs/{job_id}/refill")
-    def refill(job_id: int):
+    def refill(request: Request, job_id: int):
         # Re-run auto-fill on this job's already-open tab (or open one if none).
-        job = db.job_with_application(conn, job_id)
+        job = db.job_with_application(conn, job_id, auth.current_user_id(request))
         if job is None or not job["url"]:
             return JSONResponse({"error": "job or url missing"}, status_code=404)
-        session = sessions.refill(job["application_id"], job["url"])
-        return JSONResponse({"state": session.state})
+        app_id = db.get_or_create_application(conn, job_id, auth.current_user_id(request))
+        if app_id is None:
+            return JSONResponse({"error": "job missing"}, status_code=404)
+        session = sessions.refill(app_id, job["url"])
+        return JSONResponse({"state": session.state, "application_id": app_id})
 
     @app.get("/api/apply-status/{application_id}")
     def apply_status(application_id: int):
         status = sessions.status(application_id)  # includes the fill summary
+        # FastAPI accepts an arbitrary-precision int from the path, but an id
+        # outside SQLite's signed 64-bit INTEGER range overflows the query
+        # rather than just missing — treat it as an unknown (not-found) id.
+        in_range = -(2 ** 63) <= application_id < 2 ** 63
         row = conn.execute("SELECT status FROM applications WHERE id = ?",
-                           (application_id,)).fetchone()
+                           (application_id,)).fetchone() if in_range else None
         status["application_status"] = row["status"] if row else "unknown"
         return JSONResponse(status)
 
@@ -342,12 +671,16 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         return JSONResponse({"sessions": sessions.all_statuses()})
 
     @app.post("/api/prepare-top")
-    def prepare_top(n: int = 5):
+    def prepare_top(request: Request, n: int = 5):
         # Pick the n best-fit applyable jobs and open+auto-fill a tab for each.
+        uid = auth.current_user_id(request)
         launched = []
-        for job in db.top_fit_to_apply(conn, n):
-            session = sessions.launch(job["application_id"], job["url"])
-            launched.append({"application_id": job["application_id"],
+        for job in db.top_fit_to_apply(conn, n, uid):
+            app_id = db.get_or_create_application(conn, job["id"], uid)
+            if app_id is None:
+                continue
+            session = sessions.launch(app_id, job["url"])
+            launched.append({"application_id": app_id,
                              "company": job["company"], "title": job["title"],
                              "state": session.state})
         return JSONResponse({"count": len(launched), "launched": launched})
@@ -355,60 +688,77 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     @app.post("/applications/bulk-status")
     async def bulk_status(request: Request):
         # Batch-set status (e.g. "applied") for the checked rows, then return to
-        # the same filtered view so the rows move into the right section.
+        # the same filtered view so the rows move into the right section. Rows
+        # carry job_id (an application is per-user and may not exist yet); we
+        # lazily materialize the current user's application for each.
+        uid = auth.current_user_id(request)
         form = await request.form()
         status = form.get("status", "applied")
-        ids = form.getlist("application_id")
+        ids = form.getlist("job_id")
         if status in db.APP_STATUSES:
             for raw in ids:
-                # Skip bad/stale ids (non-int, or an id with no application row →
-                # a FK IntegrityError) without aborting the rest of the batch.
+                # Skip bad/stale ids (non-int, or an id for a job that's gone)
+                # without aborting the rest of the batch.
                 try:
-                    db.set_application_status(conn, int(raw), status,
-                                              detail="bulk action", via="ui")
-                except (ValueError, TypeError, sqlite3.Error):
+                    app_id = db.get_or_create_application(conn, int(raw), uid)
+                except (ValueError, TypeError):
                     continue
+                if app_id is None:
+                    continue
+                db.set_application_status(conn, app_id, status,
+                                          detail="bulk action", via="ui")
         return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
-    @app.post("/applications/{application_id}/status")
-    def set_status(application_id: int, status: str = Form(...), note: str = Form("")):
-        if status in db.APP_STATUSES:
-            db.set_application_status(conn, application_id, status,
-                                      detail=note or "set manually", via="ui")
-        if note:
-            conn.execute("UPDATE applications SET notes = ? WHERE id = ?",
-                         (note, application_id))
-            conn.commit()
-        job = conn.execute("SELECT job_id FROM applications WHERE id = ?",
-                           (application_id,)).fetchone()
-        return RedirectResponse(f"/jobs/{job['job_id']}" if job else "/", status_code=303)
+    @app.post("/jobs/{job_id}/status")
+    def set_status(request: Request, job_id: int,
+                   status: str = Form(...), note: str = Form("")):
+        # Per-user, lazy: materialize this user's application for the job, then
+        # set its status. A stale/unknown/out-of-range job id makes
+        # get_or_create_application return None, so this is a no-op redirect,
+        # never a 500 (the dialect-agnostic successor to PR #25's guard, which
+        # protected the old application_id-keyed route this replaces).
+        uid = auth.current_user_id(request)
+        app_id = db.get_or_create_application(conn, job_id, uid)
+        if app_id is not None:
+            if status in db.APP_STATUSES:
+                db.set_application_status(conn, app_id, status,
+                                          detail=note or "set manually", via="ui")
+            if note:
+                conn.execute("UPDATE applications SET notes = ? WHERE id = ?",
+                             (note, app_id))
+                conn.commit()
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
     @app.post("/run")
-    def start_pipeline():
-        started = runner.start()
-        return JSONResponse({"started": started},
+    def start_pipeline(track: str = "main"):
+        active = runners.get(track, runner)
+        started = active.start()
+        return JSONResponse({"started": started, "track": track},
                             status_code=200 if started else 409)
 
     @app.get("/run/log")
-    def pipeline_log(since: int = 0):
-        # Seamless finish: first poll after a successful run ingests the
-        # fresh report so the dashboard fills without a separate click.
-        if runner.exit_code == 0 and not runner.running and not runner.ingested:
-            runner.ingested = True
+    def pipeline_log(since: int = 0, track: str = "main"):
+        active = runners.get(track, runner)
+        # Seamless finish: first poll after a successful run ingests the fresh
+        # reports (every track) so the dashboard fills without a separate click.
+        if active.exit_code == 0 and not active.running and not active.ingested:
+            active.ingested = True
             try:
                 counts = ingest.ingest_latest(root, conn)
-                runner.lines.append(
-                    f"Ingested into UI: {counts['inserted']} new, "
-                    f"{counts['updated']} updated jobs. Refresh the dashboard.")
+                msg = (f"Ingested into UI: {counts['inserted']} new, "
+                       f"{counts['updated']} updated jobs.")
+                if counts.get("startups_loaded"):
+                    msg += f" {counts['startups_loaded']} startup profiles."
+                active.lines.append(msg + " Refresh the dashboard.")
                 stale = counts.get("stale_unapplied", 0)
                 if stale:
-                    runner.lines.append(
+                    active.lines.append(
                         f"Heads up: {stale} unapplied job(s) on the dashboard are "
                         "from earlier runs (not in this report) — likely a previous "
                         "role target. Filter or clear them to see only this run.")
             except Exception as exc:  # noqa: BLE001 — surface in the log panel
-                runner.lines.append(f"Ingest failed: {exc}")
-        return JSONResponse(runner.snapshot(since))
+                active.lines.append(f"Ingest failed: {exc}")
+        return JSONResponse(active.snapshot(since))
 
     @app.post("/ingest")
     def do_ingest():
@@ -435,11 +785,18 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/resume", response_class=HTMLResponse)
     def resume(request: Request, uploaded: int = 0, error: str = "", started: int = 0):
-        text_path = root / "data" / "resume.txt"
-        using_sample = not text_path.exists()
-        if using_sample:
-            text_path = root / "data" / "sample_resume.txt"
-        resume_text = text_path.read_text() if text_path.exists() else ""
+        # Prefer this user's stored résumé (per-user; set on upload) so accounts
+        # never see each other's. Fall back to the on-disk résumé — the local
+        # single-user path — then the bundled sample.
+        uid = auth.current_user_id(request)
+        resume_text = db.get_resume(conn, uid) or ""
+        using_sample = False
+        if not resume_text:
+            text_path = root / "data" / "resume.txt"
+            using_sample = not text_path.exists()
+            if using_sample:
+                text_path = root / "data" / "sample_resume.txt"
+            resume_text = text_path.read_text() if text_path.exists() else ""
         pdfs = sorted((root / "data").glob("*.pdf"))
         # Sections split on blank lines for per-block copy buttons.
         sections = [s.strip() for s in resume_text.split("\n\n") if s.strip()]
@@ -451,7 +808,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                       keywords=extract_keywords(resume_text) if resume_text else [])
 
     @app.post("/resume/upload")
-    async def upload_resume(file: UploadFile = File(...)):
+    async def upload_resume(request: Request, file: UploadFile = File(...)):
         max_bytes = 10 * 1024 * 1024  # cap the read so a huge upload can't OOM us
         data = await file.read(max_bytes + 1)
         if len(data) > max_bytes:
@@ -459,6 +816,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 f"/resume?error={quote_plus('file too large (max 10 MB)')}",
                 status_code=303)
         name = (file.filename or "").lower()
+        pdf_name = ""
         try:
             if name.endswith(".pdf"):
                 if not data.startswith(b"%PDF"):
@@ -467,8 +825,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 (root / "data" / "resume.pdf").write_bytes(data)
                 # Remember the original filename so auto-apply attaches the
                 # resume under the same name the user uploaded.
-                (root / "data" / "resume.pdf.name").write_text(
-                    Path(file.filename or "resume.pdf").name)
+                pdf_name = Path(file.filename or "resume.pdf").name
+                (root / "data" / "resume.pdf.name").write_text(pdf_name)
             elif name.endswith((".txt", ".md")):
                 text = data.decode("utf-8", errors="replace").strip()
                 if len(text) < 100:
@@ -478,9 +836,42 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         except ValueError as exc:
             return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
                                     status_code=303)
+        uid = auth.current_user_id(request)
+        # Store the resume in the DB (durable / hosted-safe — the pipeline reads
+        # it per-user via load_resume_text), and keep the file for local runs +
+        # the PDF that auto-apply attaches.
+        db.set_resume(conn, uid, text, pdf_name)
         (root / "data" / "resume.txt").write_text(text + "\n")
-        profile.reseed_from_resume(conn, text)
+        profile.reseed_from_resume(conn, text, user_id=uid)
+        # Re-score this user's matches against their current jobs right away,
+        # so their fit reflects the new résumé without a pipeline run.
+        try:
+            fit.rescore_user(conn, uid, text)
+        except Exception as exc:  # noqa: BLE001 — scoring is best-effort here
+            print(f"WARNING: résumé re-score after upload failed: {exc}", file=sys.stderr)
         return RedirectResponse("/resume?uploaded=1", status_code=303)
+
+    @app.post("/matches/refresh")
+    def refresh_matches(request: Request):
+        # Manual "refresh matches": re-score the current user's résumé against
+        # the current job corpus on demand (the third fit trigger, alongside
+        # upload and the daily worker). Uses the stored résumé, falling back to
+        # the on-disk résumé in local single-user mode.
+        uid = auth.current_user_id(request)
+        text = db.get_resume(conn, uid) or ""
+        if not text:
+            rp = root / "data" / "resume.txt"
+            text = rp.read_text() if rp.exists() else ""
+            if text and uid == db.LOCAL_USER_ID:
+                db.set_resume(conn, uid, text)
+        scored = 0
+        try:
+            scored = fit.rescore_user(conn, uid, text)
+        except Exception as exc:  # noqa: BLE001 — surface, don't 500
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        if "application/json" in (request.headers.get("accept") or ""):
+            return JSONResponse({"scored": scored, "has_resume": bool(text)})
+        return RedirectResponse(request.headers.get("referer") or "/", status_code=303)
 
     @app.post("/resume/run")
     def run_pipeline():
@@ -516,22 +907,26 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/profile", response_class=HTMLResponse)
     def profile_page(request: Request):
-        return render(request, "profile.html", fields=profile.all_fields(conn),
+        uid = auth.current_user_id(request)
+        profile.ensure_fields(conn, uid)  # make the standard fields exist for this user
+        return render(request, "profile.html", fields=profile.all_fields(conn, uid),
                       field_options=profile.FIELD_OPTIONS)
 
     @app.post("/profile")
     async def save_profile(request: Request):
+        uid = auth.current_user_id(request)
         form = await request.form()
         for field, value in form.items():
-            profile.set_field(conn, field, str(value))
+            profile.set_field(conn, field, str(value), user_id=uid)
         return RedirectResponse("/profile", status_code=303)
 
     @app.post("/profile/from-resume")
-    def profile_from_resume():
+    def profile_from_resume(request: Request):
         # Fill empty profile fields from the resume; never clobbers manual edits.
+        uid = auth.current_user_id(request)
         resume = root / "data" / "resume.txt"
         if resume.exists():
-            profile.populate_from_resume(conn, resume.read_text())
+            profile.populate_from_resume(conn, resume.read_text(), user_id=uid)
         return RedirectResponse("/profile", status_code=303)
 
     # ------------------------------------------------------ search config view
@@ -555,8 +950,11 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                  FROM email_messages m LEFT JOIN jobs j ON j.id = m.job_id"""
         args: list = []
         if q:
-            sql += " WHERE m.subject LIKE ? OR m.from_addr LIKE ? OR m.body LIKE ?"
-            args = [f"%{q}%"] * 3
+            # Escape LIKE wildcards so a typed '%'/'_' matches literally rather
+            # than "anything" (see db.like_term).
+            sql += (" WHERE (m.subject LIKE ? ESCAPE '\\' OR m.from_addr LIKE ? ESCAPE '\\' "
+                    "OR m.body LIKE ? ESCAPE '\\')")
+            args = [db.like_term(q)] * 3
         sql += " ORDER BY m.sent_at DESC LIMIT 200"
         messages = conn.execute(sql, args).fetchall()
         return render(request, "emails.html", connected=connected, messages=messages,
@@ -610,12 +1008,19 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     # --------------------------------------------------------------- JSON API
     @app.get("/api/jobs")
-    def api_jobs(q: str = "", stack: str = ""):
-        rows = db.search_jobs(conn, q=q, stack=stack)
+    def api_jobs(request: Request, q: str = "", stack: str = ""):
+        rows = db.search_jobs(conn, q=q, stack=stack,
+                              user_id=auth.current_user_id(request))
         return JSONResponse([dict(r) for r in rows])
 
     @app.get("/api/jobs/{job_id}/history")
     def api_history(job_id: int):
+        # ``job_id`` comes from the URL path, where FastAPI's ``int`` accepts an
+        # arbitrary-precision integer. SQLite's INTEGER is signed 64-bit, so an
+        # id outside that range would overflow the bind (a 500). Treat it as "no
+        # such job" — an empty history — like db.job_with_application does.
+        if not (-(2 ** 63) <= job_id < 2 ** 63):
+            return JSONResponse([])
         rows = conn.execute(
             "SELECT event_type, payload, created_at FROM job_events "
             "WHERE job_id = ? ORDER BY created_at", (job_id,)).fetchall()

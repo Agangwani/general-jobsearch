@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ company }} — LeetCode Questions{% endblock %}
+{% block content %}
+
+<div class="crumb"><a href="/companies">Companies</a> › {{ company }}</div>
+
+<header class="page-head">
+  <div>
+    <h1>{{ company }} — most-asked LeetCode questions</h1>
+    <div class="subtitle muted">
+      Ordered by how often {{ company }} asks each problem. Mark them solved as
+      you go — progress is saved.
+    </div>
+    {% if is_running %}
+    <p class="muted" id="refresh-banner" style="margin-top:6px">
+      ⏳ Pulling a fresh list from the dataset… this page checks automatically.</p>
+    {% elif run and run.state == 'error' %}
+    <p class="tag tag-amber" style="margin-top:6px" id="refresh-banner">
+      Last refresh failed: {{ run.detail }}</p>
+    {% elif run and run.state == 'done' %}
+    <p class="muted" style="margin-top:6px" id="refresh-banner">
+      Last refresh: {{ run.finished_at or run.started_at }}{% if run.detail %} · {{ run.detail }}{% endif %}</p>
+    {% endif %}
+  </div>
+  <div class="actions">
+    <form method="post" action="/companies/{{ company_key|qpath }}/refresh" style="display:inline">
+      <input type="hidden" name="company" value="{{ company }}">
+      <button class="btn btn-primary" id="refresh-btn" type="submit" {% if is_running %}disabled{% endif %}
+              title="Pull a larger, frequency-ranked list for this company from the configured community dataset. Network-optional: if it can't reach the dataset the bundled list stays.">
+        {% if is_running %}Refreshing…{% else %}⟳ Refresh questions{% endif %}
+      </button>
+    </form>
+  </div>
+</header>
+
+<div class="filter-bar">
+  <span class="muted">Difficulty:</span>
+  <a class="chip {{ 'chip-on' if not difficulty }}" href="/companies/{{ company_key|qpath }}">All ({{ all_problem_count }})</a>
+  <a class="chip diff-easy {{ 'chip-on' if difficulty == 'easy' }}" href="/companies/{{ company_key|qpath }}?difficulty=easy">Easy</a>
+  <a class="chip diff-medium {{ 'chip-on' if difficulty == 'medium' }}" href="/companies/{{ company_key|qpath }}?difficulty=medium">Medium</a>
+  <a class="chip diff-hard {{ 'chip-on' if difficulty == 'hard' }}" href="/companies/{{ company_key|qpath }}?difficulty=hard">Hard</a>
+</div>
+
+{% if problems %}
+<table class="prob-table">
+  <thead>
+    <tr><th>#</th><th>Problem</th><th>Difficulty</th><th>Frequency</th><th>Pattern</th><th>Status</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for p in problems %}
+    <tr>
+      <td class="muted">{{ p.leetcode_number or '—' }}</td>
+      <td><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.title }} ↗</a></td>
+      <td class="diff-{{ p.difficulty }}">{{ p.difficulty }}</td>
+      <td>
+        <div class="freq-bar" title="{{ '%.0f'|format(p.frequency) }}/100 relative frequency">
+          <span style="width: {{ p.frequency if p.frequency <= 100 else 100 }}%"></span>
+        </div>
+      </td>
+      <td class="muted">{{ p.topics }}</td>
+      <td><span class="state {{ p.state }}">{{ p.state|replace('_',' ') }}</span></td>
+      <td>
+        <form class="inline-form" method="post" action="/company-problems/{{ p.id }}/state">
+          <input type="hidden" name="next" value="/companies/{{ company_key|qpath }}{% if difficulty %}?difficulty={{ difficulty }}{% endif %}">
+          <button class="btn btn-row" name="state" value="solved" title="Mark solved">✓</button>
+          <button class="btn btn-row" name="state" value="attempted" title="Mark attempted">…</button>
+          <button class="btn btn-row btn-ghost" name="state" value="not_started" title="Reset">↺</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="muted">Frequencies are relative within this company's list. The bundled
+   set is hand-ranked; a <strong>⟳ Refresh</strong> overlays the dataset's measured
+   numbers when reachable.</p>
+{% else %}
+<p class="muted">No questions{% if difficulty %} at this difficulty{% endif %} for
+   <strong>{{ company }}</strong> yet.
+   {% if not is_running %}Hit <strong>⟳ Refresh questions</strong> to try pulling a
+   list from the community dataset.{% endif %}</p>
+{% endif %}
+
+{% if is_running %}
+<script>
+  // Poll until the background refresh finishes, then reload to show results.
+  (function () {
+    var key = {{ company_key|tojson }};
+    var iv = setInterval(async function () {
+      try {
+        var s = await (await fetch("/api/companies/" + encodeURIComponent(key) + "/refresh-status")).json();
+        if (!s.running) { clearInterval(iv); location.reload(); }
+      } catch (e) { /* keep polling */ }
+    }, 2000);
+  })();
+</script>
+{% endif %}
+
+{% endblock %}

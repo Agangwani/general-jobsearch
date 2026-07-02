@@ -1,5 +1,45 @@
 # Why Datadog Dominates: Scoring-Skew Analysis
 
+> **Update (2026-07-02) — second skew pass, on the 8038-posting corpus.** A
+> deeper audit of the fit map found the cluster term was still injecting skew,
+> for two newly-identified reasons, plus a data-completeness issue. Fixes
+> shipped this pass:
+>
+> - **Location leaked into the vectors.** `_doc` fed `job.location` into the
+>   TF-IDF document, so K-means carved out a "new york, york, locations" cluster
+>   that bucketed strong SWE matches *by city*. Google NYC roles dropped 60–67
+>   ranks into it. Location is already a hard filter, so it carries no fit signal
+>   among survivors — it is now excluded from the vectorized document.
+> - **The cluster term was over-weighted for how weak the clusters are.**
+>   Silhouette is < 0.08 at *every* k (2…40): the postings don't cluster cleanly
+>   into skill groups, and several clusters collapse to a *single company*
+>   (c16 = Asana 146/146, c13 = Lyft, c3 = Jane Street, c1 = Brex) — i.e. they
+>   recover company authorship, not skill. Their affinity reflects the company's
+>   average posting, so a genuinely strong Asana AI-SWE role was demoted ~48
+>   ranks into Asana's own low-affinity cluster. `cluster_weight` lowered
+>   0.15 → 0.05, which cuts the cluster-driven fit swing from ~17 pts to ~6 and
+>   the worst demotion from 67 ranks to ~30, while keeping the /clusters map
+>   meaningful. (The rank-stability metrics are partly circular — they are
+>   defined as deviation from pure cosine — so the weight was chosen on the
+>   *mechanism*: cluster affinity ≈ company authorship, which should not weigh
+>   heavily, not on a self-referential "improvement" number.)
+> - **Jane Street postings carried raw HTML** (fetcher never called
+>   `strip_html`) → an `li/h3/em/nbsp` markup cluster. Fixed in the fetcher, with
+>   a `strip_html` safety-net added at the vectorization boundary (`_doc`).
+> - **Deferred, not yet fixed — empty descriptions.** 259/8038 postings (whole
+>   companies: Salesforce 85/85, NVIDIA, Google, Apple, Netflix, Microsoft,
+>   Millennium — all 100%) arrive with *empty* descriptions because those
+>   fetchers fall back to link-scraping without the body. Those roles are scored
+>   on title alone and are systematically *deflated*. This is a fetcher
+>   data-completeness bug, not a scoring bug; excluding them is the wrong fix
+>   (it would hide real, high-cosine roles), so it is left for a fetcher pass —
+>   treat title-only postings as low-confidence.
+> - **Considered and rejected — dropping numeric tokens.** Numbers in the resume
+>   (achievement metrics like "27%", "36%") do leak a little cosine weight, but
+>   the effect is ~0.7% of similarity on average and `max_features=30000` is
+>   saturated, so filtering them just admits replacement bigrams. Net-neutral;
+>   not shipped.
+
 > **Status (2026-06-12, after run 3):** fixes shipped and validated. Datadog
 > company fit dropped 88.5 → 63.1 (rank #2 → #7) while its genuinely strong
 > roles (eBPF, Code Gen, Infrastructure R&D) stayed in the top table — exactly

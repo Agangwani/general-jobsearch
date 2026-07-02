@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agangwani — Projects &amp; Resume</title>
+  <meta name="description" content="Portfolio of Agangwani: an ML-powered job search engine, an interactive music-production learning platform, and more. Repo links, project blurbs, and resume — auto-updated daily." />
+  <meta property="og:title" content="Agangwani — Projects &amp; Resume" />
+  <meta property="og:description" content="ML-powered job search, interactive music-production learning, and more — with live links and a resume." />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./assets/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'%3EA%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a href="#top" class="brand">
+        <span class="brand-mark">A</span>
+        <span class="brand-name" data-bind="brand">Agangwani</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#projects">Projects</a>
+        <a href="#resume">Resume</a>
+        <a href="#contact">Contact</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- HERO -->
+    <section class="hero wrap">
+      <div class="badge" id="freshBadge" title="The 'what's new' on each project is refreshed automatically by a daily GitHub Action.">
+        <span class="dot"></span> Auto-updated daily<span id="freshWhen"></span>
+      </div>
+      <h1 id="heroName">Agangwani</h1>
+      <p class="tagline" id="heroTagline">Loading…</p>
+      <div class="hero-actions" id="heroActions"></div>
+    </section>
+
+    <!-- PROJECTS -->
+    <section id="projects" class="wrap">
+      <div class="section-head">
+        <h2>Projects</h2>
+        <p class="muted">Active builds — each card links straight to its repo and shows what changed most recently.</p>
+      </div>
+      <div class="grid" id="projectGrid">
+        <div class="loading">Loading projects…</div>
+      </div>
+    </section>
+
+    <!-- RESUME -->
+    <section id="resume" class="wrap">
+      <div class="resume-card" id="resumeCard">
+        <div>
+          <h2>Resume</h2>
+          <p class="muted" id="resumeBlurb"></p>
+        </div>
+        <div id="resumeAction"></div>
+      </div>
+    </section>
+
+    <!-- CONTACT -->
+    <section id="contact" class="wrap">
+      <div class="section-head">
+        <h2>Get in touch</h2>
+      </div>
+      <div class="hero-actions" id="contactActions"></div>
+    </section>
+  </main>
+
+  <footer class="wrap">
+    <p class="muted">
+      Built as a static site on GitHub Pages.
+      <a id="footerRepo" href="https://github.com/Agangwani/general-jobsearch">Source</a>.
+      Project activity refreshes automatically every day.
+    </p>
+  </footer>
+
+  <script src="./assets/main.js"></script>
+</body>
+</html>
