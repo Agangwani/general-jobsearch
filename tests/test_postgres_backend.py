@@ -195,6 +195,92 @@ def test_prep_seed_named_params(pgconn):
     seed_into_db(pgconn)
 
 
+def test_applications_are_per_user_on_postgres(pgconn):
+    """Stage 2b application isolation, on Postgres: jobs are per-user rows
+    (Stage 2a), each seeded with its owner's application, and
+    get_or_create_application behaves as on SQLite."""
+    from webapp import db
+
+    db.upsert_job(pgconn, _job(), user_id="u1")
+    db.upsert_job(pgconn, _job(), user_id="u2")
+    j1 = pgconn.execute(
+        "SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+        ("u1", "greenhouse:Acme:1")).fetchone()["id"]
+
+    # u1 engages; u2 never does.
+    a1 = db.get_or_create_application(pgconn, j1, "u1")
+    assert a1 == db.get_or_create_application(pgconn, j1, "u1")  # idempotent
+    db.set_application_status(pgconn, a1, "applied", user_id="u1")
+
+    assert db.job_with_application(pgconn, j1, "u1")["status"] == "applied"
+    # u1's job id reads as not-found for u2 (tenant isolation)...
+    assert db.job_with_application(pgconn, j1, "u2") is None
+    assert db.get_or_create_application(pgconn, j1, "u2") is None
+
+    # Per-user stacks and counts.
+    assert [r["company"] for r in db.search_jobs(pgconn, stack="applied", user_id="u1")] == ["Acme"]
+    assert db.search_jobs(pgconn, stack="applied", user_id="u2") == []
+    assert [r["company"] for r in db.search_jobs(pgconn, stack="to_apply", user_id="u2")] == ["Acme"]
+    assert db.stack_counts(pgconn, "u1")["applied"] == 1
+    assert db.stack_counts(pgconn, "u2")["to_apply"] == 1
+
+    # An unknown/out-of-range job id never violates the FK — returns None.
+    assert db.get_or_create_application(pgconn, 999999, "u1") is None
+    assert db.get_or_create_application(pgconn, 2 ** 63, "u1") is None
+
+
+def test_fit_is_per_user_on_postgres(pgconn):
+    """Stage 2b per-user fit, on Postgres: fit lives on each user's own job
+    rows (Stage 2a), so scores round-trip per user with no overlay table."""
+    from webapp import db
+
+    db.upsert_job(pgconn, _job(fit_score=87.5, rank_score=80.0))
+    jid = pgconn.execute(
+        "SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+        ("local", "greenhouse:Acme:1")).fetchone()["id"]
+
+    # The pipeline's scores land on the owner's row.
+    local = db.job_with_application(pgconn, jid)  # default user_id='local'
+    assert local["fit_score"] == 87.5 and local["rank_score"] == 80.0
+
+    # Per-user fit is isolated: each account's rows carry its own scores.
+    db.upsert_job(pgconn, _job(fit_score=90.0, rank_score=88.0), user_id="u1")
+    db.upsert_job(pgconn, _job(fit_score=40.0, rank_score=30.0), user_id="u2")
+    # min_fit filters on the current user's fit.
+    assert len(db.search_jobs(pgconn, min_fit=70.0, user_id="u1")) == 1
+    assert db.search_jobs(pgconn, min_fit=70.0, user_id="u2") == []
+
+
+def test_rescore_user_on_postgres(pgconn):
+    """Stage 2b part 4b on Postgres: per-user résumé storage + rescore_user
+    write onto the user's job rows, and the daily-worker
+    rescore_all_active_users skips 'local'."""
+    from webapp import db, fit
+
+    db.upsert_job(pgconn, _job(
+        fit_score=None, rank_score=None,
+        description="python postgres backend distributed systems services api"),
+        user_id="u1")
+    jid = pgconn.execute(
+        "SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+        ("u1", "greenhouse:Acme:1")).fetchone()["id"]
+
+    db.set_resume(pgconn, "u1", "python backend engineer postgres distributed systems")
+    assert db.get_resume(pgconn, "u1").startswith("python")
+    assert db.users_with_resume(pgconn) == ["u1"]
+
+    n = fit.rescore_user(pgconn, "u1", db.get_resume(pgconn, "u1"))
+    assert n == 1
+    assert pgconn.execute(
+        "SELECT fit_score FROM jobs WHERE id = ?",
+        (jid,)).fetchone()["fit_score"] is not None
+
+    # The worker skips the 'local' pipeline sentinel.
+    db.set_resume(pgconn, "local", "should be skipped")
+    results = fit.rescore_all_active_users(pgconn)
+    assert "u1" in results and "local" not in results
+
+
 def test_state_setters_stale_id_no_op_on_postgres(pgconn):
     """The state-change setters guard a stale/unknown parent id by raising
     ValueError up front (webapp/db._require_row) instead of letting the FK
@@ -209,10 +295,9 @@ def test_state_setters_stale_id_no_op_on_postgres(pgconn):
 
     seed_into_db(pgconn)
     db.upsert_job(pgconn, _job())
-    app = db.job_with_application(
-        pgconn,
-        pgconn.execute("SELECT id FROM jobs WHERE key = ?",
-                       ("greenhouse:Acme:1",)).fetchone()["id"])
+    job_id = pgconn.execute("SELECT id FROM jobs WHERE key = ?",
+                            ("greenhouse:Acme:1",)).fetchone()["id"]
+    app = db.job_with_application(pgconn, job_id)
 
     # Each stale id raises ValueError (the dialect-agnostic no-op signal), not a
     # raw psycopg.Error, and never aborts the transaction.
@@ -228,8 +313,7 @@ def test_state_setters_stale_id_no_op_on_postgres(pgconn):
     # The connection is still healthy and a valid write persists (would fail with
     # "current transaction is aborted" if a poisoned INSERT had leaked).
     db.set_application_status(pgconn, app["application_id"], "applied")
-    assert db.job_with_application(
-        pgconn, app["job_id"])["status"] == "applied"
+    assert db.job_with_application(pgconn, job_id)["status"] == "applied"
     db.set_lesson_state(pgconn, lesson_id, "completed")
     assert pgconn.execute(
         "SELECT state FROM prep_lesson_progress WHERE lesson_id = ?",

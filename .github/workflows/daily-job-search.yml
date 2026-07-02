@@ -47,6 +47,21 @@ jobs:
       - name: Run daily job search
         run: python -m jobsearch run
 
+      # Hosted mode (Stage 2b/4): when a Postgres URL is configured, ingest the
+      # fresh postings into the app database and re-score every active user's
+      # résumé against the new corpus. No-op (and untouched file-based flow) when
+      # the secret is absent, so local/report use is unaffected.
+      - name: Ingest + re-score users into the hosted DB
+        env:
+          JOBSEARCH_DATABASE_URL: ${{ secrets.JOBSEARCH_DATABASE_URL }}
+        run: |
+          if [ -z "$JOBSEARCH_DATABASE_URL" ]; then
+            echo "JOBSEARCH_DATABASE_URL not set — skipping hosted ingest/re-score."
+            exit 0
+          fi
+          python -m jobsearch ingest
+          python -m jobsearch rescore-users
+
       - name: Commit report
         run: |
           git config user.name "github-actions[bot]"

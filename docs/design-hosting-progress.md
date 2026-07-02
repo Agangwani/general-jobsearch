@@ -26,9 +26,10 @@ plan; the app host and the code changes are the rest.
 | **1. Postgres backend + schema** | DB layer runs on Postgres; schema live on Supabase | ✅ **Done, tested** |
 | **1b. Dialect cleanup (deferred modules)** | Date math in the email + report modules | ⬜ Not started |
 | **2a. Auth (login wall)** | Supabase Auth, signed sessions, `app_users`, owner-gated signups | ✅ **Done, tested** |
-| **2b. Per-user isolation** | `user_id` scoping + `user_job_fit`; opens public signups | 🟦 In progress — **profile + prep/company progress** done; jobs/fit next |
-| **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); going live gated on Stage 2 |
-| **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | ⬜ Not started |
+| **2b. Per-user isolation** | `user_id` scoping (profile, progress, applications, fit, résumé) | ✅ **Done, tested** |
+| **2c. Open signups** | Drop the owner gate now that all per-user data is isolated | ✅ **Done** — open by default; `JOBSEARCH_ALLOW_SIGNUPS=0` for a private instance |
+| **3. Deploy** | Containerize FastAPI, run on a public host with HTTPS | 🟦 Files ready (`Dockerfile` + `docs/deploy.md`); ready to go live |
+| **4. Repoint the daily worker** | GitHub Action writes Postgres instead of committing files | 🟦 Partial — `rescore-users` step wired behind `JOBSEARCH_DATABASE_URL`; full report→DB repoint remains |
 | **5. Hardening** | The security checklist in `design-hosting.md` | ⬜ Ongoing |
 
 ## Stage 1 — Postgres backend + schema (DONE)
@@ -144,17 +145,39 @@ functions take `user_id=db.LOCAL_USER_ID` and scope by it. Routes pass
 - [x] **Prep & company progress** (`prep_*_progress`, `company_problem_progress`)
   — setters + all overview/detail/count reads scoped by user (migration `0004`).
   Verified: `tests/test_user_scoping.py`.
-- [ ] **Application tracking** (`applications`, `application_events`, `runs`) —
-  the harder piece: today `upsert_job` auto-creates one application per job
-  (1:1, single-user). Multi-user needs **lazy applications** (created when a
-  user first engages) so the to-apply pile is `jobs LEFT JOIN applications ON
-  job_id AND user_id`.
-- [ ] **Per-user fit** — move `jobs.fit_score/rank_score/cluster` (single-user
-  columns today) into `user_job_fit (user_id, job_id, …)`, and have the worker
-  rescore each active user's resume against the global corpus. Touches
-  `scoring.py`, `ingest.py`, and the dashboard queries.
+- [x] **Application tracking** (`applications`) — **lazy per-user applications**
+  (migration `0005`; the unique key is now `(user_id, job_id)`). An application
+  is one user's engagement with one posting, created lazily by
+  `db.get_or_create_application` when a user first acts on a job (status change
+  or launching the apply browser). Every read is `jobs LEFT JOIN applications ON
+  job_id AND user_id` with `COALESCE(status,'not_applied')`, so a job a user
+  hasn't touched sits in *their* to-apply pile. State-change actions re-key on
+  `job_id` (the row may have no application yet). The local owner keeps an
+  auto-created application on insert, so single-user mode is byte-for-byte
+  unchanged. `application_events` inherit scoping through their `application_id`
+  FK; `runs` (global ingest metadata) stays global. Verified:
+  `tests/test_application_scoping.py` (SQLite) +
+  `test_postgres_backend.py::test_applications_are_per_user_on_postgres` (live PG).
+- [x] **Per-user fit** — `fit_score/rank_score/cluster` moved off `jobs` into
+  `user_job_fit (user_id, job_id, …)` (migration `0006`); the dashboard reads fit
+  through it LEFT JOINed on the current user (a shared `_JOB_FIT_SELECT` lists the
+  jobs columns explicitly so there's never a duplicate `fit_score` column — which
+  would resolve differently on SQLite vs psycopg). `jobs.fit_*` stays as the
+  pipeline's (owner) scores and is mirrored into the `local` rows on ingest, so
+  single-user mode is unchanged. `webapp/fit.rescore_user` scores a résumé
+  against the DB job corpus; it runs on **all three triggers**: on résumé
+  **upload**, on the manual **"↻ Refresh matches"** button (`POST /matches/refresh`),
+  and by the **daily worker** (`python -m jobsearch rescore-users`, wired into
+  `daily-job-search.yml` behind `JOBSEARCH_DATABASE_URL`). Résumé text is now
+  stored per user in `user_resumes` (migration `0007`) — needed so the worker can
+  re-score users and so an uploaded résumé survives a container restart; the
+  `/resume` page reads the per-user résumé so accounts never see each other's.
+  Verified: `tests/test_fit_scoping.py` (SQLite, model + engine + routes) +
+  `test_postgres_backend.py::{test_fit_is_per_user,test_rescore_user}_on_postgres`.
 
-Once those land, open public signups (drop the owner gate).
+Once those land, open public signups (drop the owner gate). **All per-user data
+is now isolated** (profile, prep/company progress, applications, fit, résumé) —
+Stage 2c below opens signups.
 
 **RLS note:** Supabase enabled Row-Level Security on every table by default.
 The app connects with a **direct Postgres role** and enforces `user_id` in its

@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="Max board URLs to pull per ATS domain (default: 500)")
     sub.add_parser("ingest", help="Pull the latest reports (main + startups) "
                    "into the application database")
+    sub.add_parser("rescore-users", help="Re-score every active user's résumé "
+                   "against the current job corpus (daily worker; runs after ingest)")
     ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
     ui.add_argument("--port", type=int, default=8484)
     ui.add_argument("--host", default="127.0.0.1")
@@ -98,6 +100,14 @@ def main(argv: list[str] | None = None) -> int:
         from webapp.ingest import ingest_latest
         conn = webdb.connect(args.root / "data" / "jobsearch.db")
         ingest_latest(args.root, conn, user_id=args.user)
+        return 0
+    if args.command == "rescore-users":
+        from webapp import db as webdb
+        from webapp.fit import rescore_all_active_users
+        conn = webdb.connect(args.root / "data" / "jobsearch.db")
+        results = rescore_all_active_users(conn)
+        print(f"Re-scored {len(results)} user(s), "
+              f"{sum(results.values())} job-fit rows updated.", file=sys.stderr)
         return 0
     if args.command == "ui":
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.allow_remote:

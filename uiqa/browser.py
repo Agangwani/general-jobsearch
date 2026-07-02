@@ -83,10 +83,26 @@ class BrowserSession:
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self.headless)
         self.context = self._browser.new_context()
+        # Abort off-origin requests (Google Fonts, CDNs): they aren't the app
+        # under test, and in network-restricted/sandboxed environments a blocked
+        # external resource otherwise stalls every navigation ~10s+ until it
+        # fails. Their failures are already classified low-severity (environment,
+        # not a bug in this app), so dropping them changes no finding.
+        self.context.route("**/*", self._route)
         self.context.on("page", self._wire_page)  # pop-ups / new windows
         self.page = self.context.new_page()
         self._wire_page(self.page)
         return self
+
+    def _route(self, route) -> None:
+        url = route.request.url
+        try:
+            if url.startswith("http") and _origin_of(url) != self._origin:
+                route.abort()
+            else:
+                route.continue_()
+        except Exception:  # noqa: BLE001 — context tearing down mid-flight
+            pass
 
     def __exit__(self, *exc) -> None:
         try:

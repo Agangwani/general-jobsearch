@@ -33,12 +33,12 @@
     {% endif %}
     {% if job.url %}
     <button class="btn btn-primary" data-apply-btn
-            data-job-id="{{ job.id }}" data-application-id="{{ job.application_id }}"
+            data-job-id="{{ job.id }}"
             title="Opens a tab in the integrated browser and auto-fills your profile into the form. Never submits — you review and click submit.">
       ⚡ Auto-fill apply
     </button>
     <button class="btn btn-ghost" data-refill-btn
-            data-job-id="{{ job.id }}" data-application-id="{{ job.application_id }}"
+            data-job-id="{{ job.id }}"
             title="Re-run auto-fill on this job's already-open tab — useful after the form finishes loading or you've updated your profile. Opens a tab if none is open.">
       ↻ Re-fill open tab
     </button>
@@ -142,7 +142,7 @@
     {% endif %}
 
     <h2>Update status</h2>
-    <form method="post" action="/applications/{{ job.application_id }}/status" class="stack-form">
+    <form method="post" action="/jobs/{{ job.id }}/status" class="stack-form">
       <select name="status">
         {% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == job.status }}>{{ s.replace('_',' ') }}</option>{% endfor %}
       </select>

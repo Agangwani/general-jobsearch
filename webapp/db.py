@@ -676,6 +676,35 @@ def job_with_application(conn: sqlite3.Connection, job_id: int,
     ).fetchone()
 
 
+def get_or_create_application(
+    conn: sqlite3.Connection, job_id: int, user_id: str = LOCAL_USER_ID,
+) -> int | None:
+    """Return the application id for this user's job row, creating it if
+    absent. upsert_job seeds one application per job at insert, so the create
+    branch is a robustness fallback (e.g. rows from before seeding existed).
+    Returns None for a job id that doesn't exist or belongs to another user —
+    callers degrade to a not-found redirect instead of violating the
+    applications->jobs foreign key."""
+    # job_id arrives straight from a path param / form field. Reject ids outside
+    # signed-64-bit before binding them (SQLite raises OverflowError otherwise).
+    if not isinstance(job_id, int) or not (-(2 ** 63) <= job_id < 2 ** 63):
+        return None
+    if conn.execute("SELECT 1 FROM jobs WHERE id = ? AND user_id = ?",
+                    (job_id, user_id)).fetchone() is None:
+        return None
+    row = conn.execute(
+        "SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchone()
+    if row is not None:
+        return row["id"]
+    now = utcnow()
+    conn.execute(
+        "INSERT INTO applications (job_id, created_at, updated_at) VALUES (?, ?, ?)",
+        (job_id, now, now))
+    conn.commit()
+    return conn.execute(
+        "SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchone()["id"]
+
+
 def application_by_url(conn: sqlite3.Connection, url: str,
                        user_id: str = LOCAL_USER_ID) -> sqlite3.Row | None:
     """Exact-URL lookup of an application — used to attribute an open browser
@@ -1789,6 +1818,17 @@ def set_resume(conn: sqlite3.Connection, user_id: str, text: str,
             "INSERT INTO user_resumes (user_id, resume_text, pdf_name, updated_at) "
             "VALUES (?, ?, ?, ?)", (user_id, text, pdf_name, now))
     conn.commit()
+
+
+def users_with_resume(conn: sqlite3.Connection) -> list[str]:
+    """User ids with a stored, non-empty résumé — the set the daily worker
+    re-scores. Excludes 'local': the owner's rows get the pipeline's own
+    higher-fidelity scores at ingest, which a DB-corpus re-score would
+    overwrite."""
+    return [r["user_id"] for r in conn.execute(
+        "SELECT user_id FROM user_resumes "
+        "WHERE resume_text != '' AND user_id != ? ORDER BY user_id",
+        (LOCAL_USER_ID,)).fetchall()]
 
 
 # ------------------------------------------------------------ hosted accounts ---
