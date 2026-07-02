@@ -1,7 +1,7 @@
 -- jobsearch initial schema (Postgres)
 -- Generated from webapp/db.py:SCHEMA via webapp/pgcompat.sqlite_schema_to_postgres().
 -- This is the single-user data model ported to Postgres verbatim. Multi-tenant
--- columns (user_id, users, user_job_fit) arrive in a later migration with auth
+-- columns (user_id, users) arrive in a later migration with auth
 -- (see docs/design-hosting.md / docs/design-hosting-progress.md).
 
 CREATE TABLE IF NOT EXISTS jobs (

@@ -760,7 +760,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # never see each other's. Fall back to the on-disk résumé — the local
         # single-user path — then the bundled sample.
         uid = auth.current_user_id(request)
-        resume_text = db.get_user_resume(conn, uid)
+        resume_text = db.get_resume(conn, uid) or ""
         using_sample = False
         if not resume_text:
             text_path = root / "data" / "resume.txt"
@@ -787,6 +787,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 f"/resume?error={quote_plus('file too large (max 10 MB)')}",
                 status_code=303)
         name = (file.filename or "").lower()
+        pdf_name = ""
         try:
             if name.endswith(".pdf"):
                 if not data.startswith(b"%PDF"):
@@ -795,8 +796,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 (root / "data" / "resume.pdf").write_bytes(data)
                 # Remember the original filename so auto-apply attaches the
                 # resume under the same name the user uploaded.
-                (root / "data" / "resume.pdf.name").write_text(
-                    Path(file.filename or "resume.pdf").name)
+                pdf_name = Path(file.filename or "resume.pdf").name
+                (root / "data" / "resume.pdf.name").write_text(pdf_name)
             elif name.endswith((".txt", ".md")):
                 text = data.decode("utf-8", errors="replace").strip()
                 if len(text) < 100:
@@ -806,13 +807,15 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         except ValueError as exc:
             return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
                                     status_code=303)
-        (root / "data" / "resume.txt").write_text(text + "\n")
         uid = auth.current_user_id(request)
+        # Store the resume in the DB (durable / hosted-safe — the pipeline reads
+        # it per-user via load_resume_text), and keep the file for local runs +
+        # the PDF that auto-apply attaches.
+        db.set_resume(conn, uid, text, pdf_name)
+        (root / "data" / "resume.txt").write_text(text + "\n")
         profile.reseed_from_resume(conn, text, user_id=uid)
-        # Persist the résumé per-user (survives restarts; the daily worker reads
-        # it) and re-score this user's matches against the current corpus right
-        # away, so their fit reflects the new résumé without a pipeline run.
-        db.set_user_resume(conn, uid, text, Path(file.filename or "resume").name)
+        # Re-score this user's matches against their current jobs right away,
+        # so their fit reflects the new résumé without a pipeline run.
         try:
             fit.rescore_user(conn, uid, text)
         except Exception as exc:  # noqa: BLE001 — scoring is best-effort here
@@ -826,12 +829,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         # upload and the daily worker). Uses the stored résumé, falling back to
         # the on-disk résumé in local single-user mode.
         uid = auth.current_user_id(request)
-        text = db.get_user_resume(conn, uid)
+        text = db.get_resume(conn, uid) or ""
         if not text:
             rp = root / "data" / "resume.txt"
             text = rp.read_text() if rp.exists() else ""
             if text and uid == db.LOCAL_USER_ID:
-                db.set_user_resume(conn, uid, text)
+                db.set_resume(conn, uid, text)
         scored = 0
         try:
             scored = fit.rescore_user(conn, uid, text)
@@ -983,6 +986,12 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/jobs/{job_id}/history")
     def api_history(job_id: int):
+        # ``job_id`` comes from the URL path, where FastAPI's ``int`` accepts an
+        # arbitrary-precision integer. SQLite's INTEGER is signed 64-bit, so an
+        # id outside that range would overflow the bind (a 500). Treat it as "no
+        # such job" — an empty history — like db.job_with_application does.
+        if not (-(2 ** 63) <= job_id < 2 ** 63):
+            return JSONResponse([])
         rows = conn.execute(
             "SELECT event_type, payload, created_at FROM job_events "
             "WHERE job_id = ? ORDER BY created_at", (job_id,)).fetchall()

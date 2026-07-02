@@ -60,6 +60,15 @@ search:
   promote_unleveled: true
 
 ranking:
+  # Matching backend for the direct resume↔posting similarity (the dominant fit
+  # term). "tfidf" (default) is the tuned bag-of-words cosine. "embedding" swaps
+  # in a sentence-transformer cosine over the same cleaned posting text (opt-in;
+  # requires `pip install sentence-transformers`, falls back to tfidf if absent).
+  # Clustering stays on TF-IDF either way. Kept off by default: off-the-shelf
+  # embeddings aren't automatically better for resume↔posting matching (see the
+  # deep-research briefing) — validate before making it the default.
+  match_backend: tfidf
+  embedding_model: all-MiniLM-L6-v2
   # Final ordering = fit_score * 0.5 ** (age_days / half_life_days), so a
   # posting loses half its weight every `half_life_days` — this is what
   # "prioritize recently added" means concretely.
@@ -73,7 +82,19 @@ ranking:
   # survivors (docs/analysis-scoring-skew.md).
   clusters: auto
   # Weight of the cluster-affinity term in fit (rest is direct resume cosine).
-  cluster_weight: 0.15
+  # Kept low because at corpus scale the K-means clusters are weakly separated
+  # (silhouette < 0.08 at every k) and several collapse to single-company
+  # "authorship" clusters, so their affinity reflects a company's average
+  # posting vocabulary rather than the individual role. A large weight then
+  # demotes genuinely strong roles at companies with distinctive/non-technical
+  # posting language (e.g. an Asana AI-SWE role dropped ~48 ranks into Asana's
+  # own cluster). At 0.05 the worst such swing is ~6 pts (docs/analysis-scoring-skew.md).
+  cluster_weight: 0.05
+  # Before clustering, zero each company's "signature" terms (tokens in most of
+  # one company's postings but rare corpus-wide — product names, mission/benefits
+  # boilerplate) so K-means groups by transferable skill instead of company
+  # authorship. Only affects cluster assignment, never the direct resume cosine.
+  decluster_company_signatures: true
   # How many ranked jobs to include in the report.
   top_jobs: 100
   # How many near-miss (broadened-search) jobs to show.
@@ -89,7 +110,22 @@ discovery:
   # Lead sources (jobsearch/sources/). themuse and hn_hiring are keyless;
   # adzuna needs ADZUNA_APP_ID / ADZUNA_APP_KEY (free at developer.adzuna.com)
   # and is skipped cleanly without them.
-  sources: [themuse, hn_hiring, adzuna]
+  sources: [themuse, hn_hiring, adzuna, ats_boards, remotive]
+  # Seed ATS boards for the `ats_boards` source: companies whose public
+  # Greenhouse/Lever/Ashby board you want mined for fresh openings each run.
+  # Unlike companies.yaml (always fetched), these are a resume-RANKED candidate
+  # pool — list many; discovery keeps the best-fitting `max_companies`. Empty by
+  # default. Example:
+  #   ats_boards:
+  #     - {ats: greenhouse, token: airbnb, name: Airbnb}
+  #     - {ats: lever, token: ramp}
+  #     - {ats: ashby, token: linear}
+  ats_boards: []
+  # Cap on how many ATS boards the ats_boards source fetches per run (the curated
+  # seed above plus any Common Crawl-discovered boards in
+  # data/ats_boards.discovered.yaml, written by `discover-ats-boards`). Keeps a
+  # large crawl from fanning out into thousands of board fetches. 0 = no cap.
+  ats_boards_max: 150
   # Canonical location string sent to aggregator APIs (Muse `location`,
   # Adzuna `where`). Postings are still filtered against search.locations.
   location: New York, NY
@@ -107,6 +143,17 @@ discovery:
   # Where the generated registry lands (gitignored: it derives from your
   # resume). Delete the file to fall back to the curated registry alone.
   output_file: data/companies.discovered.yaml
+  # Refresh the discovered registry at the start of every `run`, so each run
+  # searches for fresh companies instead of only the curated list + the last
+  # generated registry. The curated companies.yaml is always searched (the
+  # exploit watchlist); discovery adds freshly-surfaced companies (explore).
+  # Off by default in code so the offline test suite and ad-hoc CLI runs don't
+  # hit the network; enabled here for real runs.
+  on_run: true
+  # Throttle: skip the on-run refresh if the registry was regenerated within
+  # this many minutes (0 = refresh every run). Keeps rapid re-runs from
+  # re-hitting the aggregator APIs.
+  min_interval_minutes: 0
 
 # Startup pipeline (`python -m jobsearch discover-startups` + `run-startups`):
 # a parallel, second pipeline that searches *startups* in a given city, scores
@@ -126,24 +173,85 @@ startups:
   # directory — keyless, the canonical "all startups" list) is startup-specific;
   # hn_hiring and themuse add startups posting right now. adzuna also works if
   # you have a key, but it isn't startup-aware so it's off by default.
-  sources: [ycombinator, hn_hiring, themuse]
+  sources: [ycombinator, hn_hiring, themuse, remotive]
   # How many startups one discovery run may add to the startup registry. The
-  # startup universe is large, so this is higher than the main default.
-  max_companies: 60
-  max_pages: 8
+  # startup universe is large, so this is higher than the main default. Raised
+  # to widen the pool so more (typically smaller) startups clear the ranking
+  # cutoff and get their boards fetched.
+  max_companies: 120
+  max_pages: 12
+  # Size guard: drop discovered leads whose known team size exceeds this many
+  # employees — they're enterprises, not startups. Only applies to leads that
+  # carry a headcount (YC/HN); size-less leads (themuse) fall back to the
+  # exclude_companies blocklist below. Set to 0 to disable. Left generous
+  # (list-more posture); lower it (e.g. 500/200) to bias toward tiny startups.
+  max_employees: 2000
+  # Funding guard: drop discovered leads whose known total raised — or, when
+  # that's blank, their most recent round — exceeds this many dollars (too
+  # late-stage). Only applies to leads carrying a funding figure; the rest fall
+  # back to exclude_companies. 0 disables (current: list more, no funding cap).
+  # The total_raised figure is enriched from SEC Form D below when available.
+  max_raised: 0
+  # Refresh the startup registry at the start of every `run-startups`. The YC
+  # directory is a mostly-static universe (unlike the main track's job-board
+  # stream) and startup discovery also enriches funding via SEC EDGAR, which is
+  # slow — so this refreshes on a cadence rather than literally every run.
+  on_run: true
+  min_interval_minutes: 720   # ~12h; the YC universe changes slowly
+  # Relaxed matching for the startup RUN (run-startups), applied only to this
+  # track so the main search stays strict. Startups are remote-heavy, post
+  # flatter/unleveled and "founding/forward-deployed" titles, and post less
+  # often, so the default NYC+senior gate buries them in near-miss.
+  include_remote: true      # accept US-remote startup roles as matches
+  remote_min_pay: 0         # don't require a posted pay range for remote roles
+  max_age_days: 90          # startups post less often — widen the age window
+  near_miss_count: 50       # show more broadened-search rows
+  # Extra title patterns appended to the resume-generated include set (startup
+  # track only). These admit the flatter titles startups actually use.
+  extra_title_include:
+    - '\bfounding\b.*\bengineer\b'
+    - '\bengineer\b.*\bfounding\b'
+    - '\bforward[- ]?deployed\b.*\bengineer\b'
+    - '\bmember of technical staff\b'
+    - '\b(software|back[- ]?end|full[- ]?stack|platform|infrastructure|distributed|data)\s+engineer\b'
+    - '\b(ml|ai|machine learning)\s+engineer\b'
+  # Online funding enrichment: backfill total_raised from SEC EDGAR Form D at
+  # discovery time (keyless). Best-effort and display-only — most tiny/SAFE/
+  # non-US startups have no filing, so this stays blank for them. Set edgar:
+  # false to skip the network calls. Put your real contact email in
+  # sec_user_agent; SEC asks automated clients to identify themselves.
+  enrich:
+    edgar: true
+    sec_user_agent: jobsearch startup research admin@example.com
   # Muse categories; empty = inferred from your resume (same as discovery).
   categories: []
   # Y Combinator source knobs.
   ycombinator:
     # Which OSS-API slice to read: `hiring` (companies marked hiring, smaller)
-    # or `all` (the entire directory). hiring is the sane default for a job hunt.
-    slice: hiring
+    # or `all` (the entire directory). `all` brings early/small startups not
+    # flagged hiring into the pool so more of them can surface after ranking.
+    slice: all
     # Company statuses to keep (lowercased): active | acquired | public | inactive.
     statuses: [active]
     # Require the company be flagged hiring even within the chosen slice.
     require_hiring: false
-  # Startups never auto-added (e.g. your current employer).
-  exclude_companies: []
+  # Startups never auto-added (e.g. your current employer). Also the fallback
+  # for large public enterprises that themuse surfaces without a headcount, so
+  # the size guard above can't catch them.
+  exclude_companies:
+    - JPMorgan Chase
+    - Capital One
+    - Bank of America
+    - Morgan Stanley
+    - TD Bank
+    - Deloitte
+    - PwC
+    - Apple
+    - Walmart
+    - MLB
+    - Oscar Health
+    - Hudson River Trading
+    - Agency   # staffing/recruiting board — 800+ non-startup postings, 0 matches
   # Generated startup registry + metadata sidecar (gitignored, resume-derived).
   output_file: data/companies.startups.yaml
   meta_file: data/startup_meta.json

@@ -9,7 +9,7 @@ configured unknown-age penalty (like Spotify).
 from __future__ import annotations
 
 from ..models import Company, JobPosting
-from ..utils import first, walk_collect
+from ..utils import first, strip_html, walk_collect
 
 URL = (
     "https://www.janestreet.com/join-jane-street/open-roles/"
@@ -40,7 +40,7 @@ def parse_payloads(payloads: list, company_name: str) -> list[JobPosting]:
             location=str(location),
             url=f"https://www.janestreet.com/join-jane-street/position/{job_id}/",
             job_id=job_id,
-            description=str(first(record, DESC_KEYS)),
+            description=strip_html(str(first(record, DESC_KEYS))),
             source="janestreet",
         ))
     return jobs

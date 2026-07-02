@@ -1,10 +1,10 @@
-"""Stage 2b: per-user application isolation (the lazy-application model).
+"""Stage 2b: per-user application isolation.
 
-An application is one user's engagement with one posting. Two accounts must
-never see each other's apply status or notes, and a job a user hasn't touched
-sits in their to-apply pile (no application row yet — created lazily on first
-engagement). These run against SQLite (the default backend) and exercise the
-same db functions the routes call."""
+An application is one user's engagement with one posting. Jobs are per-user
+rows (Stage 2a) and each row is seeded with its owner's application at insert,
+so two accounts never see each other's apply status or notes — another
+tenant's job id simply reads as not-found. These run against SQLite (the
+default backend) and exercise the same db functions the routes call."""
 
 import pytest
 
@@ -30,51 +30,67 @@ def _job(key="greenhouse:Acme:1", **kw):
     return base
 
 
-def _job_id(conn, key):
-    return conn.execute("SELECT id FROM jobs WHERE key = ?", (key,)).fetchone()["id"]
+def _job_id(conn, key, user_id="local"):
+    return conn.execute("SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+                        (user_id, key)).fetchone()["id"]
 
 
 def test_status_is_isolated_per_user(conn):
-    db.upsert_job(conn, _job())
-    jid = _job_id(conn, "greenhouse:Acme:1")
+    # The same posting held by three owners = three job rows, each with its own
+    # seeded application.
+    for uid in ("local", "u1", "u2"):
+        db.upsert_job(conn, _job(), user_id=uid)
+    j1 = _job_id(conn, "greenhouse:Acme:1", "u1")
 
-    # u1 applies; u2 has done nothing.
-    a1 = db.get_or_create_application(conn, jid, "u1")
-    db.set_application_status(conn, a1, "applied", detail="sent", via="ui")
+    # u1 applies; u2 and the owner have done nothing.
+    a1 = db.get_or_create_application(conn, j1, "u1")
+    db.set_application_status(conn, a1, "applied", detail="sent", via="ui", user_id="u1")
 
-    assert db.job_with_application(conn, jid, "u1")["status"] == "applied"
-    # u2 sees the to-apply default and has no application row of their own.
-    u2_view = db.job_with_application(conn, jid, "u2")
-    assert u2_view["status"] == "not_applied"
-    assert u2_view["application_id"] is None
-    # The owner ('local') auto-application is likewise untouched by u1's apply.
-    assert db.job_with_application(conn, jid, "local")["status"] == "not_applied"
+    assert db.job_with_application(conn, j1, "u1")["status"] == "applied"
+    # u2's own copy of the posting still sits in their to-apply pile...
+    j2 = _job_id(conn, "greenhouse:Acme:1", "u2")
+    assert db.job_with_application(conn, j2, "u2")["status"] == "not_applied"
+    # ...and u1's job id reads as not-found for u2 (tenant isolation).
+    assert db.job_with_application(conn, j1, "u2") is None
+    # The owner's copy is likewise untouched by u1's apply.
+    jl = _job_id(conn, "greenhouse:Acme:1", "local")
+    assert db.job_with_application(conn, jl, "local")["status"] == "not_applied"
 
 
 def test_notes_do_not_leak_between_users(conn):
-    db.upsert_job(conn, _job())
-    jid = _job_id(conn, "greenhouse:Acme:1")
-    a1 = db.get_or_create_application(conn, jid, "u1")
+    db.upsert_job(conn, _job(), user_id="u1")
+    db.upsert_job(conn, _job(), user_id="u2")
+    j1 = _job_id(conn, "greenhouse:Acme:1", "u1")
+    a1 = db.get_or_create_application(conn, j1, "u1")
     conn.execute("UPDATE applications SET notes = ? WHERE id = ?", ("call recruiter", a1))
     conn.commit()
-    assert db.job_with_application(conn, jid, "u1")["notes"] == "call recruiter"
-    # u2's lazily-absent application carries no notes.
-    assert db.job_with_application(conn, jid, "u2")["notes"] is None
+    assert db.job_with_application(conn, j1, "u1")["notes"] == "call recruiter"
+    # u2's own application carries no notes, and u1's row is invisible to them.
+    j2 = _job_id(conn, "greenhouse:Acme:1", "u2")
+    assert not db.job_with_application(conn, j2, "u2")["notes"]
+    assert db.job_with_application(conn, j1, "u2") is None
 
 
-def test_application_is_created_lazily_and_idempotently(conn):
-    db.upsert_job(conn, _job())
-    jid = _job_id(conn, "greenhouse:Acme:1")
-
-    # No row for a brand-new user until they engage.
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM applications WHERE user_id = 'u9'").fetchone()["c"] == 0
+def test_application_ids_are_stable_and_self_healing(conn):
+    db.upsert_job(conn, _job(), user_id="u9")
+    jid = _job_id(conn, "greenhouse:Acme:1", "u9")
 
     first = db.get_or_create_application(conn, jid, "u9")
     second = db.get_or_create_application(conn, jid, "u9")
-    assert first == second  # idempotent — one row per (user, job)
+    assert first == second  # idempotent — one row per job
     assert conn.execute(
-        "SELECT COUNT(*) c FROM applications WHERE user_id = 'u9'").fetchone()["c"] == 1
+        "SELECT COUNT(*) c FROM applications WHERE job_id = ?",
+        (jid,)).fetchone()["c"] == 1
+
+    # Robustness fallback: a row missing its seeded application (e.g. created
+    # before seeding existed) gets one lazily instead of 500ing.
+    conn.execute("DELETE FROM applications WHERE job_id = ?", (jid,))
+    conn.commit()
+    recreated = db.get_or_create_application(conn, jid, "u9")
+    assert recreated is not None
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM applications WHERE job_id = ?",
+        (jid,)).fetchone()["c"] == 1
 
 
 def test_get_or_create_returns_none_for_unknown_job(conn):
@@ -82,16 +98,22 @@ def test_get_or_create_returns_none_for_unknown_job(conn):
     # helper returns None so the route degrades to a redirect instead of a 500.
     assert db.get_or_create_application(conn, 999999, "u1") is None
     assert db.get_or_create_application(conn, 2**63, "u1") is None
-    assert conn.execute("SELECT COUNT(*) c FROM applications").fetchone()["c"] == 0
+    # Another tenant's job id likewise reads as not-found.
+    db.upsert_job(conn, _job(), user_id="u1")
+    j1 = _job_id(conn, "greenhouse:Acme:1", "u1")
+    assert db.get_or_create_application(conn, j1, "u2") is None
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM applications").fetchone()["c"] == 1  # u1's seed only
 
 
 def test_stack_counts_are_per_user(conn):
-    db.upsert_job(conn, _job("greenhouse:Acme:1"))
-    db.upsert_job(conn, _job("greenhouse:Beta:2", company="Beta"))
-    jid = _job_id(conn, "greenhouse:Acme:1")
+    for uid in ("u1", "u2"):
+        db.upsert_job(conn, _job("greenhouse:Acme:1"), user_id=uid)
+        db.upsert_job(conn, _job("greenhouse:Beta:2", company="Beta"), user_id=uid)
+    j1 = _job_id(conn, "greenhouse:Acme:1", "u1")
 
-    a1 = db.get_or_create_application(conn, jid, "u1")
-    db.set_application_status(conn, a1, "applied")
+    a1 = db.get_or_create_application(conn, j1, "u1")
+    db.set_application_status(conn, a1, "applied", user_id="u1")
 
     c1 = db.stack_counts(conn, "u1")
     assert c1["applied"] == 1 and c1["to_apply"] == 1
@@ -101,10 +123,12 @@ def test_stack_counts_are_per_user(conn):
 
 
 def test_search_jobs_stacks_are_per_user(conn):
-    db.upsert_job(conn, _job("greenhouse:Acme:1"))
-    db.upsert_job(conn, _job("greenhouse:Beta:2", company="Beta", url="https://beta.co/2"))
-    jid = _job_id(conn, "greenhouse:Acme:1")
-    db.set_application_status(conn, db.get_or_create_application(conn, jid, "u1"), "applied")
+    for uid in ("u1", "u2"):
+        db.upsert_job(conn, _job("greenhouse:Acme:1"), user_id=uid)
+        db.upsert_job(conn, _job("greenhouse:Beta:2", company="Beta",
+                                 url="https://beta.co/2"), user_id=uid)
+    j1 = _job_id(conn, "greenhouse:Acme:1", "u1")
+    db.set_application_status(conn, db.get_or_create_application(conn, j1, "u1"), "applied", user_id="u1")
 
     assert [r["company"] for r in db.search_jobs(conn, stack="applied", user_id="u1")] == ["Acme"]
     assert db.search_jobs(conn, stack="applied", user_id="u2") == []
@@ -114,15 +138,17 @@ def test_search_jobs_stacks_are_per_user(conn):
 
 
 def test_top_fit_to_apply_is_per_user(conn):
-    db.upsert_job(conn, _job("greenhouse:Acme:1", fit_score=90.0))
-    jid = _job_id(conn, "greenhouse:Acme:1")
-    # Before u1 applies, the job is applyable for both users.
-    assert [r["id"] for r in db.top_fit_to_apply(conn, 5, "u1")] == [jid]
-    assert [r["id"] for r in db.top_fit_to_apply(conn, 5, "u2")] == [jid]
+    db.upsert_job(conn, _job("greenhouse:Acme:1", fit_score=90.0), user_id="u1")
+    db.upsert_job(conn, _job("greenhouse:Acme:1", fit_score=90.0), user_id="u2")
+    j1 = _job_id(conn, "greenhouse:Acme:1", "u1")
+    j2 = _job_id(conn, "greenhouse:Acme:1", "u2")
+    # Before u1 applies, the posting is applyable for both users.
+    assert [r["id"] for r in db.top_fit_to_apply(conn, 5, "u1")] == [j1]
+    assert [r["id"] for r in db.top_fit_to_apply(conn, 5, "u2")] == [j2]
     # After u1 applies it drops out of u1's pile but stays in u2's.
-    db.set_application_status(conn, db.get_or_create_application(conn, jid, "u1"), "applied")
+    db.set_application_status(conn, db.get_or_create_application(conn, j1, "u1"), "applied", user_id="u1")
     assert db.top_fit_to_apply(conn, 5, "u1") == []
-    assert [r["id"] for r in db.top_fit_to_apply(conn, 5, "u2")] == [jid]
+    assert [r["id"] for r in db.top_fit_to_apply(conn, 5, "u2")] == [j2]
 
 
 def test_local_mode_still_has_an_application_per_job(conn):

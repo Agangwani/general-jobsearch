@@ -89,6 +89,50 @@ def filter_known(
     ]
 
 
+def filter_oversized(
+    leads: list[CompanyLead], max_employees: int
+) -> tuple[list[CompanyLead], list[CompanyLead]]:
+    """Split leads into (kept, dropped) by a headcount ceiling. A lead is dropped
+    only when its metadata carries a *known* team size above `max_employees` —
+    unknown-size leads (e.g. themuse, which exposes no size) are always kept and
+    left to the name blocklist. `max_employees <= 0` disables the guard."""
+    from .startups import parse_employee_count
+
+    if max_employees <= 0:
+        return list(leads), []
+    kept, dropped = [], []
+    for lead in leads:
+        count = parse_employee_count((lead.meta or {}).get("employees"))
+        (dropped if count is not None and count > max_employees else kept).append(lead)
+    return kept, dropped
+
+
+def filter_funding(
+    leads: list[CompanyLead], max_raised: float
+) -> tuple[list[CompanyLead], list[CompanyLead]]:
+    """Split leads into (kept, dropped) by a total-raised ceiling (USD). A lead is
+    dropped only when it carries a *known* funding figure above `max_raised` —
+    leads with no funding data are always kept (mirroring filter_oversized's
+    unknown-is-kept contract). Falls back to the most-recent-round amount when
+    total_raised is blank, since the free text sources mine `last_round_amount`
+    far more often than a cumulative `total_raised`. `max_raised <= 0` disables."""
+    from .startups import parse_money
+
+    if max_raised <= 0:
+        return list(leads), []
+    kept, dropped = [], []
+    for lead in leads:
+        meta = lead.meta or {}
+        # Fall back to last_round_amount when total_raised doesn't yield a number
+        # — not merely when it's empty. A truthy-but-unparseable total_raised
+        # ("Undisclosed", "N/A", "Series A") must not mask a real round figure.
+        amount = parse_money(meta.get("total_raised"))
+        if amount is None:
+            amount = parse_money(meta.get("last_round_amount"))
+        (dropped if amount is not None and amount > max_raised else kept).append(lead)
+    return kept, dropped
+
+
 def _own_name_re(name: str) -> re.Pattern | None:
     """The lead's own name must not score as evidence (same defense as
     scoring._company_name_re for postings)."""
@@ -286,11 +330,27 @@ def emit_registry(
 
 # --------------------------------------------------------------- CLI entry ---
 
-def enrich_meta(lead: CompanyLead) -> dict:
+def _build_edgar_enricher(discovery: dict, session):
+    """A `name -> {"total_raised": …}` callable when startups.enrich.edgar is on,
+    else None. Bound to the discovery HTTP session and the configured SEC contact
+    User-Agent."""
+    enrich = discovery.get("enrich") or {}
+    if not enrich.get("edgar"):
+        return None
+    from .funding_edgar import DEFAULT_SEC_CONTACT_UA, edgar_total_raised
+
+    contact_ua = enrich.get("sec_user_agent") or DEFAULT_SEC_CONTACT_UA
+    return lambda name: edgar_total_raised(session, name, contact_ua=contact_ua)
+
+
+def enrich_meta(lead: CompanyLead, edgar=None) -> dict:
     """The metadata record for one lead: whatever a structured source supplied
     (`lead.meta`, e.g. Y Combinator) folded together with funding/people facts
     mined from its free-text evidence (HN blurbs, descriptions). Always carries
-    a name and a source so the UI has something to show."""
+    a name and a source so the UI has something to show. When `edgar` is given
+    (a callable name -> {"total_raised": …}) it backfills a real total-raised
+    from SEC Form D; merge_meta only fills empty scalars, so it never clobbers a
+    figure a structured source or the user already supplied."""
     from .startups import extract_funding, extract_people, merge_meta
 
     blurb = "\n".join(lead.titles + lead.snippets)
@@ -300,15 +360,22 @@ def enrich_meta(lead: CompanyLead) -> dict:
     if people:
         text_meta["notable_people"] = people
     meta = merge_meta(lead.meta, text_meta)
+    if edgar is not None and not meta.get("total_raised"):
+        try:
+            meta = merge_meta(meta, edgar(lead.name) or {})
+        except Exception:  # noqa: BLE001 — enrichment must never sink discovery
+            pass
     meta.setdefault("name", lead.name)
     if not meta.get("source"):
         meta["source"] = "+".join(lead.sources)
     return meta
 
 
-def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | None = None) -> None:
+def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | None = None,
+                       edgar=None) -> None:
     """Write data/startup_meta.json: normalized company name → metadata, read by
-    the tracker ingest to populate the startup_companies table."""
+    the tracker ingest to populate the startup_companies table. `edgar` is an
+    optional total-raised enricher passed through to enrich_meta."""
     import json
 
     now = now or datetime.now(timezone.utc)
@@ -316,21 +383,104 @@ def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | Non
     for lead in leads:
         key = normalize_company_name(lead.name)
         if key:
-            companies[key] = enrich_meta(lead)
+            companies[key] = enrich_meta(lead, edgar=edgar)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(
         {"generated": now.isoformat(), "companies": companies}, indent=2) + "\n")
 
 
+def _registry_company_count(text: str | None) -> int:
+    """Number of companies in a generated registry's YAML text (0 for
+    missing/empty/malformed — treated as 'nothing to protect')."""
+    if not text:
+        return 0
+    try:
+        raw = yaml.safe_load(text) or {}
+        return len(raw.get("companies") or [])
+    except yaml.YAMLError:
+        return 0
+
+
+def maybe_run_discovery(root: Path, settings: dict, track, now: float | None = None) -> bool:
+    """Refresh a track's discovered registry at the start of a run, so each run
+    searches for fresh companies rather than only the curated list plus the last
+    generated registry. The curated companies.yaml is always searched (the
+    exploit watchlist); discovery adds freshly-surfaced companies (explore).
+
+    Controlled per track by ``<track>.on_run`` (default False in code so the
+    offline test suite and ad-hoc CLI runs never hit the network unless opted in
+    via config/settings.yaml) and throttled by ``<track>.min_interval_minutes``
+    (skip if the registry was regenerated within that window — 0 = every run).
+
+    Degradation guard: ``discover_companies`` regenerates the registry from
+    scratch and overwrites it whenever it finds >=1 fresh lead, so a partial
+    source outage (some aggregators down) would replace a healthy registry with
+    a tiny one and — under the mtime throttle — lock that shrunken set in until
+    the window elapses. To prevent silent coverage loss, if the refreshed
+    registry has fewer than ``min_registry_fraction`` (default 0.5) of the prior
+    company count, the prior registry's content AND mtime are restored so the
+    next run retries instead of running a degraded search.
+
+    Best-effort: any discovery failure is logged and the run proceeds with the
+    existing registry (mirrors the pipeline's per-board graceful degradation).
+    Returns True iff a fresh registry was accepted."""
+    import os
+    import time
+
+    cfg = track.discovery or {}
+    if not cfg.get("on_run", False):
+        return False
+    reg = track.registry_file
+    interval = cfg.get("min_interval_minutes", 0) or 0
+    if interval > 0 and reg.exists():
+        now = time.time() if now is None else now
+        age_min = (now - reg.stat().st_mtime) / 60.0
+        if age_min < interval:
+            print(f"Discovery skipped for {track.name}: registry refreshed "
+                  f"{age_min:.0f}m ago (< {interval}m throttle).", file=sys.stderr)
+            return False
+
+    prior_text = reg.read_text() if reg.exists() else None
+    prior_count = _registry_company_count(prior_text)
+    prior_mtime = reg.stat().st_mtime if reg.exists() else None
+
+    print(f"Refreshing {track.name} company registry (discovery on run)...",
+          file=sys.stderr)
+    try:
+        discover_companies(root, track_name=track.name,
+                           user_id=getattr(track, "user_id", "local"))
+    except Exception as exc:  # noqa: BLE001 - discovery must never abort the run
+        print(f"Discovery failed for {track.name} ({exc}); using the existing "
+              "registry.", file=sys.stderr)
+        return False
+
+    # Reject a degraded refresh: keep the healthier prior registry (content +
+    # mtime) so the throttle doesn't lock a shrunken set in and the next run
+    # retries. Only guards when there was a prior registry to protect.
+    new_count = _registry_company_count(reg.read_text() if reg.exists() else None)
+    fraction = cfg.get("min_registry_fraction", 0.5)
+    floor = max(1, int(prior_count * fraction))
+    if prior_text is not None and prior_count > 0 and new_count < floor:
+        reg.write_text(prior_text)
+        if prior_mtime is not None:
+            os.utime(reg, (prior_mtime, prior_mtime))
+        print(f"Discovery for {track.name} yielded {new_count} companies vs "
+              f"{prior_count} previously (< {floor}) — likely a transient source "
+              "outage; kept the prior registry and will retry next run.",
+              file=sys.stderr)
+        return False
+    return True
+
+
 def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
-                       track_name: str = "main") -> int:
+                       track_name: str = "main", user_id: str = "local") -> int:
     from .http import make_session
     from .resume import extract_keywords, load_resume_text
     from .sources import SOURCES, SourceSkip
     from .tracks import build_track
 
     settings = load_settings(root / "config" / "settings.yaml")
-    track = build_track(root, settings, track_name)
+    track = build_track(root, settings, track_name, user_id)
     discovery = track.discovery
     # Dedupe new leads against this track's curated seed (companies.yaml for the
     # main track, the optional config/startups.yaml for the startup track).
@@ -339,7 +489,7 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
     else:
         companies, manual = [], []
 
-    resume_text, is_sample = load_resume_text(root, settings)
+    resume_text, is_sample = load_resume_text(root, settings, user_id)
     if is_sample:
         print("NOTE: no resume at data/resume.txt — discovering companies for "
               "the bundled sample resume. Upload yours first for a registry "
@@ -360,6 +510,23 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
         query = settings.get("search", {}).get("query", "software engineer")
         categories = discovery.get("categories") or infer_categories(
             extract_keywords(resume_text), query)
+    # ats_boards seed = the curated config list + any boards Common Crawl
+    # discovered (data/ats_boards.discovered.yaml, via `discover-ats-boards`),
+    # deduped (config wins) and capped so a large crawl doesn't fan out into
+    # thousands of board fetches per run.
+    from .sources.commoncrawl import DISCOVERED_FILE, load_discovered_boards
+    ats_seed = [b for b in (discovery.get("ats_boards") or [])
+                if isinstance(b, dict) and b.get("ats") and b.get("token")]
+    seen_boards = {(b["ats"], str(b["token"]).lower()) for b in ats_seed}
+    for board in load_discovered_boards(root / DISCOVERED_FILE):
+        key = (board["ats"], str(board["token"]).lower())
+        if key not in seen_boards:
+            seen_boards.add(key)
+            ats_seed.append(board)
+    ats_max = int(discovery.get("ats_boards_max", 150) or 0)
+    if ats_max > 0:
+        ats_seed = ats_seed[:ats_max]
+
     ctx = {
         "query": query,
         "location": track.location,
@@ -367,6 +534,7 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
         "categories": categories,
         "max_pages": int(discovery.get("max_pages", 8)),
         "ycombinator": discovery.get("ycombinator", {}) or {},
+        "ats_boards": ats_seed,   # curated seed + Common Crawl discovered, capped
     }
     universe = "startup companies" if track.is_startup else "companies"
     default_sources = (["ycombinator", "hn_hiring", "themuse"]
@@ -392,6 +560,19 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
             print(f"  {name}: ERROR {type(exc).__name__}: {exc}")
 
     merged = merge_leads(leads)
+    if track.is_startup:
+        max_employees = int(discovery.get("max_employees", 0) or 0)
+        merged, oversized = filter_oversized(merged, max_employees)
+        if oversized:
+            names = ", ".join(sorted(l.name for l in oversized))
+            print(f"Dropped {len(oversized)} companies over {max_employees} "
+                  f"employees (not startups): {names}")
+        max_raised = float(discovery.get("max_raised", 0) or 0)
+        merged, overfunded = filter_funding(merged, max_raised)
+        if overfunded:
+            names = ", ".join(sorted(l.name for l in overfunded))
+            print(f"Dropped {len(overfunded)} companies over ${max_raised:,.0f} "
+                  f"raised (too late-stage): {names}")
     known = {normalize_company_name(c.name) for c in companies}
     known |= {normalize_company_name(str(entry.get("name", ""))) for entry in manual}
     exclude = {normalize_company_name(x) for x in track.exclude}
@@ -432,7 +613,11 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
     print(f"\nWrote {out_path} — {len(resolved)} boards, "
           f"{len(unresolved)} manual-check entries.")
     if track.is_startup and track.meta_file:
-        write_meta_sidecar(track.meta_file, top)
+        edgar = _build_edgar_enricher(discovery, session)
+        if edgar is not None:
+            print(f"Enriching {len(top)} startups with SEC Form D total-raised "
+                  "(best-effort; most tiny/SAFE/non-US startups won't have a filing)…")
+        write_meta_sidecar(track.meta_file, top, edgar=edgar)
         print(f"Wrote {track.meta_file} — metadata for {len(top)} startups.")
         print("Next: python -m jobsearch verify --startups   (catch wrong/dead boards)")
         print("      python -m jobsearch run-startups          (fetch + score them)")

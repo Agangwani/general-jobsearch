@@ -96,6 +96,66 @@ def merge_meta(base: dict, extra: dict) -> dict:
     return out
 
 
+# ------------------------------------------------------------- headcount ---
+_COUNT_RE = re.compile(r"\d[\d,]*")
+
+
+def parse_employee_count(value) -> int | None:
+    """Best-effort upper bound of a team-size string → int, or None if unknown.
+
+    Handles the shapes we see in metadata: "120", "51-200" (→200), "10,000+"
+    (→10000), "1001-5000 employees". Returns None when there's no number to
+    read (e.g. themuse leads, which carry no size), so unknown-size companies
+    are never dropped by a size guard — only companies with a *known* large
+    headcount are."""
+    if value is None:
+        return None
+    counts = [int(m.group().replace(",", "")) for m in _COUNT_RE.finditer(str(value))]
+    return max(counts) if counts else None
+
+
+# ------------------------------------------------------------ money parse ---
+_MONEY_MULT = {
+    "k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "million": 1e6,
+    "b": 1e9, "bn": 1e9, "billion": 1e9,
+}
+_MONEY_RE = re.compile(
+    r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mm|bn|k|m|b)?\b",
+    re.I,
+)
+
+
+def parse_money(value) -> float | None:
+    """Best-effort dollar amount of a money string → float, or None if unknown.
+
+    Handles the shapes we store/mine: "$25M"→25e6, "$1.5 billion"→1.5e9,
+    "$750k"→750e3, "$3,000,000"→3e6, normalized "1.5B"→1.5e9, and a bare
+    integer like "211967"→211967 (SEC Form D dollars). Mirrors
+    parse_employee_count's None-means-unknown contract so an unrecorded raise
+    never trips a funding guard."""
+    if value is None:
+        return None
+    m = _MONEY_RE.search(str(value))
+    if not m:
+        return None
+    return float(m.group(1).replace(",", "")) * _MONEY_MULT.get((m.group(2) or "").lower(), 1.0)
+
+
+def format_money(dollars: float) -> str:
+    """A round dollar amount → a compact display string ("$212K", "$25M",
+    "$200M", "$1.5B") matching the style extract_funding already produces.
+    One decimal place, trailing ".0" trimmed — never scientific notation."""
+    if dollars >= 1e9:
+        value, unit = dollars / 1e9, "B"
+    elif dollars >= 1e6:
+        value, unit = dollars / 1e6, "M"
+    elif dollars >= 1e3:
+        return f"${round(dollars / 1e3)}K"
+    else:
+        return f"${round(dollars)}"
+    return f"${f'{value:.1f}'.rstrip('0').rstrip('.')}{unit}"
+
+
 # --------------------------------------------------------------- funding ---
 # A curated list of well-known investors so "backed by a16z / Sequoia" in a
 # free-text blurb resolves to clean names. Not exhaustive — it's a signal, not

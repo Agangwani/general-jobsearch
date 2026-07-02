@@ -144,6 +144,45 @@ def test_startup_upsert_and_list(pgconn):
     assert wibble["is_hiring"] is True
 
 
+def test_two_user_job_isolation(pgconn):
+    from webapp import db
+
+    # Same pipeline key under two owners must coexist (composite UNIQUE(user_id,key)).
+    assert db.upsert_job(pgconn, _job(), user_id="user-a") == "inserted"
+    assert db.upsert_job(pgconn, _job(), user_id="user-b") == "inserted"
+    assert [r["company"] for r in db.search_jobs(pgconn, user_id="user-a")] == ["Acme"]
+    assert len(db.search_jobs(pgconn, user_id="user-b")) == 1
+    # startup roster scoping (the cross-tenant relabel guard) on Postgres.
+    db.upsert_startup_company(pgconn, {"name": "Acme"}, user_id="user-a")
+    assert db.refresh_startup_flags(pgconn, "user-a") == 1
+    assert db.refresh_startup_flags(pgconn, "user-b") == 0
+    a_id = db.job_with_application(
+        pgconn, db.search_jobs(pgconn, user_id="user-a")[0]["id"], "user-a")["application_id"]
+    with pytest.raises(ValueError):
+        db.set_application_status(pgconn, a_id, "applied", user_id="user-b")
+
+
+def test_companies_registry_roundtrip(pgconn):
+    from webapp import db
+
+    assert db.upsert_company(pgconn, {
+        "name": "Ramp", "ats": "ashby", "careers_url": "https://ramp",
+        "tags": ["discovered"], "params": {"org": "ramp"},
+        "source": "discovered"}, track="startups") == "inserted"
+    db.touch_company_search(pgconn, db.LOCAL_USER_ID, "startups", "ramp", 4)
+    row = db.get_company(pgconn, db.LOCAL_USER_ID, "startups", "ramp")
+    assert row["tags"] == ["discovered"] and row["params"] == {"org": "ramp"}  # TEXT JSON
+    assert row["last_found_jobs"] == 4 and row["enabled"] is True
+    # UNIQUE(user_id, track, company_key): same key, other track is independent.
+    assert db.upsert_company(pgconn, {"name": "Ramp", "ats": "greenhouse"},
+                             track="main") == "inserted"
+    assert db.disable_absent_companies(pgconn, db.LOCAL_USER_ID, "startups", set()) == 1
+    assert db.get_company(pgconn, db.LOCAL_USER_ID, "startups", "ramp")["enabled"] is False
+    assert db.get_company(pgconn, db.LOCAL_USER_ID, "main", "ramp")["enabled"] is True
+    db.record_company_search_run(pgconn, db.LOCAL_USER_ID, "main", "ingest", 1, 1, 0, 4)
+    assert len(db.list_companies(pgconn)) == 2  # LOWER(name) ordering runs on PG
+
+
 def test_prep_seed_named_params(pgconn):
     from jobsearch.prep.seed import seed_into_db
     from webapp import db
@@ -157,23 +196,26 @@ def test_prep_seed_named_params(pgconn):
 
 
 def test_applications_are_per_user_on_postgres(pgconn):
-    """Stage 2b lazy-application isolation, on Postgres: the LEFT JOIN +
-    COALESCE(status,'not_applied') read path, the composite UNIQUE(user_id,
-    job_id), and get_or_create_application all behave as on SQLite."""
+    """Stage 2b application isolation, on Postgres: jobs are per-user rows
+    (Stage 2a), each seeded with its owner's application, and
+    get_or_create_application behaves as on SQLite."""
     from webapp import db
 
-    db.upsert_job(pgconn, _job())
-    jid = pgconn.execute(
-        "SELECT id FROM jobs WHERE key = ?", ("greenhouse:Acme:1",)).fetchone()["id"]
+    db.upsert_job(pgconn, _job(), user_id="u1")
+    db.upsert_job(pgconn, _job(), user_id="u2")
+    j1 = pgconn.execute(
+        "SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+        ("u1", "greenhouse:Acme:1")).fetchone()["id"]
 
     # u1 engages; u2 never does.
-    a1 = db.get_or_create_application(pgconn, jid, "u1")
-    assert a1 == db.get_or_create_application(pgconn, jid, "u1")  # idempotent
-    db.set_application_status(pgconn, a1, "applied")
+    a1 = db.get_or_create_application(pgconn, j1, "u1")
+    assert a1 == db.get_or_create_application(pgconn, j1, "u1")  # idempotent
+    db.set_application_status(pgconn, a1, "applied", user_id="u1")
 
-    assert db.job_with_application(pgconn, jid, "u1")["status"] == "applied"
-    u2 = db.job_with_application(pgconn, jid, "u2")
-    assert u2["status"] == "not_applied" and u2["application_id"] is None
+    assert db.job_with_application(pgconn, j1, "u1")["status"] == "applied"
+    # u1's job id reads as not-found for u2 (tenant isolation)...
+    assert db.job_with_application(pgconn, j1, "u2") is None
+    assert db.get_or_create_application(pgconn, j1, "u2") is None
 
     # Per-user stacks and counts.
     assert [r["company"] for r in db.search_jobs(pgconn, stack="applied", user_id="u1")] == ["Acme"]
@@ -188,26 +230,22 @@ def test_applications_are_per_user_on_postgres(pgconn):
 
 
 def test_fit_is_per_user_on_postgres(pgconn):
-    """Stage 2b per-user fit, on Postgres: upsert_job mirrors the pipeline fit
-    into the local user; upsert_user_fit isolates each user; and the explicit
-    per-user fit SELECT (no duplicate fit_score column) round-trips. Catches the
-    SQLite-vs-psycopg duplicate-column hazard the _JOB_FIT_SELECT avoids."""
+    """Stage 2b per-user fit, on Postgres: fit lives on each user's own job
+    rows (Stage 2a), so scores round-trip per user with no overlay table."""
     from webapp import db
 
     db.upsert_job(pgconn, _job(fit_score=87.5, rank_score=80.0))
     jid = pgconn.execute(
-        "SELECT id FROM jobs WHERE key = ?", ("greenhouse:Acme:1",)).fetchone()["id"]
+        "SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+        ("local", "greenhouse:Acme:1")).fetchone()["id"]
 
-    # Local mirror populated by ingest/upsert_job.
+    # The pipeline's scores land on the owner's row.
     local = db.job_with_application(pgconn, jid)  # default user_id='local'
     assert local["fit_score"] == 87.5 and local["rank_score"] == 80.0
 
-    # Per-user fit is isolated.
-    db.upsert_user_fit(pgconn, "u1", jid, 90.0, 88.0, 3)
-    db.upsert_user_fit(pgconn, "u2", jid, 40.0, 30.0, 1)
-    assert db.job_with_application(pgconn, jid, "u1")["fit_score"] == 90.0
-    assert db.job_with_application(pgconn, jid, "u2")["fit_score"] == 40.0
-    assert db.job_with_application(pgconn, jid, "u3")["fit_score"] is None
+    # Per-user fit is isolated: each account's rows carry its own scores.
+    db.upsert_job(pgconn, _job(fit_score=90.0, rank_score=88.0), user_id="u1")
+    db.upsert_job(pgconn, _job(fit_score=40.0, rank_score=30.0), user_id="u2")
     # min_fit filters on the current user's fit.
     assert len(db.search_jobs(pgconn, min_fit=70.0, user_id="u1")) == 1
     assert db.search_jobs(pgconn, min_fit=70.0, user_id="u2") == []
@@ -215,26 +253,30 @@ def test_fit_is_per_user_on_postgres(pgconn):
 
 def test_rescore_user_on_postgres(pgconn):
     """Stage 2b part 4b on Postgres: per-user résumé storage + rescore_user
-    write fit rows, and the daily-worker rescore_all_active_users skips 'local'."""
+    write onto the user's job rows, and the daily-worker
+    rescore_all_active_users skips 'local'."""
     from webapp import db, fit
 
     db.upsert_job(pgconn, _job(
-        description="python postgres backend distributed systems services api"))
+        fit_score=None, rank_score=None,
+        description="python postgres backend distributed systems services api"),
+        user_id="u1")
     jid = pgconn.execute(
-        "SELECT id FROM jobs WHERE key = ?", ("greenhouse:Acme:1",)).fetchone()["id"]
+        "SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+        ("u1", "greenhouse:Acme:1")).fetchone()["id"]
 
-    db.set_user_resume(pgconn, "u1", "python backend engineer postgres distributed systems")
-    assert db.get_user_resume(pgconn, "u1").startswith("python")
+    db.set_resume(pgconn, "u1", "python backend engineer postgres distributed systems")
+    assert db.get_resume(pgconn, "u1").startswith("python")
     assert db.users_with_resume(pgconn) == ["u1"]
 
-    n = fit.rescore_user(pgconn, "u1", db.get_user_resume(pgconn, "u1"))
+    n = fit.rescore_user(pgconn, "u1", db.get_resume(pgconn, "u1"))
     assert n == 1
     assert pgconn.execute(
-        "SELECT fit_score FROM user_job_fit WHERE user_id = ? AND job_id = ?",
-        ("u1", jid)).fetchone()["fit_score"] is not None
+        "SELECT fit_score FROM jobs WHERE id = ?",
+        (jid,)).fetchone()["fit_score"] is not None
 
     # The worker skips the 'local' pipeline sentinel.
-    db.set_user_resume(pgconn, "local", "should be skipped")
+    db.set_resume(pgconn, "local", "should be skipped")
     results = fit.rescore_all_active_users(pgconn)
     assert "u1" in results and "local" not in results
 
