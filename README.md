@@ -113,6 +113,15 @@ To run locally instead, `crontab -e`:
 23 7 * * * cd /path/to/jobsearch && python -m jobsearch run
 ```
 
+## Deploy to AWS (demo)
+
+To put the UI on a public, password-protected HTTPS link with minimal
+infrastructure (AWS App Runner), see [`deploy/README.md`](deploy/README.md):
+create an IAM user, hand the deploy your keys, and run
+`./deploy/aws-apprunner.sh`. The public link is gated behind HTTP Basic auth
+(`JOBSEARCH_BASIC_AUTH_PASSWORD`) since the UI otherwise exposes your resume and
+profile PII to anyone with the URL.
+
 ## Usage
 
 ```bash

@@ -6,8 +6,10 @@ design: the database holds profile PII and application history.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import secrets
 import sqlite3
 import sys
 from pathlib import Path
@@ -15,7 +17,8 @@ from urllib.parse import quote, quote_plus
 
 import yaml
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -44,6 +47,32 @@ def _safe_next(value: str) -> str:
 
 def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="jobsearch UI")
+
+    # Optional HTTP Basic-auth gate. Off by default (local-only use needs no
+    # password); set JOBSEARCH_BASIC_AUTH_PASSWORD to require credentials —
+    # the single-tenant cloud deploy (deploy/aws-apprunner.sh) does this so the
+    # UI — profile PII, resume, Gmail, browser control — isn't exposed to
+    # anyone with the URL. Composes with the Supabase login wall below: either
+    # can be enabled independently.
+    _auth_pw = os.environ.get("JOBSEARCH_BASIC_AUTH_PASSWORD")
+    if _auth_pw:
+        _auth_user = os.environ.get("JOBSEARCH_BASIC_AUTH_USER", "demo")
+
+        @app.middleware("http")
+        async def _basic_auth(request: Request, call_next):
+            header = request.headers.get("authorization", "")
+            if header.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(header[6:]).decode("utf-8")
+                    user, _, pw = decoded.partition(":")
+                except (ValueError, UnicodeDecodeError):
+                    user = pw = ""
+                if (secrets.compare_digest(user, _auth_user)
+                        and secrets.compare_digest(pw, _auth_pw)):
+                    return await call_next(request)
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="jobsearch"'})
 
     # Auth (webapp/auth.py). Hosted mode (Supabase Auth configured) puts the app
     # behind a login wall; local mode leaves it open and the wall is inert. The
