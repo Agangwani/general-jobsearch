@@ -790,6 +790,7 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
     assert 'href="https://acme.com/jobs/1"' in acme_html
 
 
+
 def test_settings_manual_links_have_rel_noopener(tmp_path):
     """The "Manual check" external links open in a new tab; without rel="noopener"
     the opened page gets window.opener access. Assert the rendered links carry it."""

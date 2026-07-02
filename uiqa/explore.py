@@ -79,7 +79,29 @@ def crawl(server: AppServer, browser: BrowserSession, rundir: RunDir,
         visited.add(path)
         template_counts[tmpl] = template_counts.get(tmpl, 0) + 1
 
-        status = browser.goto(path)
+        try:
+            status = browser.goto(path)
+        except Exception as exc:  # a slow/flaky nav must not abort the whole crawl
+            # Drain and reset cursors so the failed load can't bleed into the next
+            # route, record it as a finding (Stage 2 replay rules a genuine hang
+            # `confirmed` and a transient `flaky`), and keep crawling.
+            browser.drain()
+            server.server_errors_since()
+            msg = str(exc).splitlines()[0]
+            rundir.log_step({"phase": "crawl", "route": path, "status": None,
+                             "title": "", "n_actions": 0,
+                             "events": [{"kind": "page_error", "severity": "medium",
+                                         "text": f"navigation failed: {msg}",
+                                         "url": path, "page_url": path,
+                                         "external": False}],
+                             "server_errors": []})
+            rundir.add_finding(F.make_finding(
+                area=area_for(path), route=path, kind="page_error", severity="medium",
+                title=f"{path} failed to load (navigation error)",
+                detail=f"Navigating to {path} raised {type(exc).__name__}: {msg}",
+                repro={"name": f"load {path}",
+                       "steps": [{"action": "goto", "path": path}]}))
+            continue
         events = [e.to_dict() for e in browser.drain()]
         server_errs, _ = server.server_errors_since()
         actions = index_actions(browser.page)
