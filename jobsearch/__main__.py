@@ -47,6 +47,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Max startups to add (default: startups.max_companies)")
     dstart.add_argument("--dry-run", action="store_true",
                         help="Print the generated registry instead of writing it")
+    dboards = sub.add_parser(
+        "discover-ats-boards",
+        help="Mine the Common Crawl index for public ATS board tokens "
+        "(Greenhouse/Lever/Ashby) and write them to the ats_boards seed",
+    )
+    dboards.add_argument("--limit", type=int, default=500,
+                         help="Max board URLs to pull per ATS domain (default: 500)")
     sub.add_parser("ingest", help="Pull the latest reports (main + startups) "
                    "into the application database")
     ui = sub.add_parser("ui", help="Start the local application-tracking web UI")
@@ -75,6 +82,9 @@ def main(argv: list[str] | None = None) -> int:
         from .company_discovery import discover_companies
         return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run,
                                   track_name="startups")
+    if args.command == "discover-ats-boards":
+        from .sources.commoncrawl import discover_ats_boards_command
+        return discover_ats_boards_command(args.root, limit=args.limit)
     if args.command == "ingest":
         from webapp import db as webdb
         from webapp.ingest import ingest_latest

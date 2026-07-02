@@ -542,24 +542,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None) -> str:
-    """Insert a job or patch an existing one. Returns 'inserted', 'updated',
-    or 'unchanged'. Every change is recorded in job_events."""
+def upsert_job(conn: sqlite3.Connection, record: dict, now: str | None = None,
+               user_id: str = LOCAL_USER_ID) -> str:
+    """Insert a job or patch an existing one, scoped to ``user_id``. Returns
+    'inserted', 'updated', or 'unchanged'. Every change is recorded in
+    job_events. The pipeline key is unique within an owner, so two users can
+    each hold the same posting."""
     now = now or utcnow()
-    row = conn.execute("SELECT * FROM jobs WHERE key = ?", (record["key"],)).fetchone()
+    row = conn.execute("SELECT * FROM jobs WHERE user_id = ? AND key = ?",
+                       (user_id, record["key"])).fetchone()
     if row is None:
         conn.execute(
-            """INSERT INTO jobs (key, source, company, title, location, url,
+            """INSERT INTO jobs (user_id, key, source, company, title, location, url,
                                  description, posted_at, fit_score, rank_score,
                                  cluster, filter_reason, validation,
                                  validation_note, first_seen_at, last_seen_at)
-               VALUES (:key, :source, :company, :title, :location, :url,
+               VALUES (:user_id, :key, :source, :company, :title, :location, :url,
                        :description, :posted_at, :fit_score, :rank_score,
                        :cluster, :filter_reason, :validation,
                        :validation_note, :now, :now)""",
-            {**_defaults(record), "now": now},
+            {**_defaults(record), "user_id": user_id, "now": now},
         )
-        job_id = conn.execute("SELECT id FROM jobs WHERE key = ?", (record["key"],)).fetchone()["id"]
+        job_id = conn.execute("SELECT id FROM jobs WHERE user_id = ? AND key = ?",
+                              (user_id, record["key"])).fetchone()["id"]
         conn.execute(
             "INSERT INTO job_events (job_id, event_type, created_at) VALUES (?, 'inserted', ?)",
             (job_id, now),
@@ -614,11 +619,16 @@ def _defaults(record: dict) -> dict:
 
 def set_application_status(
     conn: sqlite3.Connection, application_id: int, status: str,
-    detail: str = "", via: str = "",
+    detail: str = "", via: str = "", user_id: str = LOCAL_USER_ID,
 ) -> None:
     # A stale/unknown id would no-op the UPDATE but fail the application_events
-    # FK on INSERT (a 500); raise ValueError so callers redirect instead.
-    _require_row(conn, "applications", application_id)
+    # FK on INSERT (a 500); raise ValueError so callers redirect instead. The
+    # jobs-ownership join also rejects a forged id that belongs to another user
+    # (applications is scoped transitively through job_id → jobs.user_id).
+    if conn.execute(
+        "SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id "
+        "WHERE a.id = ? AND j.user_id = ?", (application_id, user_id)).fetchone() is None:
+        raise ValueError(f"no application {application_id!r} for user {user_id!r}")
     now = utcnow()
     fields = {"status": status, "updated_at": now}
     if status == "applied":
@@ -635,25 +645,28 @@ def set_application_status(
     conn.commit()
 
 
-def job_with_application(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+def job_with_application(conn: sqlite3.Connection, job_id: int,
+                         user_id: str = LOCAL_USER_ID) -> sqlite3.Row | None:
     # ``job_id`` arrives from a URL path param, and FastAPI's ``int`` accepts an
     # arbitrary-precision Python integer. SQLite's INTEGER is signed 64-bit, so
     # an id outside that range raises OverflowError rather than just missing.
     # Treat any out-of-range id as "no such job" so the routes (job detail,
     # referrals, cluster view) degrade to their existing not-found redirect
-    # instead of returning HTTP 500.
+    # instead of returning HTTP 500. The user_id scope also makes another
+    # tenant's job id read as not-found.
     if not (-(2 ** 63) <= job_id < 2 ** 63):
         return None
     return conn.execute(
         """SELECT j.*, a.id AS application_id, a.status, a.applied_at,
                   a.submitted_via, a.notes
            FROM jobs j JOIN applications a ON a.job_id = j.id
-           WHERE j.id = ?""",
-        (job_id,),
+           WHERE j.id = ? AND j.user_id = ?""",
+        (job_id, user_id),
     ).fetchone()
 
 
-def application_by_url(conn: sqlite3.Connection, url: str) -> sqlite3.Row | None:
+def application_by_url(conn: sqlite3.Connection, url: str,
+                       user_id: str = LOCAL_USER_ID) -> sqlite3.Row | None:
     """Exact-URL lookup of an application — used to attribute an open browser
     tab (in 'fill all open tabs') back to a tracked job."""
     if not url:
@@ -661,12 +674,13 @@ def application_by_url(conn: sqlite3.Connection, url: str) -> sqlite3.Row | None
     return conn.execute(
         """SELECT a.id AS application_id, j.id AS job_id, j.title, j.company
            FROM jobs j JOIN applications a ON a.job_id = j.id
-           WHERE j.url = ? LIMIT 1""",
-        (url,),
+           WHERE j.url = ? AND j.user_id = ? LIMIT 1""",
+        (url, user_id),
     ).fetchone()
 
 
-def job_ids_by_key(conn: sqlite3.Connection, keys) -> dict[str, int]:
+def job_ids_by_key(conn: sqlite3.Connection, keys,
+                   user_id: str = LOCAL_USER_ID) -> dict[str, int]:
     """Map pipeline keys (source:company:job_id) → DB job ids, for the keys
     present. Used to make cluster-map points link to their tracked job."""
     keys = list(keys)
@@ -678,19 +692,22 @@ def job_ids_by_key(conn: sqlite3.Connection, keys) -> dict[str, int]:
         chunk = keys[start:start + 400]
         placeholders = ",".join("?" * len(chunk))
         rows = conn.execute(
-            f"SELECT id, key FROM jobs WHERE key IN ({placeholders})", chunk
+            f"SELECT id, key FROM jobs WHERE user_id = ? AND key IN ({placeholders})",
+            [user_id, *chunk],
         ).fetchall()
         out.update({r["key"]: r["id"] for r in rows})
     return out
 
 
-def active_application_urls(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def active_application_urls(conn: sqlite3.Connection,
+                            user_id: str = LOCAL_USER_ID) -> list[sqlite3.Row]:
     """(application_id, url) for every active job — the caller fuzzy-matches an
     open tab's URL against these (e.g. by canonical apply form / ATS job id)."""
     return conn.execute(
         """SELECT a.id AS application_id, j.url
            FROM jobs j JOIN applications a ON a.job_id = j.id
-           WHERE j.is_active = 1 AND j.url != ''"""
+           WHERE j.is_active = 1 AND j.url != '' AND j.user_id = ?""",
+        (user_id,),
     ).fetchall()
 
 
@@ -731,12 +748,15 @@ def search_jobs(
     since: str = "",            # show not-applied jobs only if last_seen_at >= this
     startup_scope: str = "",    # "" | "all" (both) | "only" (startups) | "hide"
     limit: int = 500,
+    user_id: str = LOCAL_USER_ID,
 ) -> list[sqlite3.Row]:
     sql = [
         """SELECT j.*, a.id AS application_id, a.status, a.applied_at
            FROM jobs j JOIN applications a ON a.job_id = j.id WHERE 1=1"""
     ]
     args: list = []
+    sql.append("AND j.user_id = ?")
+    args.append(user_id)
     if startup_scope == "only":
         sql.append("AND j.is_startup = 1")
     elif startup_scope == "hide":
@@ -784,28 +804,33 @@ def search_jobs(
     return conn.execute(" ".join(sql), args).fetchall()
 
 
-def top_fit_to_apply(conn: sqlite3.Connection, n: int = 5) -> list[sqlite3.Row]:
+def top_fit_to_apply(conn: sqlite3.Connection, n: int = 5,
+                     user_id: str = LOCAL_USER_ID) -> list[sqlite3.Row]:
     """The n best-fit jobs that are applyable now: active, have a URL, and not
     yet in an applied/closed state. Highest fit first, rank as tiebreak."""
     placeholders = ",".join("?" * len(APPLIED_SET))
     return conn.execute(
         f"""SELECT j.*, a.id AS application_id, a.status
             FROM jobs j JOIN applications a ON a.job_id = j.id
-            WHERE j.is_active = 1 AND j.url != '' AND a.status NOT IN ({placeholders})
+            WHERE j.user_id = ? AND j.is_active = 1 AND j.url != ''
+                  AND a.status NOT IN ({placeholders})
             ORDER BY j.fit_score DESC NULLS LAST, j.rank_score DESC NULLS LAST,
                      j.first_seen_at DESC
             LIMIT ?""",
-        (*sorted(APPLIED_SET), n),
+        (user_id, *sorted(APPLIED_SET), n),
     ).fetchall()
 
 
-def companies_for_stack(conn: sqlite3.Connection, stack: str = "") -> list[str]:
+def companies_for_stack(conn: sqlite3.Connection, stack: str = "",
+                        user_id: str = LOCAL_USER_ID) -> list[str]:
     """Distinct companies, scoped to a stack (to_apply / applied) so each
     section's company filter lists only the companies that actually have jobs
     in it. Empty stack → every company."""
     sql = ["SELECT DISTINCT j.company FROM jobs j "
            "JOIN applications a ON a.job_id = j.id WHERE 1=1"]
     args: list = []
+    sql.append("AND j.user_id = ?")
+    args.append(user_id)
     if stack == "applied":
         sql.append(f"AND a.status IN ({','.join('?' * len(APPLIED_SET))})")
         args += sorted(APPLIED_SET)
@@ -836,15 +861,16 @@ def _stack_of(status: str) -> str:
     return "to_apply"
 
 
-def stack_counts(conn: sqlite3.Connection) -> dict:
+def stack_counts(conn: sqlite3.Connection, user_id: str = LOCAL_USER_ID) -> dict:
     """Per-stack counts (to_apply / in_progress / applied), split into startup
     vs. non-startup so the home page's big numbers can distinguish the two.
     Keeps the flat to_apply/in_progress/applied keys for backward compatibility;
     adds `startup` and `other` sub-dicts and their totals."""
     rows = conn.execute(
         "SELECT a.status, j.is_startup AS su, COUNT(*) AS n FROM applications a "
-        "JOIN jobs j ON j.id = a.job_id WHERE j.is_active = 1 "
-        "GROUP BY a.status, j.is_startup"
+        "JOIN jobs j ON j.id = a.job_id WHERE j.is_active = 1 AND j.user_id = ? "
+        "GROUP BY a.status, j.is_startup",
+        (user_id,),
     ).fetchall()
     zero = {"to_apply": 0, "in_progress": 0, "applied": 0}
     out: dict = {**zero, "by_status": {},
@@ -1437,17 +1463,20 @@ def _merge_startup(existing: dict, fresh: dict) -> dict:
 
 
 def upsert_startup_company(conn: sqlite3.Connection, meta: dict,
-                           now: str | None = None, from_user: bool = False) -> str:
-    """Insert or update one startup's facts. From ingest (from_user=False) a row
-    a user has edited is left untouched; otherwise fresh scalars win and lists
-    union. A user edit (from_user=True) overwrites with what was submitted and
-    sets the user_edited guard. Returns 'inserted' | 'updated' | 'skipped'."""
+                           now: str | None = None, from_user: bool = False,
+                           user_id: str = LOCAL_USER_ID) -> str:
+    """Insert or update one startup's facts, scoped to ``user_id``. From ingest
+    (from_user=False) a row a user has edited is left untouched; otherwise fresh
+    scalars win and lists union. A user edit (from_user=True) overwrites with
+    what was submitted and sets the user_edited guard. Returns
+    'inserted' | 'updated' | 'skipped'."""
     now = now or utcnow()
     key = normalize_company_name(meta.get("name", ""))
     if not key:
         return "skipped"
     row = conn.execute(
-        "SELECT * FROM startup_companies WHERE company_key = ?", (key,)).fetchone()
+        "SELECT * FROM startup_companies WHERE user_id = ? AND company_key = ?",
+        (user_id, key)).fetchone()
     if row is not None and row["user_edited"] and not from_user:
         return "skipped"
 
@@ -1462,39 +1491,45 @@ def upsert_startup_company(conn: sqlite3.Connection, meta: dict,
               "user_edited": 1 if (from_user or (row and row["user_edited"])) else 0,
               "updated_at": now}
     if row is None:
-        placeholders = ", ".join(["?"] * (len(cols) + 1))
+        placeholders = ", ".join(["?"] * (len(cols) + 2))
         conn.execute(
-            f"INSERT INTO startup_companies (company_key, {', '.join(cols)}) "
+            f"INSERT INTO startup_companies (user_id, company_key, {', '.join(cols)}) "
             f"VALUES ({placeholders})",
-            [key, *(values[c] for c in cols)])
+            [user_id, key, *(values[c] for c in cols)])
         conn.commit()
         return "inserted"
     sets = ", ".join(f"{c} = ?" for c in cols)
-    conn.execute(f"UPDATE startup_companies SET {sets} WHERE company_key = ?",
-                 [*(values[c] for c in cols), key])
+    conn.execute(
+        f"UPDATE startup_companies SET {sets} WHERE user_id = ? AND company_key = ?",
+        [*(values[c] for c in cols), user_id, key])
     conn.commit()
     return "updated"
 
 
-def startup_company(conn: sqlite3.Connection, company_key: str) -> dict | None:
+def startup_company(conn: sqlite3.Connection, company_key: str,
+                    user_id: str = LOCAL_USER_ID) -> dict | None:
     return decode_startup_row(conn.execute(
-        "SELECT * FROM startup_companies WHERE company_key = ?",
-        (company_key,)).fetchone())
+        "SELECT * FROM startup_companies WHERE user_id = ? AND company_key = ?",
+        (user_id, company_key)).fetchone())
 
 
-def startup_company_for(conn: sqlite3.Connection, company_name: str) -> dict | None:
+def startup_company_for(conn: sqlite3.Connection, company_name: str,
+                        user_id: str = LOCAL_USER_ID) -> dict | None:
     """The startup facts for a display company name (normalized to the key)."""
     key = normalize_company_name(company_name)
-    return startup_company(conn, key) if key else None
+    return startup_company(conn, key, user_id) if key else None
 
 
-def startup_keys(conn: sqlite3.Connection) -> set[str]:
+def startup_keys(conn: sqlite3.Connection,
+                 user_id: str = LOCAL_USER_ID) -> set[str]:
     """Every normalized company name we hold startup facts for."""
-    return {r["company_key"] for r in
-            conn.execute("SELECT company_key FROM startup_companies").fetchall()}
+    return {r["company_key"] for r in conn.execute(
+        "SELECT company_key FROM startup_companies WHERE user_id = ?",
+        (user_id,)).fetchall()}
 
 
-def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
+def list_startups(conn: sqlite3.Connection, q: str = "",
+                  user_id: str = LOCAL_USER_ID) -> list[dict]:
     """All tracked startups (decoded), each annotated with how many active jobs
     and how many are still to-apply, ordered by open jobs then name. `q` filters
     on name / industry / investors substring."""
@@ -1505,12 +1540,13 @@ def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
                           ('applied','confirmed','interviewing','offer','rejected',
                            'withdrawn','in_progress') THEN 1 ELSE 0 END) AS open_n
                FROM jobs j JOIN applications a ON a.job_id = j.id
-               WHERE j.is_active = 1 AND j.is_startup = 1
-               GROUP BY j.company""").fetchall():
+               WHERE j.is_active = 1 AND j.is_startup = 1 AND j.user_id = ?
+               GROUP BY j.company""", (user_id,)).fetchall():
         counts[normalize_company_name(r["company"])] = (r["n"], r["open_n"] or 0)
     out = []
     for row in conn.execute(
-            "SELECT * FROM startup_companies ORDER BY LOWER(name)").fetchall():
+            "SELECT * FROM startup_companies WHERE user_id = ? ORDER BY LOWER(name)",
+            (user_id,)).fetchall():
         meta = decode_startup_row(row)
         if q:
             hay = " ".join([meta["name"], meta["industry"],
@@ -1523,17 +1559,23 @@ def list_startups(conn: sqlite3.Connection, q: str = "") -> list[dict]:
     return out
 
 
-def refresh_startup_flags(conn: sqlite3.Connection) -> int:
+def refresh_startup_flags(conn: sqlite3.Connection,
+                          user_id: str = LOCAL_USER_ID) -> int:
     """Set jobs.is_startup for every job whose company is a known startup
-    (matched on normalized name), clearing it otherwise. Returns rows changed.
-    Idempotent — safe to call after every ingest."""
-    keys = startup_keys(conn)
+    (matched on normalized name), clearing it otherwise, scoped to one user.
+    Returns rows changed. Idempotent — safe to call after every ingest. The
+    user_id scope is critical: without it, one tenant's startup roster would
+    relabel another tenant's jobs."""
+    keys = startup_keys(conn, user_id)
     changed = 0
-    for r in conn.execute("SELECT DISTINCT company FROM jobs").fetchall():
+    for r in conn.execute(
+            "SELECT DISTINCT company FROM jobs WHERE user_id = ?",
+            (user_id,)).fetchall():
         want = 1 if normalize_company_name(r["company"]) in keys else 0
         cur = conn.execute(
-            "UPDATE jobs SET is_startup = ? WHERE company = ? AND is_startup != ?",
-            (want, r["company"], want))
+            "UPDATE jobs SET is_startup = ? "
+            "WHERE user_id = ? AND company = ? AND is_startup != ?",
+            (want, user_id, r["company"], want))
         changed += cur.rowcount
     conn.commit()
     return changed

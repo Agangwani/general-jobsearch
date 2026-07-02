@@ -31,7 +31,9 @@ class SourceSkip(Exception):
 
 
 from .adzuna import fetch as fetch_adzuna  # noqa: E402
+from .ats_boards import fetch as fetch_ats_boards  # noqa: E402
 from .hn_hiring import fetch as fetch_hn_hiring  # noqa: E402
+from .remotive import fetch as fetch_remotive  # noqa: E402
 from .themuse import fetch as fetch_themuse  # noqa: E402
 from .ycombinator import fetch as fetch_ycombinator  # noqa: E402
 
@@ -40,4 +42,6 @@ SOURCES = {
     "hn_hiring": fetch_hn_hiring,
     "adzuna": fetch_adzuna,
     "ycombinator": fetch_ycombinator,
+    "ats_boards": fetch_ats_boards,
+    "remotive": fetch_remotive,
 }

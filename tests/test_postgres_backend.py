@@ -144,6 +144,24 @@ def test_startup_upsert_and_list(pgconn):
     assert wibble["is_hiring"] is True
 
 
+def test_two_user_job_isolation(pgconn):
+    from webapp import db
+
+    # Same pipeline key under two owners must coexist (composite UNIQUE(user_id,key)).
+    assert db.upsert_job(pgconn, _job(), user_id="user-a") == "inserted"
+    assert db.upsert_job(pgconn, _job(), user_id="user-b") == "inserted"
+    assert [r["company"] for r in db.search_jobs(pgconn, user_id="user-a")] == ["Acme"]
+    assert len(db.search_jobs(pgconn, user_id="user-b")) == 1
+    # startup roster scoping (the cross-tenant relabel guard) on Postgres.
+    db.upsert_startup_company(pgconn, {"name": "Acme"}, user_id="user-a")
+    assert db.refresh_startup_flags(pgconn, "user-a") == 1
+    assert db.refresh_startup_flags(pgconn, "user-b") == 0
+    a_id = db.job_with_application(
+        pgconn, db.search_jobs(pgconn, user_id="user-a")[0]["id"], "user-a")["application_id"]
+    with pytest.raises(ValueError):
+        db.set_application_status(pgconn, a_id, "applied", user_id="user-b")
+
+
 def test_companies_registry_roundtrip(pgconn):
     from webapp import db
 

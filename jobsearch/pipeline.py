@@ -212,6 +212,11 @@ def run(root: Path, track_name: str = "main") -> int:
         if track.locations:
             settings["search"]["locations"] = track.locations
         apply_startup_search_knobs(settings, track.discovery)
+    # Fresh companies every run: refresh the discovered registry before loading
+    # it (gated by <track>.on_run + throttled by min_interval_minutes; best-
+    # effort, so a discovery failure leaves the existing registry in place).
+    from .company_discovery import maybe_run_discovery
+    maybe_run_discovery(root, settings, track)
     # main: curated companies.yaml + the resume-tailored generated registry.
     # startups: the startup registry built by `discover-startups`.
     companies, manual_check = load_registry(root, settings, track)
@@ -304,6 +309,8 @@ def run(root: Path, track_name: str = "main") -> int:
         corpus=all_jobs,
         cluster_weight=ranking.get("cluster_weight", 0.05),
         decluster_company_signatures=ranking.get("decluster_company_signatures", True),
+        match_backend=ranking.get("match_backend", "tfidf"),
+        embedding_model=ranking.get("embedding_model"),
         return_topics=True,
         return_explanation=True,
     )
