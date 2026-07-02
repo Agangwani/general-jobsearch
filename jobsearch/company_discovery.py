@@ -89,6 +89,24 @@ def filter_known(
     ]
 
 
+def filter_oversized(
+    leads: list[CompanyLead], max_employees: int
+) -> tuple[list[CompanyLead], list[CompanyLead]]:
+    """Split leads into (kept, dropped) by a headcount ceiling. A lead is dropped
+    only when its metadata carries a *known* team size above `max_employees` —
+    unknown-size leads (e.g. themuse, which exposes no size) are always kept and
+    left to the name blocklist. `max_employees <= 0` disables the guard."""
+    from .startups import parse_employee_count
+
+    if max_employees <= 0:
+        return list(leads), []
+    kept, dropped = [], []
+    for lead in leads:
+        count = parse_employee_count((lead.meta or {}).get("employees"))
+        (dropped if count is not None and count > max_employees else kept).append(lead)
+    return kept, dropped
+
+
 def _own_name_re(name: str) -> re.Pattern | None:
     """The lead's own name must not score as evidence (same defense as
     scoring._company_name_re for postings)."""
@@ -392,6 +410,13 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
             print(f"  {name}: ERROR {type(exc).__name__}: {exc}")
 
     merged = merge_leads(leads)
+    if track.is_startup:
+        max_employees = int(discovery.get("max_employees", 0) or 0)
+        merged, oversized = filter_oversized(merged, max_employees)
+        if oversized:
+            names = ", ".join(sorted(l.name for l in oversized))
+            print(f"Dropped {len(oversized)} companies over {max_employees} "
+                  f"employees (not startups): {names}")
     known = {normalize_company_name(c.name) for c in companies}
     known |= {normalize_company_name(str(entry.get("name", ""))) for entry in manual}
     exclude = {normalize_company_name(x) for x in track.exclude}

@@ -29,6 +29,7 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 from sklearn.preprocessing import normalize
 
 from .models import JobPosting
+from .utils import strip_html
 
 COSINE_WEIGHT = 0.85
 CLUSTER_WEIGHT = 0.15
@@ -98,7 +99,11 @@ def _company_name_re(company: str) -> re.Pattern | None:
 
 def _doc(job: JobPosting, descriptions: dict[str, str], name_res: dict[str, re.Pattern | None]) -> str:
     desc = descriptions.get(job.key, job.description)
-    text = f"{job.title}\n{job.location}\n{desc}"[:20000]
+    # Safety net: a fetcher that forgets to strip_html (or a cached corpus from
+    # before it was fixed) would otherwise let tag/style tokens (li, h3, span
+    # style, font weight, nbsp) dominate the TF-IDF space and form spurious
+    # markup clusters. Idempotent on already-plain text.
+    text = strip_html(f"{job.title}\n{job.location}\n{desc}")[:20000]
     name_re = name_res.get(job.company)
     return name_re.sub(" ", text) if name_re else text
 

@@ -6,6 +6,7 @@ import yaml
 from jobsearch.company_discovery import (
     emit_registry,
     filter_known,
+    filter_oversized,
     hosted_board_url,
     infer_categories,
     merge_leads,
@@ -49,6 +50,20 @@ def test_filter_known_drops_registry_and_excluded():
              CompanyLead(name="NewCo")]
     fresh = filter_known(leads, known={"stripe"}, exclude={"capital one"})
     assert [lead.name for lead in fresh] == ["NewCo"]
+
+
+def test_filter_oversized_drops_known_enterprises_keeps_unknown_size():
+    leads = [
+        CompanyLead(name="BigBank", meta={"employees": "50000"}),
+        CompanyLead(name="Scaleup", meta={"employees": "51-200"}),
+        CompanyLead(name="MuseCo"),  # themuse: no headcount -> never dropped
+    ]
+    kept, dropped = filter_oversized(leads, max_employees=2000)
+    assert [lead.name for lead in kept] == ["Scaleup", "MuseCo"]
+    assert [lead.name for lead in dropped] == ["BigBank"]
+    # A zero/negative ceiling disables the guard entirely.
+    kept_all, dropped_none = filter_oversized(leads, max_employees=0)
+    assert len(kept_all) == 3 and dropped_none == []
 
 
 def test_rank_leads_prefers_resume_relevant_evidence():

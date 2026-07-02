@@ -89,6 +89,25 @@ def test_janestreet_json_and_dom_fallback():
     assert dom_jobs[0].title == "Software Engineer"
 
 
+def test_janestreet_strips_html_from_description():
+    # Jane Street's JSON overview is raw HTML with inline styles; if it isn't
+    # stripped, tag/style tokens (li, h3, span style, font weight) leak into the
+    # TF-IDF space and form a spurious markup cluster that skews the fit map.
+    payloads = [[{
+        "position": "Front End Software Engineer",
+        "id": "fe-swe",
+        "city": "New York",
+        "overview": '<h3>The Role</h3><ul><li style="font-weight:400">Build UIs</li>'
+                    '<li>Ship <span style="font-weight:700">React</span></li></ul>',
+    }]]
+    jobs = janestreet.parse_payloads(payloads, "Jane Street")
+    desc = jobs[0].description
+    assert "<" not in desc and ">" not in desc
+    for markup in ("li", "h3", "span", "style", "font-weight"):
+        assert markup not in desc.lower().split()
+    assert "Build UIs" in desc and "React" in desc
+
+
 def test_deshaw_link_parse():
     links = [
         {"text": "Senior Software Developer\nNew York", "href": "https://www.deshaw.com/careers/senior-software-developer-5135?ref=x"},

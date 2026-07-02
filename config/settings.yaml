@@ -131,6 +131,11 @@ startups:
   # startup universe is large, so this is higher than the main default.
   max_companies: 60
   max_pages: 8
+  # Size guard: drop discovered leads whose known team size exceeds this many
+  # employees — they're enterprises, not startups. Only applies to leads that
+  # carry a headcount (YC/HN); size-less leads (themuse) fall back to the
+  # exclude_companies blocklist below. Set to 0 to disable.
+  max_employees: 2000
   # Muse categories; empty = inferred from your resume (same as discovery).
   categories: []
   # Y Combinator source knobs.
@@ -142,8 +147,22 @@ startups:
     statuses: [active]
     # Require the company be flagged hiring even within the chosen slice.
     require_hiring: false
-  # Startups never auto-added (e.g. your current employer).
-  exclude_companies: []
+  # Startups never auto-added (e.g. your current employer). Also the fallback
+  # for large public enterprises that themuse surfaces without a headcount, so
+  # the size guard above can't catch them.
+  exclude_companies:
+    - JPMorgan Chase
+    - Capital One
+    - Bank of America
+    - Morgan Stanley
+    - TD Bank
+    - Deloitte
+    - PwC
+    - Apple
+    - Walmart
+    - MLB
+    - Oscar Health
+    - Hudson River Trading
   # Generated startup registry + metadata sidecar (gitignored, resume-derived).
   output_file: data/companies.startups.yaml
   meta_file: data/startup_meta.json

@@ -96,6 +96,24 @@ def merge_meta(base: dict, extra: dict) -> dict:
     return out
 
 
+# ------------------------------------------------------------- headcount ---
+_COUNT_RE = re.compile(r"\d[\d,]*")
+
+
+def parse_employee_count(value) -> int | None:
+    """Best-effort upper bound of a team-size string → int, or None if unknown.
+
+    Handles the shapes we see in metadata: "120", "51-200" (→200), "10,000+"
+    (→10000), "1001-5000 employees". Returns None when there's no number to
+    read (e.g. themuse leads, which carry no size), so unknown-size companies
+    are never dropped by a size guard — only companies with a *known* large
+    headcount are."""
+    if value is None:
+        return None
+    counts = [int(m.group().replace(",", "")) for m in _COUNT_RE.finditer(str(value))]
+    return max(counts) if counts else None
+
+
 # --------------------------------------------------------------- funding ---
 # A curated list of well-known investors so "backed by a16z / Sequoia" in a
 # free-text blurb resolves to clean names. Not exhaustive — it's a signal, not
