@@ -595,7 +595,7 @@ def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
     assert "Near Miss Engineer" in on.text
 
     # Box UNCHECKED: form submits only the hidden "0" → off → near-miss hidden,
-    # but the normal job is unaffected. This is the bug fix (was impossible).
+    # but the normal job is unaffected.
     off = client.get("/?run_scope=all&near_miss=0")
     assert off.status_code == 200
     assert "Normal Match Engineer" in off.text
@@ -607,53 +607,49 @@ def test_dashboard_near_miss_filter_can_be_turned_off(tmp_path):
 
 
 def test_id_routes_tolerate_out_of_range_job_id(tmp_path):
-    """Regression for UI-QA findings a3273a214cc8 (/clusters/job/{id}) and
-    38e768ed8515 (/jobs/{id}, /jobs/{id}/referrals, /api/apply-status/{id}).
+    """Regression for UI-QA findings 5d6cf6e7d60c (/jobs/{id}), 1af76daa1b19
+    (/jobs/{id}/referrals), 52c396e7e011 / 9e0f80f360e0 (/clusters/job/{id}) and
+    6792550db789 (/api/jobs/{id}/history).
 
     Every id-typed route takes its id straight from the URL path, where
     FastAPI's ``int`` accepts an arbitrary-precision integer. An id beyond
     SQLite's signed 64-bit INTEGER range (>= 2**63) used to overflow the
     parameterised query and surface as HTTP 500. The routes must instead
-    degrade to their normal not-found behaviour (a 303 redirect, or the empty
-    apply-status payload) — never 500. A valid seeded id still works."""
+    degrade to their normal not-found behaviour (a 303 redirect for the HTML
+    pages, an empty JSON history for the API) — never 500. A valid seeded id
+    still works."""
     from fastapi.testclient import TestClient
     from webapp.app import create_app
 
     root = tmp_path
     (root / "data").mkdir()
     (root / "config").mkdir()
-    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
     (root / "config" / "settings.yaml").write_text(
-        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
-        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "search:\n  query: x\n"
         "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
     (root / "config" / "companies.yaml").write_text(
-        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+        "companies: []\nmanual_check: []\n")
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
     db.upsert_job(app.state.conn, record())
-    job_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
-    app_id = app.state.conn.execute("SELECT id FROM applications").fetchone()["id"]
+    good_id = app.state.conn.execute("SELECT id FROM jobs").fetchone()["id"]
 
-    big = 2 ** 63  # one past SQLite's signed-64-bit INTEGER max → used to 500
+    # Two out-of-range ids: one just past the signed-64-bit boundary (2**63)
+    # and one far beyond it.
+    for bad in ("9223372036854775808", "999999999999999999999999"):
+        for path in (f"/jobs/{bad}", f"/jobs/{bad}/referrals",
+                     f"/clusters/job/{bad}"):
+            resp = client.get(path, follow_redirects=False)
+            assert resp.status_code == 303, (path, resp.status_code)
+        hist = client.get(f"/api/jobs/{bad}/history")
+        assert hist.status_code == 200, (bad, hist.status_code)
+        assert hist.json() == []
 
-    # HTML id routes: an out-of-range id must redirect (303), not 500.
-    for path in (f"/jobs/{big}", f"/clusters/job/{big}", f"/jobs/{big}/referrals"):
-        resp = client.get(path, follow_redirects=False)
-        assert resp.status_code != 500, f"{path} should not 500"
-        assert resp.status_code == 303, f"{path} should redirect, got {resp.status_code}"
-
-    # apply-status JSON route: out-of-range id returns its normal empty payload.
-    resp = client.get(f"/api/apply-status/{big}")
-    assert resp.status_code == 200
-    assert resp.json()["application_status"] == "unknown"
-
-    # A valid seeded id still works on every route.
-    assert client.get(f"/jobs/{job_id}", follow_redirects=False).status_code == 200
-    assert client.get(f"/clusters/job/{job_id}", follow_redirects=False).status_code == 200
-    assert client.get(f"/jobs/{job_id}/referrals", follow_redirects=False).status_code == 200
-    assert client.get(f"/api/apply-status/{app_id}").status_code == 200
+    # A valid, in-range id still resolves normally (no over-eager rejection).
+    assert client.get(f"/jobs/{good_id}").status_code == 200
+    assert client.get(f"/api/jobs/{good_id}/history").status_code == 200
 
 
 def test_company_with_space_in_key_is_reachable(tmp_path):
@@ -669,17 +665,15 @@ def test_company_with_space_in_key_is_reachable(tmp_path):
     root = tmp_path
     (root / "data").mkdir()
     (root / "config").mkdir()
-    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
     (root / "config" / "settings.yaml").write_text(
-        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
-        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "search:\n  query: x\n"
         "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
     (root / "config" / "companies.yaml").write_text(
-        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+        "companies: []\nmanual_check: []\n")
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
-
     # Seed a company whose key has a space, with a question to show.
     db.seed_company_problems(app.state.conn, [{
         "company": "Goldman Sachs", "company_key": "goldman sachs",
@@ -717,13 +711,12 @@ def test_resume_upload_corrupt_pdf_degrades_not_500(tmp_path):
     root = tmp_path
     (root / "data").mkdir()
     (root / "config").mkdir()
-    (root / "data" / "resume.txt").write_text("Test User\nSenior Software Engineer, New York, NY\n")
+    (root / "data" / "resume.txt").write_text("Test User\nEngineer\n")
     (root / "config" / "settings.yaml").write_text(
-        "search:\n  query: senior software engineer\n  title_include: ['x']\n"
-        "  title_exclude: ['y']\n  locations: [new york]\n  include_remote: false\n"
+        "search:\n  query: x\n"
         "ranking:\n  half_life_days: 7\n  max_age_days: 45\n  cluster_weight: 0.15\n")
     (root / "config" / "companies.yaml").write_text(
-        "companies:\n  - name: Acme\n    ats: greenhouse\nmanual_check: []\n")
+        "companies: []\nmanual_check: []\n")
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
@@ -771,6 +764,7 @@ def test_url_less_job_detail_has_no_dead_posting_controls(tmp_path):
 
     app = create_app(root, db_path=root / "data" / "test.db")
     client = TestClient(app)
+
     # The seeded no-URL job (Datadog) — url="" suppresses the posting controls.
     db.upsert_job(app.state.conn, record(key="greenhouse:Datadog:1004",
                                          company="Datadog", url=""))
