@@ -37,7 +37,8 @@ LOCAL_USER_ID = "local"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id              INTEGER PRIMARY KEY,
-    key             TEXT UNIQUE NOT NULL,
+    user_id         TEXT NOT NULL DEFAULT 'local',   -- owner (Stage 2a data isolation)
+    key             TEXT NOT NULL,
     source          TEXT NOT NULL,
     company         TEXT NOT NULL,
     title           TEXT NOT NULL,
@@ -56,7 +57,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     is_active       INTEGER NOT NULL DEFAULT 1,
     -- 1 when this job's company is a known startup (in startup_companies); set
     -- by ingest so the dashboard can show only / hide / mix startup jobs.
-    is_startup      INTEGER NOT NULL DEFAULT 0
+    is_startup      INTEGER NOT NULL DEFAULT 0,
+    -- Per-user uniqueness: the pipeline's source:company:job_id key is unique
+    -- within an owner, so two tenants can each hold the same posting.
+    UNIQUE(user_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company);
 CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen_at);
@@ -117,7 +121,8 @@ CREATE TABLE IF NOT EXISTS runs (
 -- Keyed by normalized company name so it joins jobs.company across spellings.
 CREATE TABLE IF NOT EXISTS startup_companies (
     id                INTEGER PRIMARY KEY,
-    company_key       TEXT UNIQUE NOT NULL,
+    user_id           TEXT NOT NULL DEFAULT 'local',   -- owner (Stage 2a data isolation)
+    company_key       TEXT NOT NULL,
     name              TEXT NOT NULL,
     employees         TEXT DEFAULT '',
     founded           TEXT DEFAULT '',
@@ -141,9 +146,10 @@ CREATE TABLE IF NOT EXISTS startup_companies (
     source            TEXT DEFAULT '',
     notes             TEXT DEFAULT '',
     user_edited       INTEGER NOT NULL DEFAULT 0,
-    updated_at        TEXT NOT NULL
+    updated_at        TEXT NOT NULL,
+    UNIQUE(user_id, company_key)
 );
-CREATE INDEX IF NOT EXISTS idx_startup_companies_key ON startup_companies(company_key);
+CREATE INDEX IF NOT EXISTS idx_startup_companies_key ON startup_companies(user_id, company_key);
 
 -- ------------------------------------------------- email module scaffold ---
 CREATE TABLE IF NOT EXISTS email_accounts (
@@ -390,6 +396,54 @@ CREATE TABLE IF NOT EXISTS app_users (
     created_at    TEXT NOT NULL,
     last_login_at TEXT
 );
+
+-- ------------------------------------------------- company registry ---
+-- The set of companies each user's pipeline searches, per track (main vs
+-- startups) — previously only in the gitignored YAML registries
+-- (config/companies.yaml + data/companies.discovered.yaml, and the startups
+-- equivalents). One row per (user_id, track, company_key). `source`
+-- distinguishes the curated seed from resume-discovered entries; the
+-- search-state columns (last_searched_at, last_found_jobs) let discovery
+-- prioritize fresh, not-recently-searched companies. Populated by ingest from
+-- each track's live registry; user_edited=1 protects UI edits from re-sync.
+-- Keyed by normalize_company_name so it joins jobs.company / startup_companies.
+CREATE TABLE IF NOT EXISTS companies (
+    id               INTEGER PRIMARY KEY,
+    user_id          TEXT NOT NULL DEFAULT 'local',
+    track            TEXT NOT NULL DEFAULT 'main',   -- main | startups
+    company_key      TEXT NOT NULL,                  -- normalize_company_name(name)
+    name             TEXT NOT NULL,
+    ats              TEXT NOT NULL DEFAULT '',
+    careers_url      TEXT DEFAULT '',
+    tags             TEXT DEFAULT '',                -- JSON array
+    params           TEXT DEFAULT '',                -- JSON object (ATS fetcher params)
+    source           TEXT NOT NULL DEFAULT 'curated',-- curated | discovered
+    discovered_via   TEXT DEFAULT '',                -- audit: which source(s) + how
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    first_seen_at    TEXT NOT NULL,
+    last_searched_at TEXT DEFAULT '',
+    last_found_jobs  INTEGER NOT NULL DEFAULT 0,
+    user_edited      INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL,
+    UNIQUE(user_id, track, company_key)
+);
+CREATE INDEX IF NOT EXISTS idx_companies_user_track ON companies(user_id, track, enabled);
+CREATE INDEX IF NOT EXISTS idx_companies_sweep ON companies(user_id, track, last_searched_at);
+
+-- Append-only log of each registry-sync / discovery run per track (freshness
+-- history + auditing). Mirrors company_refresh_runs / referral_runs: no UNIQUE.
+CREATE TABLE IF NOT EXISTS company_search_runs (
+    id                 INTEGER PRIMARY KEY,
+    user_id            TEXT NOT NULL DEFAULT 'local',
+    track              TEXT NOT NULL DEFAULT 'main',
+    ran_at             TEXT NOT NULL,
+    source             TEXT NOT NULL DEFAULT 'ingest',  -- ingest | discovery
+    companies_total    INTEGER NOT NULL DEFAULT 0,
+    companies_new      INTEGER NOT NULL DEFAULT 0,
+    companies_disabled INTEGER NOT NULL DEFAULT 0,
+    jobs_found         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_company_search_runs ON company_search_runs(user_id, track, ran_at);
 """
 
 LESSON_STATES = ("not_started", "in_progress", "completed")
@@ -470,13 +524,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if "is_startup" not in cols:
         conn.execute("ALTER TABLE jobs ADD COLUMN is_startup INTEGER NOT NULL DEFAULT 0")
-    # Stage 2b: per-user scoping. Existing single-user DBs gain a user_id column
-    # on each per-user table, defaulting to the local owner, so all current rows
-    # belong to 'local'. The old single-column UNIQUE constraints stay (harmless
-    # with one local user); the code scopes by (user_id, …) explicitly rather
-    # than relying on them.
+    # Per-user scoping. Existing single-user DBs gain a user_id column on each
+    # per-user table, defaulting to the local owner, so all current rows belong
+    # to 'local'. The old single-column UNIQUE constraints stay (harmless with
+    # one local user — SQLite can't drop an inline UNIQUE via ALTER); the code
+    # scopes by (user_id, …) explicitly rather than relying on them. Fresh DBs
+    # get the composite UNIQUE from SCHEMA; hosted Postgres uses the migrations.
+    # Stage 2b: profile + prep/company progress.
+    # Stage 2a: the job/application/startup data itself.
     for tbl in ("profile_fields", "prep_lesson_progress", "prep_problem_progress",
-                "prep_ctci_problem_progress", "company_problem_progress"):
+                "prep_ctci_problem_progress", "company_problem_progress",
+                "jobs", "startup_companies"):
         tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
         if "user_id" not in tcols:
             conn.execute(
@@ -1479,6 +1537,170 @@ def refresh_startup_flags(conn: sqlite3.Connection) -> int:
         changed += cur.rowcount
     conn.commit()
     return changed
+
+
+# ------------------------------------------------- company registry ---
+# The per-user, per-track set of companies the pipeline searches. Mirrors the
+# YAML registries into queryable rows tagged curated/discovered, with
+# search-state (last_searched_at, last_found_jobs) that later drives fresh,
+# not-recently-searched discovery. Populated by ingest from each track's live
+# registry; keyed by normalize_company_name so it joins jobs.company /
+# startup_companies across spellings.
+
+# Identity/config columns patched on re-sync. Search-state (last_searched_at,
+# last_found_jobs) is stamped separately by touch_company_search;
+# first_seen_at is never overwritten.
+COMPANY_UPDATABLE = ("name", "ats", "careers_url", "tags", "params",
+                     "source", "discovered_via", "enabled")
+
+
+def _encode_company(record: dict) -> dict:
+    """Company dict → column values: JSON-serialize tags/params, coerce the
+    enabled flag to int. Values already strings/ints pass through."""
+    enc = dict(record)
+    # default=str so a non-JSON scalar (e.g. a YAML date that landed in params)
+    # serializes instead of aborting the ingest — mirrors json.dumps(..., default=str)
+    # used elsewhere in this module.
+    if "tags" in enc and not isinstance(enc["tags"], str):
+        enc["tags"] = json.dumps(list(enc.get("tags") or []), default=str)
+    if "params" in enc and not isinstance(enc["params"], str):
+        enc["params"] = json.dumps(dict(enc.get("params") or {}), default=str)
+    if "enabled" in enc:
+        enc["enabled"] = 1 if enc["enabled"] else 0
+    return enc
+
+
+def decode_company_row(row: sqlite3.Row | None) -> dict | None:
+    """A companies row → a dict with tags/params JSON-decoded and
+    enabled/user_edited as bools. None passes through."""
+    if row is None:
+        return None
+    out = dict(row)
+    for col, empty in (("tags", []), ("params", {})):
+        raw = out.get(col)
+        try:
+            out[col] = json.loads(raw) if raw else empty
+        except (ValueError, TypeError):
+            out[col] = empty
+    out["enabled"] = bool(out.get("enabled"))
+    out["user_edited"] = bool(out.get("user_edited"))
+    return out
+
+
+def upsert_company(conn: sqlite3.Connection, record: dict,
+                   user_id: str = LOCAL_USER_ID, track: str = "main",
+                   now: str | None = None, from_user: bool = False) -> str:
+    """Insert or update one company registry row for (user_id, track). Preserves
+    first_seen_at and search-state; a row a user has edited in the UI is left
+    untouched on a non-user sync (mirrors upsert_startup_company). Returns
+    'inserted' | 'updated' | 'skipped'."""
+    now = now or utcnow()
+    key = normalize_company_name(record.get("name", ""))
+    if not key:
+        return "skipped"
+    row = conn.execute(
+        "SELECT * FROM companies WHERE user_id = ? AND track = ? AND company_key = ?",
+        (user_id, track, key)).fetchone()
+    if row is not None and row["user_edited"] and not from_user:
+        return "skipped"
+    enc = _encode_company(record)
+    if row is None:
+        conn.execute(
+            "INSERT INTO companies (user_id, track, company_key, name, ats, "
+            "careers_url, tags, params, source, discovered_via, enabled, "
+            "first_seen_at, last_searched_at, last_found_jobs, user_edited, "
+            "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, track, key, enc.get("name") or key, enc.get("ats", ""),
+             enc.get("careers_url", ""), enc.get("tags", "") or "",
+             enc.get("params", "") or "", enc.get("source", "curated"),
+             enc.get("discovered_via", ""), int(enc.get("enabled", 1)),
+             now, "", 0, 1 if from_user else 0, now))
+        return "inserted"
+    sets, vals = [], []
+    for col in COMPANY_UPDATABLE:
+        if col in enc:
+            sets.append(f"{col} = ?")
+            vals.append(enc[col])
+    sets.append("user_edited = ?")
+    vals.append(1 if (from_user or row["user_edited"]) else 0)
+    sets.append("updated_at = ?")
+    vals.append(now)
+    vals += [user_id, track, key]
+    conn.execute(
+        f"UPDATE companies SET {', '.join(sets)} "
+        "WHERE user_id = ? AND track = ? AND company_key = ?", vals)
+    return "updated"
+
+
+def touch_company_search(conn: sqlite3.Connection, user_id: str, track: str,
+                         company_key: str, jobs_found: int,
+                         now: str | None = None) -> None:
+    """Stamp a company as searched in the current run (last_searched_at +
+    last_found_jobs). No-op for an unknown key."""
+    now = now or utcnow()
+    conn.execute(
+        "UPDATE companies SET last_searched_at = ?, last_found_jobs = ? "
+        "WHERE user_id = ? AND track = ? AND company_key = ?",
+        (now, int(jobs_found or 0), user_id, track, company_key))
+
+
+def disable_absent_companies(conn: sqlite3.Connection, user_id: str, track: str,
+                             keep_keys, now: str | None = None) -> int:
+    """Disable (enabled=0) companies for (user_id, track) whose key is not in
+    keep_keys, so the registry mirror never accumulates companies that dropped
+    out of the live registry. User-edited rows are left alone. Returns the count
+    disabled."""
+    now = now or utcnow()
+    keep = set(keep_keys)
+    disabled = 0
+    for r in conn.execute(
+            "SELECT company_key FROM companies "
+            "WHERE user_id = ? AND track = ? AND enabled = 1 AND user_edited = 0",
+            (user_id, track)).fetchall():
+        if r["company_key"] not in keep:
+            conn.execute(
+                "UPDATE companies SET enabled = 0, updated_at = ? "
+                "WHERE user_id = ? AND track = ? AND company_key = ?",
+                (now, user_id, track, r["company_key"]))
+            disabled += 1
+    return disabled
+
+
+def get_company(conn: sqlite3.Connection, user_id: str, track: str,
+                company_key: str) -> dict | None:
+    return decode_company_row(conn.execute(
+        "SELECT * FROM companies WHERE user_id = ? AND track = ? AND company_key = ?",
+        (user_id, track, company_key)).fetchone())
+
+
+def list_companies(conn: sqlite3.Connection, user_id: str = LOCAL_USER_ID,
+                   track: str | None = None,
+                   enabled_only: bool = False) -> list[dict]:
+    """Company registry rows for a user (optionally one track), decoded and
+    ordered by track then name."""
+    sql = "SELECT * FROM companies WHERE user_id = ?"
+    params: list = [user_id]
+    if track is not None:
+        sql += " AND track = ?"
+        params.append(track)
+    if enabled_only:
+        sql += " AND enabled = 1"
+    sql += " ORDER BY track, LOWER(name)"
+    return [decode_company_row(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def record_company_search_run(conn: sqlite3.Connection, user_id: str, track: str,
+                              source: str, companies_total: int,
+                              companies_new: int, companies_disabled: int,
+                              jobs_found: int, now: str | None = None) -> None:
+    """Append a company_search_runs audit row (per-track freshness history)."""
+    now = now or utcnow()
+    conn.execute(
+        "INSERT INTO company_search_runs (user_id, track, ran_at, source, "
+        "companies_total, companies_new, companies_disabled, jobs_found) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, track, now, source, int(companies_total), int(companies_new),
+         int(companies_disabled), int(jobs_found)))
 
 
 # ------------------------------------------------------------ hosted accounts ---

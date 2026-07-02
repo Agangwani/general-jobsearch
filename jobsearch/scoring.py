@@ -31,8 +31,8 @@ from sklearn.preprocessing import normalize
 from .models import JobPosting
 from .utils import strip_html
 
-COSINE_WEIGHT = 0.85
-CLUSTER_WEIGHT = 0.15
+COSINE_WEIGHT = 0.95
+CLUSTER_WEIGHT = 0.05
 
 # Posting-boilerplate vocabulary (compensation, EEO, benefits) — says nothing
 # about the role, but survives sentence-level boilerplate stripping because the
@@ -99,13 +99,64 @@ def _company_name_re(company: str) -> re.Pattern | None:
 
 def _doc(job: JobPosting, descriptions: dict[str, str], name_res: dict[str, re.Pattern | None]) -> str:
     desc = descriptions.get(job.key, job.description)
-    # Safety net: a fetcher that forgets to strip_html (or a cached corpus from
-    # before it was fixed) would otherwise let tag/style tokens (li, h3, span
-    # style, font weight, nbsp) dominate the TF-IDF space and form spurious
-    # markup clusters. Idempotent on already-plain text.
-    text = strip_html(f"{job.title}\n{job.location}\n{desc}")[:20000]
+    # Location is deliberately excluded: it's already a hard filter (every scored
+    # posting has passed the location gate), so city tokens carry no *fit* signal
+    # among the survivors — they only let K-means carve out spurious location
+    # clusters ("new york, york, locations") that bucket strong skill matches by
+    # city instead of role and demote them. Title + description only.
+    # Safety net: strip_html here too, so a fetcher that forgets to strip_html (or
+    # a cached corpus from before it was fixed) can't let tag/style tokens (li, h3,
+    # span style, font weight, nbsp) dominate the space. Idempotent on plain text.
+    text = strip_html(f"{job.title}\n{desc}")[:20000]
     name_re = name_res.get(job.company)
     return name_re.sub(" ", text) if name_re else text
+
+
+# A term in at least this share of ONE company's postings but in less than
+# COMPANY_SIGNATURE_GLOBAL_DF of the whole corpus identifies that company (its
+# product names, mission phrasing, benefits/interview templates) rather than a
+# transferable skill — see _decluster_company_signatures.
+COMPANY_SIGNATURE_IN_DF = 0.6
+COMPANY_SIGNATURE_GLOBAL_DF = 0.05
+COMPANY_SIGNATURE_MIN_POSTINGS = 5
+
+
+def _decluster_company_signatures(X, corpus: list[JobPosting]):
+    """Return a copy of the TF-IDF matrix with each company's *signature* terms
+    zeroed on that company's own rows, then re-normalized — used for CLUSTERING
+    ONLY. Left in, these terms make K-means recover company authorship: several
+    clusters collapse to a single company (Asana, Lyft, Jane Street), and their
+    affinity then reflects the company's average posting, demoting genuinely
+    strong roles there (docs/analysis-scoring-skew.md). The direct resume cosine
+    is computed from the untouched matrix, so this changes only which cluster a
+    posting lands in, never its (dominant) similarity term."""
+    from scipy.sparse import csr_matrix
+
+    n = X.shape[0]
+    present = X > 0
+    global_df = np.asarray(present.sum(axis=0)).ravel() / n
+    rows_by_company: dict[str, list[int]] = defaultdict(list)
+    for i, job in enumerate(corpus):
+        rows_by_company[job.company].append(i)
+
+    rows_idx: list[int] = []
+    cols_idx: list[int] = []
+    for rows in rows_by_company.values():
+        if len(rows) < COMPANY_SIGNATURE_MIN_POSTINGS:
+            continue
+        in_df = np.asarray(present[rows].sum(axis=0)).ravel() / len(rows)
+        signature = np.where((in_df >= COMPANY_SIGNATURE_IN_DF) &
+                             (global_df < COMPANY_SIGNATURE_GLOBAL_DF))[0]
+        if not len(signature):
+            continue
+        for r in rows:
+            rows_idx.extend([r] * len(signature))
+            cols_idx.extend(signature.tolist())
+
+    if not rows_idx:
+        return X
+    mask = csr_matrix((np.ones(len(rows_idx)), (rows_idx, cols_idx)), shape=X.shape)
+    return normalize(X - X.multiply(mask))
 
 
 def pick_cluster_count(n_jobs: int, configured) -> int:
@@ -298,6 +349,7 @@ def score_jobs(
     clusters="auto",
     corpus: list[JobPosting] | None = None,
     cluster_weight: float = CLUSTER_WEIGHT,
+    decluster_company_signatures: bool = True,
     return_topics: bool = False,
     return_explanation: bool = False,
 ):
@@ -339,6 +391,12 @@ def score_jobs(
     X_corpus = normalize(vectorizer.fit_transform([_doc(j, descriptions, name_res) for j in corpus]))
     resume_vec = normalize(vectorizer.transform([resume_text])).toarray().ravel()
 
+    # Cluster on a company-de-signatured copy so K-means groups by transferable
+    # skill vocabulary, not company authorship; keep the untouched X_corpus for
+    # the direct resume cosine (the dominant fit term).
+    X_cluster = (_decluster_company_signatures(X_corpus, corpus)
+                 if decluster_company_signatures else X_corpus)
+
     n_clusters = pick_cluster_count(len(corpus), clusters)
     centroids = None
     if n_clusters > 1:
@@ -347,7 +405,7 @@ def score_jobs(
             n_init=3 if len(corpus) > 2000 else 10,
             random_state=0,
         )
-        corpus_labels = km.fit_predict(X_corpus)
+        corpus_labels = km.fit_predict(X_cluster)
         centroids = normalize(km.cluster_centers_)
         cluster_affinity = centroids @ resume_vec
         topics = cluster_topics(vectorizer, centroids)

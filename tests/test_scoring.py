@@ -91,6 +91,62 @@ def test_boilerplate_stripped():
     assert boiler in cleaned[solo.key]
 
 
+def test_location_excluded_from_vectorized_doc():
+    """Location is a hard filter, not a fit signal: city tokens must NOT reach the
+    TF-IDF document, or K-means carves out spurious "new york" location clusters
+    that bucket strong skill matches by city and demote them."""
+    from jobsearch.scoring import _doc
+
+    job = JobPosting(company="Acme", title="Backend Engineer",
+                     location="Poughkeepsie, New York", url="", job_id="1",
+                     description="Build Python microservices on AWS Lambda.")
+    text = _doc(job, {}, {"Acme": None}).lower()
+    assert "poughkeepsie" not in text          # the location token is gone
+    assert "python microservices" in text      # role text survives
+    assert "backend engineer" in text          # title survives
+
+
+def test_two_jobs_differing_only_in_location_score_equally():
+    """Identical postings in different cities must earn the same fit — location
+    carries no fit signal (regression guard for the location-skew fix)."""
+    desc = BACKEND_DESC + " Platform reliability and payments."
+    ny = JobPosting(company="Acme", title="Senior Software Engineer", location="New York",
+                    url="", job_id="ny", description=desc)
+    sf = JobPosting(company="Acme", title="Senior Software Engineer", location="Remote - Boise, Idaho",
+                    url="", job_id="sf", description=desc)
+    score_jobs(RESUME, [ny, sf], clusters=1)
+    assert ny.fit_score == sf.fit_score
+
+
+def test_decluster_zeroes_company_signature_but_keeps_cross_company_skills(monkeypatch):
+    """A term concentrated in one company (its signature) is zeroed for
+    clustering, while a skill term shared across companies survives — so K-means
+    groups by skill, not authorship. (Thresholds are relaxed for the tiny test
+    corpus; on the real corpus a company's postings are < 5% of the whole.)"""
+    import jobsearch.scoring as scoring
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import normalize
+
+    monkeypatch.setattr(scoring, "COMPANY_SIGNATURE_GLOBAL_DF", 0.6)
+    monkeypatch.setattr(scoring, "COMPANY_SIGNATURE_MIN_POSTINGS", 5)
+
+    jobs = []
+    for i in range(6):  # Acme: a unique signature word + a shared skill word
+        jobs.append(JobPosting(company="Acme", title="e", location="NY", url="",
+                               job_id=f"a{i}", description=f"acmesignature python role{i}"))
+    for i in range(6):  # others share "python" so it is cross-company (protected)
+        jobs.append(JobPosting(company=f"Other{i % 3}", title="e", location="NY", url="",
+                               job_id=f"o{i}", description=f"python react role{i}"))
+    vec = TfidfVectorizer(min_df=1)
+    X = normalize(vec.fit_transform(j.description for j in jobs))
+    terms = list(vec.get_feature_names_out())
+    stripped = scoring._decluster_company_signatures(X, jobs)
+
+    sig, skill = terms.index("acmesignature"), terms.index("python")
+    assert stripped[:6, sig].nnz == 0     # Acme's signature term zeroed on its rows
+    assert stripped[:6, skill].nnz == 6   # the cross-company skill term survives
+
+
 def test_boilerplate_changes_scores():
     """Shared marketing text matching the resume must not lift a whole company."""
     boiler = ("We build observability, distributed systems, Kafka, AWS Lambda, "

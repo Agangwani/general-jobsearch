@@ -21,8 +21,9 @@ import json
 import sys
 from pathlib import Path
 
-from jobsearch.config import load_settings
+from jobsearch.config import load_settings, registry_entries
 from jobsearch.tracks import build_track
+from jobsearch.utils import normalize_company_name
 
 from . import db
 
@@ -65,13 +66,17 @@ def _to_record(raw: dict, descriptions: dict[str, str]) -> dict | None:
     }
 
 
-def _ingest_report(root, conn, track, now: str) -> tuple[dict[str, int], set[str], str]:
-    """Ingest one track's latest.json. Returns (counts, report_keys, report_date).
+def _ingest_report(root, conn, track, now: str):
+    """Ingest one track's latest.json. Returns
+    (counts, report_keys, report_date, job_counts, present) where job_counts
+    maps normalized company name → postings seen this run (feeds the companies
+    registry search-state) and present is False when the track has no report.
     A missing report is not an error — that track may not have been run yet."""
     counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    job_counts: dict[str, int] = {}
     report_path = track.reports_dir / "latest.json"
     if not report_path.exists():
-        return counts, set(), ""
+        return counts, set(), "", job_counts, False
     report = json.loads(report_path.read_text())
     descriptions = _load_descriptions(track.corpus_dir)
     report_keys: set[str] = set()
@@ -81,7 +86,48 @@ def _ingest_report(root, conn, track, now: str) -> tuple[dict[str, int], set[str
             continue
         report_keys.add(record["key"])
         counts[db.upsert_job(conn, record, now=now)] += 1
-    return counts, report_keys, report.get("generated", "")[:10]
+        ckey = normalize_company_name(record["company"])
+        if ckey:
+            job_counts[ckey] = job_counts.get(ckey, 0) + 1
+    return counts, report_keys, report.get("generated", "")[:10], job_counts, True
+
+
+def _ingest_registry(root, conn, settings, track, job_counts: dict[str, int],
+                     now: str) -> dict[str, int]:
+    """Mirror the track's live registry into the companies table: upsert each
+    current company (tagged curated/discovered), stamp per-company search-state
+    from this run, disable companies no longer in the registry, and log the run.
+    Keeps the companies table reflecting exactly what the pipeline fetched, so a
+    dropped company never lingers as enabled.
+
+    Registry sync is best-effort: a malformed registry YAML (hand-edited
+    companies.yaml, corrupted generated file) must never abort an ingest that
+    the pipeline fetch already earned — it degrades to a no-op, mirroring the
+    per-board graceful-degradation the pipeline itself uses."""
+    try:
+        entries = registry_entries(root, settings, track)
+    except Exception as exc:  # noqa: BLE001 - a bad registry must not abort ingest
+        print(f"Registry sync skipped for {track.name}: {exc}", file=sys.stderr)
+        return {"total": 0, "new": 0, "disabled": 0}
+    keep: set[str] = set()
+    new = 0
+    for entry in entries:
+        key = normalize_company_name(entry["name"])
+        if not key:
+            continue
+        keep.add(key)
+        if db.upsert_company(conn, entry, track=track.name, now=now) == "inserted":
+            new += 1
+        db.touch_company_search(conn, db.LOCAL_USER_ID, track.name, key,
+                                job_counts.get(key, 0), now)
+    disabled = db.disable_absent_companies(conn, db.LOCAL_USER_ID, track.name,
+                                           keep, now)
+    db.record_company_search_run(
+        conn, db.LOCAL_USER_ID, track.name, "ingest",
+        companies_total=len(keep), companies_new=new,
+        companies_disabled=disabled, jobs_found=sum(job_counts.values()), now=now)
+    conn.commit()
+    return {"total": len(keep), "new": new, "disabled": disabled}
 
 
 def _ingest_startup_meta(root, conn, track) -> int:
@@ -117,18 +163,32 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     counts = {"inserted": 0, "updated": 0, "unchanged": 0}
     report_keys: set[str] = set()
     report_date = ""
+    present_tracks: list[tuple] = []
     for track in (main_track, startup_track):
-        track_counts, keys, date = _ingest_report(root, conn, track, now)
+        track_counts, keys, date, job_counts, present = _ingest_report(
+            root, conn, track, now)
         for k, v in track_counts.items():
             counts[k] += v
         report_keys |= keys
         report_date = report_date or date
+        if present:
+            present_tracks.append((track, job_counts))
 
     # Startup facts + per-job flags. Metadata first so the flag pass sees the
     # freshly-loaded companies; flags run unconditionally so a job already in the
     # DB gets tagged once its company becomes known.
     startups_loaded = _ingest_startup_meta(root, conn, startup_track)
     flagged = db.refresh_startup_flags(conn)
+
+    # Mirror each run track's live registry into the companies table (tracking
+    # layer + search-state); only tracks that actually ran (have a report) sync,
+    # so a never-run track's registry isn't stamped as "searched".
+    companies_synced = 0
+    companies_new = 0
+    for track, job_counts in present_tracks:
+        summary = _ingest_registry(root, conn, settings, track, job_counts, now)
+        companies_synced += summary["total"]
+        companies_new += summary["new"]
 
     conn.execute(
         "INSERT INTO runs (ingested_at, report_date, jobs_inserted, jobs_updated, jobs_total) "
@@ -138,7 +198,8 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     conn.commit()
     print(f"Ingest: {counts['inserted']} inserted, {counts['updated']} patched, "
           f"{counts['unchanged']} unchanged; {startups_loaded} startup profiles, "
-          f"{flagged} startup flags updated", file=sys.stderr)
+          f"{flagged} startup flags updated; {companies_synced} companies tracked "
+          f"({companies_new} new)", file=sys.stderr)
 
     # Diagnostic: the dashboard shows every job ever ingested, not just this
     # run's. If a previous run targeted different roles those jobs persist in
@@ -152,6 +213,8 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
               "to focus on this run.", file=sys.stderr)
     counts["stale_unapplied"] = stale
     counts["startups_loaded"] = startups_loaded
+    counts["companies_synced"] = companies_synced
+    counts["companies_new"] = companies_new
     return counts
 
 

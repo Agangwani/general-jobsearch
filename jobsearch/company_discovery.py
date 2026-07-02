@@ -107,6 +107,32 @@ def filter_oversized(
     return kept, dropped
 
 
+def filter_funding(
+    leads: list[CompanyLead], max_raised: float
+) -> tuple[list[CompanyLead], list[CompanyLead]]:
+    """Split leads into (kept, dropped) by a total-raised ceiling (USD). A lead is
+    dropped only when it carries a *known* funding figure above `max_raised` —
+    leads with no funding data are always kept (mirroring filter_oversized's
+    unknown-is-kept contract). Falls back to the most-recent-round amount when
+    total_raised is blank, since the free text sources mine `last_round_amount`
+    far more often than a cumulative `total_raised`. `max_raised <= 0` disables."""
+    from .startups import parse_money
+
+    if max_raised <= 0:
+        return list(leads), []
+    kept, dropped = [], []
+    for lead in leads:
+        meta = lead.meta or {}
+        # Fall back to last_round_amount when total_raised doesn't yield a number
+        # — not merely when it's empty. A truthy-but-unparseable total_raised
+        # ("Undisclosed", "N/A", "Series A") must not mask a real round figure.
+        amount = parse_money(meta.get("total_raised"))
+        if amount is None:
+            amount = parse_money(meta.get("last_round_amount"))
+        (dropped if amount is not None and amount > max_raised else kept).append(lead)
+    return kept, dropped
+
+
 def _own_name_re(name: str) -> re.Pattern | None:
     """The lead's own name must not score as evidence (same defense as
     scoring._company_name_re for postings)."""
@@ -304,11 +330,27 @@ def emit_registry(
 
 # --------------------------------------------------------------- CLI entry ---
 
-def enrich_meta(lead: CompanyLead) -> dict:
+def _build_edgar_enricher(discovery: dict, session):
+    """A `name -> {"total_raised": …}` callable when startups.enrich.edgar is on,
+    else None. Bound to the discovery HTTP session and the configured SEC contact
+    User-Agent."""
+    enrich = discovery.get("enrich") or {}
+    if not enrich.get("edgar"):
+        return None
+    from .funding_edgar import DEFAULT_SEC_CONTACT_UA, edgar_total_raised
+
+    contact_ua = enrich.get("sec_user_agent") or DEFAULT_SEC_CONTACT_UA
+    return lambda name: edgar_total_raised(session, name, contact_ua=contact_ua)
+
+
+def enrich_meta(lead: CompanyLead, edgar=None) -> dict:
     """The metadata record for one lead: whatever a structured source supplied
     (`lead.meta`, e.g. Y Combinator) folded together with funding/people facts
     mined from its free-text evidence (HN blurbs, descriptions). Always carries
-    a name and a source so the UI has something to show."""
+    a name and a source so the UI has something to show. When `edgar` is given
+    (a callable name -> {"total_raised": …}) it backfills a real total-raised
+    from SEC Form D; merge_meta only fills empty scalars, so it never clobbers a
+    figure a structured source or the user already supplied."""
     from .startups import extract_funding, extract_people, merge_meta
 
     blurb = "\n".join(lead.titles + lead.snippets)
@@ -318,15 +360,22 @@ def enrich_meta(lead: CompanyLead) -> dict:
     if people:
         text_meta["notable_people"] = people
     meta = merge_meta(lead.meta, text_meta)
+    if edgar is not None and not meta.get("total_raised"):
+        try:
+            meta = merge_meta(meta, edgar(lead.name) or {})
+        except Exception:  # noqa: BLE001 — enrichment must never sink discovery
+            pass
     meta.setdefault("name", lead.name)
     if not meta.get("source"):
         meta["source"] = "+".join(lead.sources)
     return meta
 
 
-def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | None = None) -> None:
+def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | None = None,
+                       edgar=None) -> None:
     """Write data/startup_meta.json: normalized company name → metadata, read by
-    the tracker ingest to populate the startup_companies table."""
+    the tracker ingest to populate the startup_companies table. `edgar` is an
+    optional total-raised enricher passed through to enrich_meta."""
     import json
 
     now = now or datetime.now(timezone.utc)
@@ -334,7 +383,7 @@ def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | Non
     for lead in leads:
         key = normalize_company_name(lead.name)
         if key:
-            companies[key] = enrich_meta(lead)
+            companies[key] = enrich_meta(lead, edgar=edgar)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(
         {"generated": now.isoformat(), "companies": companies}, indent=2) + "\n")
@@ -417,6 +466,12 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
             names = ", ".join(sorted(l.name for l in oversized))
             print(f"Dropped {len(oversized)} companies over {max_employees} "
                   f"employees (not startups): {names}")
+        max_raised = float(discovery.get("max_raised", 0) or 0)
+        merged, overfunded = filter_funding(merged, max_raised)
+        if overfunded:
+            names = ", ".join(sorted(l.name for l in overfunded))
+            print(f"Dropped {len(overfunded)} companies over ${max_raised:,.0f} "
+                  f"raised (too late-stage): {names}")
     known = {normalize_company_name(c.name) for c in companies}
     known |= {normalize_company_name(str(entry.get("name", ""))) for entry in manual}
     exclude = {normalize_company_name(x) for x in track.exclude}
@@ -457,7 +512,11 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
     print(f"\nWrote {out_path} — {len(resolved)} boards, "
           f"{len(unresolved)} manual-check entries.")
     if track.is_startup and track.meta_file:
-        write_meta_sidecar(track.meta_file, top)
+        edgar = _build_edgar_enricher(discovery, session)
+        if edgar is not None:
+            print(f"Enriching {len(top)} startups with SEC Form D total-raised "
+                  "(best-effort; most tiny/SAFE/non-US startups won't have a filing)…")
+        write_meta_sidecar(track.meta_file, top, edgar=edgar)
         print(f"Wrote {track.meta_file} — metadata for {len(top)} startups.")
         print("Next: python -m jobsearch verify --startups   (catch wrong/dead boards)")
         print("      python -m jobsearch run-startups          (fetch + score them)")
