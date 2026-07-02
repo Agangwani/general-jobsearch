@@ -447,7 +447,8 @@ def maybe_run_discovery(root: Path, settings: dict, track, now: float | None = N
     print(f"Refreshing {track.name} company registry (discovery on run)...",
           file=sys.stderr)
     try:
-        discover_companies(root, track_name=track.name)
+        discover_companies(root, track_name=track.name,
+                           user_id=getattr(track, "user_id", "local"))
     except Exception as exc:  # noqa: BLE001 - discovery must never abort the run
         print(f"Discovery failed for {track.name} ({exc}); using the existing "
               "registry.", file=sys.stderr)
@@ -472,14 +473,14 @@ def maybe_run_discovery(root: Path, settings: dict, track, now: float | None = N
 
 
 def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
-                       track_name: str = "main") -> int:
+                       track_name: str = "main", user_id: str = "local") -> int:
     from .http import make_session
     from .resume import extract_keywords, load_resume_text
     from .sources import SOURCES, SourceSkip
     from .tracks import build_track
 
     settings = load_settings(root / "config" / "settings.yaml")
-    track = build_track(root, settings, track_name)
+    track = build_track(root, settings, track_name, user_id)
     discovery = track.discovery
     # Dedupe new leads against this track's curated seed (companies.yaml for the
     # main track, the optional config/startups.yaml for the startup track).
@@ -488,7 +489,7 @@ def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
     else:
         companies, manual = [], []
 
-    resume_text, is_sample = load_resume_text(root, settings)
+    resume_text, is_sample = load_resume_text(root, settings, user_id)
     if is_sample:
         print("NOTE: no resume at data/resume.txt — discovering companies for "
               "the bundled sample resume. Upload yours first for a registry "

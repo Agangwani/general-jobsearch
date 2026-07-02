@@ -758,6 +758,7 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 f"/resume?error={quote_plus('file too large (max 10 MB)')}",
                 status_code=303)
         name = (file.filename or "").lower()
+        pdf_name = ""
         try:
             if name.endswith(".pdf"):
                 if not data.startswith(b"%PDF"):
@@ -766,8 +767,8 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
                 (root / "data" / "resume.pdf").write_bytes(data)
                 # Remember the original filename so auto-apply attaches the
                 # resume under the same name the user uploaded.
-                (root / "data" / "resume.pdf.name").write_text(
-                    Path(file.filename or "resume.pdf").name)
+                pdf_name = Path(file.filename or "resume.pdf").name
+                (root / "data" / "resume.pdf.name").write_text(pdf_name)
             elif name.endswith((".txt", ".md")):
                 text = data.decode("utf-8", errors="replace").strip()
                 if len(text) < 100:
@@ -777,8 +778,13 @@ def create_app(root: Path, db_path: Path | None = None) -> FastAPI:
         except ValueError as exc:
             return RedirectResponse(f"/resume?error={quote_plus(str(exc))}",
                                     status_code=303)
+        uid = auth.current_user_id(request)
+        # Store the resume in the DB (durable / hosted-safe — the pipeline reads
+        # it per-user via load_resume_text), and keep the file for local runs +
+        # the PDF that auto-apply attaches.
+        db.set_resume(conn, uid, text, pdf_name)
         (root / "data" / "resume.txt").write_text(text + "\n")
-        profile.reseed_from_resume(conn, text, user_id=auth.current_user_id(request))
+        profile.reseed_from_resume(conn, text, user_id=uid)
         return RedirectResponse("/resume?uploaded=1", status_code=303)
 
     @app.post("/resume/run")

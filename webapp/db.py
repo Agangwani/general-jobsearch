@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS profile_fields (
     UNIQUE(user_id, field)
 );
 
+-- Per-user resume text (Stage 2b): the durable, hosted-safe store the pipeline
+-- scores against — the filesystem is ephemeral on hosted deploys, so the raw
+-- resume can't live only in data/resume.txt. One row per user; pdf_name lets
+-- auto-apply attach the resume under its original filename.
+CREATE TABLE IF NOT EXISTS user_resumes (
+    user_id     TEXT PRIMARY KEY DEFAULT 'local',
+    resume_text TEXT NOT NULL DEFAULT '',
+    pdf_name    TEXT DEFAULT '',
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY,
     ingested_at   TEXT NOT NULL,
@@ -1743,6 +1754,41 @@ def record_company_search_run(conn: sqlite3.Connection, user_id: str, track: str
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (user_id, track, now, source, int(companies_total), int(companies_new),
          int(companies_disabled), int(jobs_found)))
+
+
+# ------------------------------------------------------- per-user resume ---
+def get_resume(conn: sqlite3.Connection, user_id: str = LOCAL_USER_ID) -> str | None:
+    """The user's stored resume text, or None if they have none (caller then
+    falls back to the file / bundled sample)."""
+    row = conn.execute(
+        "SELECT resume_text FROM user_resumes WHERE user_id = ?",
+        (user_id,)).fetchone()
+    return row["resume_text"] if row and row["resume_text"] else None
+
+
+def get_resume_meta(conn: sqlite3.Connection,
+                    user_id: str = LOCAL_USER_ID) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM user_resumes WHERE user_id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_resume(conn: sqlite3.Connection, user_id: str, text: str,
+               pdf_name: str = "", now: str | None = None) -> None:
+    """Store (or replace) a user's resume text. Select-then-write so it works on
+    SQLite and Postgres without ON CONFLICT."""
+    now = now or utcnow()
+    exists = conn.execute(
+        "SELECT 1 FROM user_resumes WHERE user_id = ?", (user_id,)).fetchone()
+    if exists:
+        conn.execute(
+            "UPDATE user_resumes SET resume_text = ?, pdf_name = ?, updated_at = ? "
+            "WHERE user_id = ?", (text, pdf_name, now, user_id))
+    else:
+        conn.execute(
+            "INSERT INTO user_resumes (user_id, resume_text, pdf_name, updated_at) "
+            "VALUES (?, ?, ?, ?)", (user_id, text, pdf_name, now))
+    conn.commit()
 
 
 # ------------------------------------------------------------ hosted accounts ---

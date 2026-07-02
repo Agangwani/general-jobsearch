@@ -241,7 +241,7 @@ def test_maybe_run_discovery_off_by_default(tmp_path, monkeypatch):
 def test_maybe_run_discovery_runs_when_enabled(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(company_discovery, "discover_companies",
-                        lambda root, track_name="main": calls.append(track_name) or 0)
+                        lambda root, track_name="main", user_id="local": calls.append(track_name) or 0)
     settings, track = _main_track(tmp_path, on_run=True)
     assert maybe_run_discovery(tmp_path, settings, track) is True
     assert calls == ["main"]
@@ -297,7 +297,7 @@ def test_maybe_run_discovery_rejects_degraded_refresh(tmp_path, monkeypatch):
     prior_mtime = track.registry_file.stat().st_mtime
 
     monkeypatch.setattr(company_discovery, "discover_companies",
-        lambda root, track_name="main": track.registry_file.write_text(_registry_yaml(2)) or 0)
+        lambda root, track_name="main", user_id="local": track.registry_file.write_text(_registry_yaml(2)) or 0)
     assert maybe_run_discovery(tmp_path, settings, track) is False   # rejected
     assert _registry_company_count(track.registry_file.read_text()) == 20   # prior kept
     assert track.registry_file.stat().st_mtime == prior_mtime       # mtime restored → retry
@@ -308,14 +308,14 @@ def test_maybe_run_discovery_accepts_healthy_refresh(tmp_path, monkeypatch):
     track.registry_file.parent.mkdir(parents=True, exist_ok=True)
     track.registry_file.write_text(_registry_yaml(20))
     monkeypatch.setattr(company_discovery, "discover_companies",
-        lambda root, track_name="main": track.registry_file.write_text(_registry_yaml(18)) or 0)
+        lambda root, track_name="main", user_id="local": track.registry_file.write_text(_registry_yaml(18)) or 0)
     assert maybe_run_discovery(tmp_path, settings, track) is True    # >= 50% of prior
     assert _registry_company_count(track.registry_file.read_text()) == 18
 
 
 def test_maybe_run_discovery_accepts_when_no_prior(tmp_path, monkeypatch):
     settings, track = _main_track(tmp_path, on_run=True)             # nothing to protect
-    def _write(root, track_name="main"):
+    def _write(root, track_name="main", user_id="local"):
         track.registry_file.parent.mkdir(parents=True, exist_ok=True)
         track.registry_file.write_text(_registry_yaml(3))
         return 0

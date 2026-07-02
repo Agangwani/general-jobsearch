@@ -66,8 +66,8 @@ def _to_record(raw: dict, descriptions: dict[str, str]) -> dict | None:
     }
 
 
-def _ingest_report(root, conn, track, now: str):
-    """Ingest one track's latest.json. Returns
+def _ingest_report(root, conn, track, now: str, user_id: str = db.LOCAL_USER_ID):
+    """Ingest one track's latest.json for a user. Returns
     (counts, report_keys, report_date, job_counts, present) where job_counts
     maps normalized company name → postings seen this run (feeds the companies
     registry search-state) and present is False when the track has no report.
@@ -85,7 +85,7 @@ def _ingest_report(root, conn, track, now: str):
         if record is None:
             continue
         report_keys.add(record["key"])
-        counts[db.upsert_job(conn, record, now=now)] += 1
+        counts[db.upsert_job(conn, record, now=now, user_id=user_id)] += 1
         ckey = normalize_company_name(record["company"])
         if ckey:
             job_counts[ckey] = job_counts.get(ckey, 0) + 1
@@ -93,7 +93,7 @@ def _ingest_report(root, conn, track, now: str):
 
 
 def _ingest_registry(root, conn, settings, track, job_counts: dict[str, int],
-                     now: str) -> dict[str, int]:
+                     now: str, user_id: str = db.LOCAL_USER_ID) -> dict[str, int]:
     """Mirror the track's live registry into the companies table: upsert each
     current company (tagged curated/discovered), stamp per-company search-state
     from this run, disable companies no longer in the registry, and log the run.
@@ -116,21 +116,21 @@ def _ingest_registry(root, conn, settings, track, job_counts: dict[str, int],
         if not key:
             continue
         keep.add(key)
-        if db.upsert_company(conn, entry, track=track.name, now=now) == "inserted":
+        if db.upsert_company(conn, entry, user_id=user_id, track=track.name,
+                             now=now) == "inserted":
             new += 1
-        db.touch_company_search(conn, db.LOCAL_USER_ID, track.name, key,
+        db.touch_company_search(conn, user_id, track.name, key,
                                 job_counts.get(key, 0), now)
-    disabled = db.disable_absent_companies(conn, db.LOCAL_USER_ID, track.name,
-                                           keep, now)
+    disabled = db.disable_absent_companies(conn, user_id, track.name, keep, now)
     db.record_company_search_run(
-        conn, db.LOCAL_USER_ID, track.name, "ingest",
+        conn, user_id, track.name, "ingest",
         companies_total=len(keep), companies_new=new,
         companies_disabled=disabled, jobs_found=sum(job_counts.values()), now=now)
     conn.commit()
     return {"total": len(keep), "new": new, "disabled": disabled}
 
 
-def _ingest_startup_meta(root, conn, track) -> int:
+def _ingest_startup_meta(root, conn, track, user_id: str = db.LOCAL_USER_ID) -> int:
     """Load the startup metadata sidecar into startup_companies. Returns the
     number of companies upserted (skips ones a user has edited in the UI)."""
     if not track.meta_file or not track.meta_file.exists():
@@ -141,17 +141,18 @@ def _ingest_startup_meta(root, conn, track) -> int:
         return 0
     n = 0
     for meta in (payload.get("companies") or {}).values():
-        if db.upsert_startup_company(conn, meta) != "skipped":
+        if db.upsert_startup_company(conn, meta, user_id=user_id) != "skipped":
             n += 1
     conn.commit()
     return n
 
 
-def ingest_latest(root: Path, conn) -> dict[str, int]:
-    """Ingest every track's latest report, then refresh startup facts + flags."""
+def ingest_latest(root: Path, conn, user_id: str = db.LOCAL_USER_ID) -> dict[str, int]:
+    """Ingest every track's latest report for a user, then refresh that user's
+    startup facts + flags."""
     settings = load_settings(root / "config" / "settings.yaml")
-    main_track = build_track(root, settings, "main")
-    startup_track = build_track(root, settings, "startups")
+    main_track = build_track(root, settings, "main", user_id)
+    startup_track = build_track(root, settings, "startups", user_id)
 
     if not (main_track.reports_dir / "latest.json").exists() and \
        not (startup_track.reports_dir / "latest.json").exists():
@@ -166,7 +167,7 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     present_tracks: list[tuple] = []
     for track in (main_track, startup_track):
         track_counts, keys, date, job_counts, present = _ingest_report(
-            root, conn, track, now)
+            root, conn, track, now, user_id)
         for k, v in track_counts.items():
             counts[k] += v
         report_keys |= keys
@@ -177,8 +178,8 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     # Startup facts + per-job flags. Metadata first so the flag pass sees the
     # freshly-loaded companies; flags run unconditionally so a job already in the
     # DB gets tagged once its company becomes known.
-    startups_loaded = _ingest_startup_meta(root, conn, startup_track)
-    flagged = db.refresh_startup_flags(conn)
+    startups_loaded = _ingest_startup_meta(root, conn, startup_track, user_id)
+    flagged = db.refresh_startup_flags(conn, user_id)
 
     # Mirror each run track's live registry into the companies table (tracking
     # layer + search-state); only tracks that actually ran (have a report) sync,
@@ -186,7 +187,7 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     companies_synced = 0
     companies_new = 0
     for track, job_counts in present_tracks:
-        summary = _ingest_registry(root, conn, settings, track, job_counts, now)
+        summary = _ingest_registry(root, conn, settings, track, job_counts, now, user_id)
         companies_synced += summary["total"]
         companies_new += summary["new"]
 
@@ -205,7 +206,7 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     # run's. If a previous run targeted different roles those jobs persist in
     # the to-apply stack. Surface how many so a "why am I still seeing old
     # roles?" result is explained rather than mysterious.
-    stale = _count_stale_to_apply(conn, report_keys)
+    stale = _count_stale_to_apply(conn, report_keys, user_id)
     if stale:
         print(f"Note: {stale} unapplied job(s) in the dashboard are NOT in these "
               "reports — they're from earlier runs (possibly a different role "
@@ -218,10 +219,11 @@ def ingest_latest(root: Path, conn) -> dict[str, int]:
     return counts
 
 
-def _count_stale_to_apply(conn, report_keys: set[str]) -> int:
+def _count_stale_to_apply(conn, report_keys: set[str],
+                          user_id: str = db.LOCAL_USER_ID) -> int:
     """Count not-applied jobs in the DB that are absent from the current
     reports — i.e. carried over from earlier runs."""
     rows = conn.execute(
         "SELECT j.key FROM jobs j JOIN applications a ON a.job_id = j.id "
-        "WHERE a.status = 'not_applied'").fetchall()
+        "WHERE a.status = 'not_applied' AND j.user_id = ?", (user_id,)).fetchall()
     return sum(1 for r in rows if r["key"] not in report_keys)
