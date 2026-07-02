@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+from ..filters import JobFilter
 from ..http import get_json
 from ..models import Company, JobPosting
 from ..utils import parse_when, strip_html
 
 PAGE_SIZE = 50
 MAX_PAGES = 4
+
+
+def enrich_descriptions(jobs: list[JobPosting], session, base_url: str, domain: str,
+                        settings: dict) -> None:
+    """The Eightfold list endpoint returns positions without `job_description`
+    for some tenants (Netflix, Morgan Stanley), so those roles reach scoring on
+    their title alone and are under-ranked. Pull the body from the per-job
+    detail endpoint (same base as the working list call) for filter-passing
+    jobs only, bounded like the Workday fetcher. Best-effort — a failure leaves
+    the title, which still scores."""
+    job_filter = JobFilter(settings.get("search", {}))
+    max_details = settings.get("fetch", {}).get("max_detail_requests", 40)
+    detailed = 0
+    for job in jobs:
+        if job.description.strip() or detailed >= max_details or not job_filter.matches(job):
+            continue
+        try:
+            data = get_json(session, f"{base_url}/api/apply/v2/jobs/{job.job_id}",
+                            params={"domain": domain})
+            position = data.get("position") or data
+            body = strip_html(position.get("job_description", "") or "").strip()
+            if body:
+                job.description = body
+                detailed += 1
+        except Exception:  # noqa: BLE001 — description is best-effort; title still scores
+            continue
 
 
 def parse_job(raw: dict, company_name: str, base_url: str) -> JobPosting:
@@ -45,6 +72,7 @@ def fetch(company: Company, session, settings: dict) -> list[JobPosting]:
         jobs.extend(parse_job(raw, company.name, base_url) for raw in positions)
         if len(positions) < PAGE_SIZE:
             break
+    enrich_descriptions(jobs, session, base_url, domain, settings)
     return jobs
 
 

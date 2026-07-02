@@ -5,6 +5,7 @@ import yaml
 
 from jobsearch.company_discovery import (
     emit_registry,
+    filter_funding,
     filter_known,
     filter_oversized,
     hosted_board_url,
@@ -64,6 +65,35 @@ def test_filter_oversized_drops_known_enterprises_keeps_unknown_size():
     # A zero/negative ceiling disables the guard entirely.
     kept_all, dropped_none = filter_oversized(leads, max_employees=0)
     assert len(kept_all) == 3 and dropped_none == []
+
+
+def test_filter_funding_drops_overfunded_falls_back_to_last_round_keeps_unknown():
+    leads = [
+        CompanyLead(name="LateStage", meta={"total_raised": "$800M"}),   # dropped
+        CompanyLead(name="MidRound", meta={"last_round_amount": "$20M"}),  # kept (fallback)
+        CompanyLead(name="NoFunding"),                                    # kept (unknown)
+    ]
+    kept, dropped = filter_funding(leads, max_raised=500_000_000)
+    assert [lead.name for lead in kept] == ["MidRound", "NoFunding"]
+    assert [lead.name for lead in dropped] == ["LateStage"]
+    # A zero/negative ceiling disables the guard entirely.
+    kept_all, dropped_none = filter_funding(leads, max_raised=0)
+    assert len(kept_all) == 3 and dropped_none == []
+
+
+def test_filter_funding_falls_back_when_total_raised_is_unparseable():
+    # A truthy-but-unparseable total_raised ("Undisclosed") must not mask a real
+    # last_round_amount that exceeds the ceiling.
+    over = CompanyLead(name="Over", meta={"total_raised": "Undisclosed",
+                                          "last_round_amount": "$300M"})
+    # A parseable total_raised under the ceiling wins and is NOT overridden by a
+    # larger last_round_amount.
+    under = CompanyLead(name="Under", meta={"total_raised": "$10M",
+                                            "last_round_amount": "$999M"})
+    unknown = CompanyLead(name="Unknown", meta={"total_raised": "N/A"})
+    kept, dropped = filter_funding([over, under, unknown], max_raised=50_000_000)
+    assert [l.name for l in dropped] == ["Over"]
+    assert [l.name for l in kept] == ["Under", "Unknown"]
 
 
 def test_rank_leads_prefers_resume_relevant_evidence():

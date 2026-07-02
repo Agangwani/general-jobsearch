@@ -1,8 +1,19 @@
 """Offline tests for browser-fetcher parsing (captured-XHR fixtures, no browser)."""
 
-from jobsearch.fetchers import deshaw, goldman, janestreet, jpmorgan, millennium, tiktok
-from jobsearch.models import Company
+from jobsearch.fetchers import deshaw, eightfold, goldman, janestreet, jpmorgan, microsoft, millennium, tiktok
+from jobsearch.models import Company, JobPosting
 from jobsearch.utils import first, walk_collect
+
+
+class _MatchAll:
+    """Stand-in JobFilter that passes every job, so description-enrichment tests
+    exercise the enrichment logic without depending on filter config."""
+
+    def __init__(self, _search):
+        pass
+
+    def matches(self, _job):
+        return True
 
 
 def test_walk_collect_finds_nested_records():
@@ -87,6 +98,60 @@ def test_janestreet_json_and_dom_fallback():
     dom_jobs = janestreet.parse_links(links, "Jane Street")
     assert len(dom_jobs) == 1
     assert dom_jobs[0].title == "Software Engineer"
+
+
+def test_microsoft_enrich_populates_description(monkeypatch):
+    """The search endpoint returns title-only stubs; enrichment must pull the
+    body from the per-job detail endpoint and strip HTML (regression guard for
+    the empty-description skew — whole companies were scored on title alone)."""
+    monkeypatch.setattr(microsoft, "JobFilter", _MatchAll)
+    monkeypatch.setattr(microsoft, "get_json", lambda session, url, params=None: {
+        "operationResult": {"result": {
+            "description": "<p>Build distributed backend systems.</p>",
+            "responsibilities": "Own reliability.", "qualifications": "5+ years."}}})
+    job = JobPosting(company="Microsoft", title="Senior Software Engineer",
+                     location="New York", url="", job_id="42", description="", source="microsoft")
+    microsoft.enrich_descriptions([job], object(), {})
+    assert "distributed backend systems" in job.description
+    assert "reliability" in job.description
+    assert "<" not in job.description  # HTML stripped
+
+
+def test_microsoft_enrich_is_graceful_on_error(monkeypatch):
+    """A failed detail fetch must not abort the run; the title-only posting
+    survives (it still scores on its title)."""
+    def boom(*a, **k):
+        raise RuntimeError("502 from detail API")
+    monkeypatch.setattr(microsoft, "JobFilter", _MatchAll)
+    monkeypatch.setattr(microsoft, "get_json", boom)
+    job = JobPosting(company="Microsoft", title="Senior Software Engineer",
+                     location="New York", url="", job_id="1", description="", source="microsoft")
+    microsoft.enrich_descriptions([job], object(), {})  # must not raise
+    assert job.description == ""
+
+
+def test_eightfold_enrich_populates_description(monkeypatch):
+    monkeypatch.setattr(eightfold, "JobFilter", _MatchAll)
+    monkeypatch.setattr(eightfold, "get_json", lambda session, url, params=None: {
+        "position": {"job_description": "<ul><li>Kafka, Python, distributed systems</li></ul>"}})
+    job = JobPosting(company="Netflix", title="Senior Software Engineer",
+                     location="New York", url="", job_id="9", description="", source="eightfold")
+    eightfold.enrich_descriptions([job], object(), "https://netflix.eightfold.ai", "netflix", {})
+    assert "Kafka" in job.description and "<" not in job.description
+
+
+def test_eightfold_enrich_skips_jobs_that_already_have_a_description(monkeypatch):
+    """Enrichment must not overwrite a description the list endpoint already
+    provided, and must not fire a needless detail request."""
+    calls = []
+    monkeypatch.setattr(eightfold, "JobFilter", _MatchAll)
+    monkeypatch.setattr(eightfold, "get_json",
+                        lambda *a, **k: calls.append(1) or {"position": {}})
+    job = JobPosting(company="Netflix", title="SWE", location="NY", url="", job_id="9",
+                     description="Already have the full body.", source="eightfold")
+    eightfold.enrich_descriptions([job], object(), "https://x.eightfold.ai", "netflix", {})
+    assert job.description == "Already have the full body."
+    assert calls == []
 
 
 def test_janestreet_strips_html_from_description():

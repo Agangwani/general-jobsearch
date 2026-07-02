@@ -154,14 +154,64 @@ def _write_role_profile(root: Path, settings: dict, profile) -> None:
     path.write_text(json.dumps(profile.to_dict(), indent=2))
 
 
+def apply_startup_search_knobs(settings: dict, cfg: dict) -> None:
+    """Apply the startup track's relaxed search/ranking knobs onto `settings`
+    in place, only for keys the startups: config actually sets. Safe to call
+    before role targeting — none of these are overwritten by apply_profile."""
+    search = settings.setdefault("search", {})
+    ranking = settings.setdefault("ranking", {})
+    if "include_remote" in cfg:
+        search["include_remote"] = bool(cfg["include_remote"])
+    if "remote_min_pay" in cfg:
+        search["remote_min_pay"] = int(cfg["remote_min_pay"] or 0)
+    for key in ("max_age_days", "near_miss_count"):
+        if key in cfg:
+            ranking[key] = cfg[key]
+
+
+_ENGINEERING_HINTS = (
+    "engineer", "developer", "software", "data", "machine learning",
+    "ml", "devops", "sre", "programmer", "technical",
+)
+
+
+def _profile_is_engineering(profile) -> bool:
+    """Whether the resume-matched role is engineering-ish, so the SWE-flavored
+    extra_title_include patterns are appropriate. A None profile means manual /
+    low-confidence targeting, which falls back to the SWE-default settings, so
+    appending is consistent there too."""
+    if profile is None:
+        return True
+    hay = " ".join(getattr(profile, "occupations", []) or []).lower()
+    return any(hint in hay for hint in _ENGINEERING_HINTS)
+
+
+def append_startup_titles(settings: dict, cfg: dict) -> int:
+    """Append cfg['extra_title_include'] onto the (already role-targeted)
+    title_include in place. Returns how many patterns were added. Must run
+    AFTER apply_profile so the patterns survive its overwrite."""
+    extra = cfg.get("extra_title_include") or []
+    if not extra:
+        return 0
+    search = settings.setdefault("search", {})
+    search["title_include"] = list(search.get("title_include") or []) + list(extra)
+    return len(extra)
+
+
 def run(root: Path, track_name: str = "main") -> int:
     from .tracks import build_track
 
     settings = load_settings(root / "config" / "settings.yaml")
     track = build_track(root, settings, track_name)
-    # The startups track chases its own city; the role/ranking knobs are shared.
-    if track.is_startup and track.locations:
-        settings["search"]["locations"] = track.locations
+    # The startups track chases its own city and can loosen the role/location
+    # gate independently of the strict main search — startups are remote-heavy,
+    # post flatter/unleveled titles, and post less frequently. These overrides
+    # read from the startups: config block and touch only this run's in-memory
+    # settings, so the two pipelines stay isolated (separate reports/seen/corpus).
+    if track.is_startup:
+        if track.locations:
+            settings["search"]["locations"] = track.locations
+        apply_startup_search_knobs(settings, track.discovery)
     # main: curated companies.yaml + the resume-tailored generated registry.
     # startups: the startup registry built by `discover-startups`.
     companies, manual_check = load_registry(root, settings, track)
@@ -203,6 +253,18 @@ def run(root: Path, track_name: str = "main") -> int:
         print("Role targeting off (manual or low-confidence match) — using the "
               "title filters in config/settings.yaml.", file=sys.stderr)
 
+    # Startup-only extra title patterns (Founding / Forward-Deployed / Member of
+    # Technical Staff / de-leveled SWE). Appended AFTER apply_profile, which
+    # overwrites title_include with the occupation's senior-biased patterns, so
+    # these survive and admit the flatter titles startups actually post. Gated on
+    # an engineering-ish resume so a non-engineering profile (e.g. Customer
+    # Success) doesn't get software-engineer titles grafted into its startup search.
+    if track.is_startup and _profile_is_engineering(profile):
+        added = append_startup_titles(settings, track.discovery)
+        if added:
+            print(f"Startup track: +{added} extra title patterns "
+                  "(founding/forward-deployed/de-leveled).", file=sys.stderr)
+
     print(f"Fetching boards for {sum(c.enabled for c in companies)} companies...", file=sys.stderr)
     all_jobs, errors = fetch_all(companies, settings)
     all_jobs = dedupe(all_jobs)
@@ -240,7 +302,8 @@ def run(root: Path, track_name: str = "main") -> int:
         jobs + near_miss,
         clusters=ranking.get("clusters", "auto"),
         corpus=all_jobs,
-        cluster_weight=ranking.get("cluster_weight", 0.15),
+        cluster_weight=ranking.get("cluster_weight", 0.05),
+        decluster_company_signatures=ranking.get("decluster_company_signatures", True),
         return_topics=True,
         return_explanation=True,
     )

@@ -12,9 +12,38 @@ from jobsearch.startups import (
     extract_funding,
     extract_people,
     find_investors,
+    format_money,
     merge_meta,
+    parse_money,
 )
 from jobsearch.tracks import build_track
+
+
+# --------------------------------------------------------- money parsing ---
+def test_parse_money_handles_the_shapes_we_store():
+    assert parse_money("$25M") == 25_000_000
+    assert parse_money("$1.5 billion") == 1_500_000_000
+    assert parse_money("$750k") == 750_000
+    assert parse_money("$3,000,000") == 3_000_000
+    assert parse_money("1.5B") == 1_500_000_000          # normalized _norm_amount form
+    assert parse_money("211967") == 211_967              # bare SEC Form D dollars
+    assert parse_money("") is None                       # unknown-is-None contract
+    assert parse_money(None) is None
+    assert parse_money("Series A") is None               # no figure -> unknown
+
+
+def test_format_money_compacts():
+    assert format_money(211_967) == "$212K"
+    assert format_money(6_000_000) == "$6M"
+    assert format_money(25_000_000) == "$25M"
+    assert format_money(1_500_000_000) == "$1.5B"
+    # 3-digit millions/billions must NOT come out as scientific notation
+    # (regression: :.2g emitted "$2e+02M" for $200M).
+    assert format_money(200_000_000) == "$200M"
+    assert format_money(270_000_000) == "$270M"
+    assert format_money(160_000_000) == "$160M"
+    assert "e" not in format_money(200_000_000)
+    assert format_money(2_000_000_000) == "$2B"
 
 
 # ------------------------------------------------------------- YC source ---

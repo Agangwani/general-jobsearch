@@ -144,6 +144,27 @@ def test_startup_upsert_and_list(pgconn):
     assert wibble["is_hiring"] is True
 
 
+def test_companies_registry_roundtrip(pgconn):
+    from webapp import db
+
+    assert db.upsert_company(pgconn, {
+        "name": "Ramp", "ats": "ashby", "careers_url": "https://ramp",
+        "tags": ["discovered"], "params": {"org": "ramp"},
+        "source": "discovered"}, track="startups") == "inserted"
+    db.touch_company_search(pgconn, db.LOCAL_USER_ID, "startups", "ramp", 4)
+    row = db.get_company(pgconn, db.LOCAL_USER_ID, "startups", "ramp")
+    assert row["tags"] == ["discovered"] and row["params"] == {"org": "ramp"}  # TEXT JSON
+    assert row["last_found_jobs"] == 4 and row["enabled"] is True
+    # UNIQUE(user_id, track, company_key): same key, other track is independent.
+    assert db.upsert_company(pgconn, {"name": "Ramp", "ats": "greenhouse"},
+                             track="main") == "inserted"
+    assert db.disable_absent_companies(pgconn, db.LOCAL_USER_ID, "startups", set()) == 1
+    assert db.get_company(pgconn, db.LOCAL_USER_ID, "startups", "ramp")["enabled"] is False
+    assert db.get_company(pgconn, db.LOCAL_USER_ID, "main", "ramp")["enabled"] is True
+    db.record_company_search_run(pgconn, db.LOCAL_USER_ID, "main", "ingest", 1, 1, 0, 4)
+    assert len(db.list_companies(pgconn)) == 2  # LOWER(name) ordering runs on PG
+
+
 def test_prep_seed_named_params(pgconn):
     from jobsearch.prep.seed import seed_into_db
     from webapp import db
