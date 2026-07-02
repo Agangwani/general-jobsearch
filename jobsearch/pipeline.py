@@ -212,6 +212,11 @@ def run(root: Path, track_name: str = "main") -> int:
         if track.locations:
             settings["search"]["locations"] = track.locations
         apply_startup_search_knobs(settings, track.discovery)
+    # Fresh companies every run: refresh the discovered registry before loading
+    # it (gated by <track>.on_run + throttled by min_interval_minutes; best-
+    # effort, so a discovery failure leaves the existing registry in place).
+    from .company_discovery import maybe_run_discovery
+    maybe_run_discovery(root, settings, track)
     # main: curated companies.yaml + the resume-tailored generated registry.
     # startups: the startup registry built by `discover-startups`.
     companies, manual_check = load_registry(root, settings, track)

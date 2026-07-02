@@ -119,6 +119,17 @@ discovery:
   # Where the generated registry lands (gitignored: it derives from your
   # resume). Delete the file to fall back to the curated registry alone.
   output_file: data/companies.discovered.yaml
+  # Refresh the discovered registry at the start of every `run`, so each run
+  # searches for fresh companies instead of only the curated list + the last
+  # generated registry. The curated companies.yaml is always searched (the
+  # exploit watchlist); discovery adds freshly-surfaced companies (explore).
+  # Off by default in code so the offline test suite and ad-hoc CLI runs don't
+  # hit the network; enabled here for real runs.
+  on_run: true
+  # Throttle: skip the on-run refresh if the registry was regenerated within
+  # this many minutes (0 = refresh every run). Keeps rapid re-runs from
+  # re-hitting the aggregator APIs.
+  min_interval_minutes: 0
 
 # Startup pipeline (`python -m jobsearch discover-startups` + `run-startups`):
 # a parallel, second pipeline that searches *startups* in a given city, scores
@@ -157,6 +168,12 @@ startups:
   # back to exclude_companies. 0 disables (current: list more, no funding cap).
   # The total_raised figure is enriched from SEC Form D below when available.
   max_raised: 0
+  # Refresh the startup registry at the start of every `run-startups`. The YC
+  # directory is a mostly-static universe (unlike the main track's job-board
+  # stream) and startup discovery also enriches funding via SEC EDGAR, which is
+  # slow — so this refreshes on a cadence rather than literally every run.
+  on_run: true
+  min_interval_minutes: 720   # ~12h; the YC universe changes slowly
   # Relaxed matching for the startup RUN (run-startups), applied only to this
   # track so the main search stays strict. Startups are remote-heavy, post
   # flatter/unleveled and "founding/forward-deployed" titles, and post less

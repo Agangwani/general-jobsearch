@@ -389,6 +389,88 @@ def write_meta_sidecar(path: Path, leads: list[CompanyLead], now: datetime | Non
         {"generated": now.isoformat(), "companies": companies}, indent=2) + "\n")
 
 
+def _registry_company_count(text: str | None) -> int:
+    """Number of companies in a generated registry's YAML text (0 for
+    missing/empty/malformed — treated as 'nothing to protect')."""
+    if not text:
+        return 0
+    try:
+        raw = yaml.safe_load(text) or {}
+        return len(raw.get("companies") or [])
+    except yaml.YAMLError:
+        return 0
+
+
+def maybe_run_discovery(root: Path, settings: dict, track, now: float | None = None) -> bool:
+    """Refresh a track's discovered registry at the start of a run, so each run
+    searches for fresh companies rather than only the curated list plus the last
+    generated registry. The curated companies.yaml is always searched (the
+    exploit watchlist); discovery adds freshly-surfaced companies (explore).
+
+    Controlled per track by ``<track>.on_run`` (default False in code so the
+    offline test suite and ad-hoc CLI runs never hit the network unless opted in
+    via config/settings.yaml) and throttled by ``<track>.min_interval_minutes``
+    (skip if the registry was regenerated within that window — 0 = every run).
+
+    Degradation guard: ``discover_companies`` regenerates the registry from
+    scratch and overwrites it whenever it finds >=1 fresh lead, so a partial
+    source outage (some aggregators down) would replace a healthy registry with
+    a tiny one and — under the mtime throttle — lock that shrunken set in until
+    the window elapses. To prevent silent coverage loss, if the refreshed
+    registry has fewer than ``min_registry_fraction`` (default 0.5) of the prior
+    company count, the prior registry's content AND mtime are restored so the
+    next run retries instead of running a degraded search.
+
+    Best-effort: any discovery failure is logged and the run proceeds with the
+    existing registry (mirrors the pipeline's per-board graceful degradation).
+    Returns True iff a fresh registry was accepted."""
+    import os
+    import time
+
+    cfg = track.discovery or {}
+    if not cfg.get("on_run", False):
+        return False
+    reg = track.registry_file
+    interval = cfg.get("min_interval_minutes", 0) or 0
+    if interval > 0 and reg.exists():
+        now = time.time() if now is None else now
+        age_min = (now - reg.stat().st_mtime) / 60.0
+        if age_min < interval:
+            print(f"Discovery skipped for {track.name}: registry refreshed "
+                  f"{age_min:.0f}m ago (< {interval}m throttle).", file=sys.stderr)
+            return False
+
+    prior_text = reg.read_text() if reg.exists() else None
+    prior_count = _registry_company_count(prior_text)
+    prior_mtime = reg.stat().st_mtime if reg.exists() else None
+
+    print(f"Refreshing {track.name} company registry (discovery on run)...",
+          file=sys.stderr)
+    try:
+        discover_companies(root, track_name=track.name)
+    except Exception as exc:  # noqa: BLE001 - discovery must never abort the run
+        print(f"Discovery failed for {track.name} ({exc}); using the existing "
+              "registry.", file=sys.stderr)
+        return False
+
+    # Reject a degraded refresh: keep the healthier prior registry (content +
+    # mtime) so the throttle doesn't lock a shrunken set in and the next run
+    # retries. Only guards when there was a prior registry to protect.
+    new_count = _registry_company_count(reg.read_text() if reg.exists() else None)
+    fraction = cfg.get("min_registry_fraction", 0.5)
+    floor = max(1, int(prior_count * fraction))
+    if prior_text is not None and prior_count > 0 and new_count < floor:
+        reg.write_text(prior_text)
+        if prior_mtime is not None:
+            os.utime(reg, (prior_mtime, prior_mtime))
+        print(f"Discovery for {track.name} yielded {new_count} companies vs "
+              f"{prior_count} previously (< {floor}) — likely a transient source "
+              "outage; kept the prior registry and will retry next run.",
+              file=sys.stderr)
+        return False
+    return True
+
+
 def discover_companies(root: Path, limit: int = 0, dry_run: bool = False,
                        track_name: str = "main") -> int:
     from .http import make_session

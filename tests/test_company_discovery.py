@@ -3,18 +3,22 @@ category inference, registry emission, and load-time merging — all offline."""
 
 import yaml
 
+import jobsearch.company_discovery as company_discovery
 from jobsearch.company_discovery import (
     emit_registry,
     filter_funding,
     filter_known,
     filter_oversized,
+    _registry_company_count,
     hosted_board_url,
     infer_categories,
+    maybe_run_discovery,
     merge_leads,
     rank_leads,
 )
 from jobsearch.config import load_companies, load_registry, load_settings
 from jobsearch.models import CompanyLead
+from jobsearch.tracks import build_track
 from jobsearch.utils import normalize_company_name
 
 
@@ -215,3 +219,106 @@ def test_load_registry_merges_curated_wins_and_excludes(tmp_path):
     assert companies[0].ats == "greenhouse"  # the curated Stripe, not the discovered one
     assert [m["name"] for m in manual] == ["LinkedIn", "Mystery Startup"]
     assert manual[0]["careers_url"] == "https://careers.linkedin.com"
+
+
+# -------------------------------------------- discovery-on-run (Stage 3) ---
+def _main_track(tmp_path, **discovery):
+    settings = load_settings(tmp_path / "config" / "settings.yaml")
+    settings["discovery"] = {"output_file": "data/companies.discovered.yaml",
+                             **discovery}
+    return settings, build_track(tmp_path, settings, "main")
+
+
+def test_maybe_run_discovery_off_by_default(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(company_discovery, "discover_companies",
+                        lambda *a, **k: calls.append(a) or 0)
+    settings, track = _main_track(tmp_path)                 # no on_run key
+    assert maybe_run_discovery(tmp_path, settings, track) is False
+    assert calls == []                                     # never touched the network
+
+
+def test_maybe_run_discovery_runs_when_enabled(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(company_discovery, "discover_companies",
+                        lambda root, track_name="main": calls.append(track_name) or 0)
+    settings, track = _main_track(tmp_path, on_run=True)
+    assert maybe_run_discovery(tmp_path, settings, track) is True
+    assert calls == ["main"]
+
+
+def test_maybe_run_discovery_throttled_by_interval(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(company_discovery, "discover_companies",
+                        lambda *a, **k: calls.append(a) or 0)
+    settings, track = _main_track(tmp_path, on_run=True, min_interval_minutes=5)
+    track.registry_file.parent.mkdir(parents=True, exist_ok=True)
+    track.registry_file.write_text("companies: []\n")
+    mtime = track.registry_file.stat().st_mtime
+    # Regenerated 1 min ago (< 5) → skipped; 10 min ago (> 5) → runs.
+    assert maybe_run_discovery(tmp_path, settings, track, now=mtime + 60) is False
+    assert calls == []
+    assert maybe_run_discovery(tmp_path, settings, track, now=mtime + 600) is True
+    assert calls == [(tmp_path,)]
+
+
+def test_maybe_run_discovery_interval_absent_registry_runs(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(company_discovery, "discover_companies",
+                        lambda *a, **k: calls.append(a) or 0)
+    settings, track = _main_track(tmp_path, on_run=True, min_interval_minutes=60)
+    assert not track.registry_file.exists()               # nothing generated yet
+    assert maybe_run_discovery(tmp_path, settings, track) is True
+
+
+def test_maybe_run_discovery_failure_does_not_raise(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("aggregator down")
+    monkeypatch.setattr(company_discovery, "discover_companies", boom)
+    settings, track = _main_track(tmp_path, on_run=True)
+    # Best-effort: a discovery failure is swallowed so the run proceeds.
+    assert maybe_run_discovery(tmp_path, settings, track) is False
+
+
+def _registry_yaml(n):
+    return yaml.safe_dump({"companies": [
+        {"name": f"Co{i}", "ats": "greenhouse", "board": f"co{i}"} for i in range(n)]})
+
+
+def test_maybe_run_discovery_rejects_degraded_refresh(tmp_path, monkeypatch):
+    """A partial source outage that shrinks the registry must not replace a
+    healthy one — the prior content AND mtime are restored so the next run
+    retries instead of locking a degraded set behind the throttle."""
+    import os
+    settings, track = _main_track(tmp_path, on_run=True)
+    track.registry_file.parent.mkdir(parents=True, exist_ok=True)
+    track.registry_file.write_text(_registry_yaml(20))               # healthy prior
+    os.utime(track.registry_file, (1_000_000, 1_000_000))            # a known old mtime
+    prior_mtime = track.registry_file.stat().st_mtime
+
+    monkeypatch.setattr(company_discovery, "discover_companies",
+        lambda root, track_name="main": track.registry_file.write_text(_registry_yaml(2)) or 0)
+    assert maybe_run_discovery(tmp_path, settings, track) is False   # rejected
+    assert _registry_company_count(track.registry_file.read_text()) == 20   # prior kept
+    assert track.registry_file.stat().st_mtime == prior_mtime       # mtime restored → retry
+
+
+def test_maybe_run_discovery_accepts_healthy_refresh(tmp_path, monkeypatch):
+    settings, track = _main_track(tmp_path, on_run=True)
+    track.registry_file.parent.mkdir(parents=True, exist_ok=True)
+    track.registry_file.write_text(_registry_yaml(20))
+    monkeypatch.setattr(company_discovery, "discover_companies",
+        lambda root, track_name="main": track.registry_file.write_text(_registry_yaml(18)) or 0)
+    assert maybe_run_discovery(tmp_path, settings, track) is True    # >= 50% of prior
+    assert _registry_company_count(track.registry_file.read_text()) == 18
+
+
+def test_maybe_run_discovery_accepts_when_no_prior(tmp_path, monkeypatch):
+    settings, track = _main_track(tmp_path, on_run=True)             # nothing to protect
+    def _write(root, track_name="main"):
+        track.registry_file.parent.mkdir(parents=True, exist_ok=True)
+        track.registry_file.write_text(_registry_yaml(3))
+        return 0
+    monkeypatch.setattr(company_discovery, "discover_companies", _write)
+    assert maybe_run_discovery(tmp_path, settings, track) is True
+    assert _registry_company_count(track.registry_file.read_text()) == 3
