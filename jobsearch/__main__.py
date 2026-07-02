@@ -19,6 +19,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parent.parent,
         help="Project root containing config/, data/, reports/ (default: repo root)",
     )
+    parser.add_argument(
+        "--user",
+        default="local",
+        help="Run for a specific user id (hosted multi-user). Namespaces this "
+        "user's resume, registry, reports, and seen-state; defaults to the "
+        "single-user 'local' owner.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Fetch, rank, and write the daily report")
     sub.add_parser("run-startups", help="Run the parallel startup pipeline "
@@ -67,9 +74,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return pipeline.run(args.root)
+        return pipeline.run(args.root, user_id=args.user)
     if args.command == "run-startups":
-        return pipeline.run(args.root, track_name="startups")
+        return pipeline.run(args.root, track_name="startups", user_id=args.user)
     if args.command == "verify":
         return pipeline.verify(args.root, track_name="startups" if args.startups else "main")
     if args.command == "discover":
@@ -77,11 +84,12 @@ def main(argv: list[str] | None = None) -> int:
         return discover(args.root, args.company, careers_url=args.url)
     if args.command == "discover-companies":
         from .company_discovery import discover_companies
-        return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run)
+        return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run,
+                                  user_id=args.user)
     if args.command == "discover-startups":
         from .company_discovery import discover_companies
         return discover_companies(args.root, limit=args.limit, dry_run=args.dry_run,
-                                  track_name="startups")
+                                  track_name="startups", user_id=args.user)
     if args.command == "discover-ats-boards":
         from .sources.commoncrawl import discover_ats_boards_command
         return discover_ats_boards_command(args.root, limit=args.limit)
@@ -89,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         from webapp import db as webdb
         from webapp.ingest import ingest_latest
         conn = webdb.connect(args.root / "data" / "jobsearch.db")
-        ingest_latest(args.root, conn)
+        ingest_latest(args.root, conn, user_id=args.user)
         return 0
     if args.command == "ui":
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.allow_remote:

@@ -198,11 +198,11 @@ def append_startup_titles(settings: dict, cfg: dict) -> int:
     return len(extra)
 
 
-def run(root: Path, track_name: str = "main") -> int:
+def run(root: Path, track_name: str = "main", user_id: str = "local") -> int:
     from .tracks import build_track
 
     settings = load_settings(root / "config" / "settings.yaml")
-    track = build_track(root, settings, track_name)
+    track = build_track(root, settings, track_name, user_id)
     # The startups track chases its own city and can loosen the role/location
     # gate independently of the strict main search — startups are remote-heavy,
     # post flatter/unleveled titles, and post less frequently. These overrides
@@ -224,7 +224,7 @@ def run(root: Path, track_name: str = "main") -> int:
         print(f"Startup track: {sum(c.enabled for c in companies)} startup "
               f"companies in scope (from {track.registry_file.name}).", file=sys.stderr)
     from .resume import load_resume_text
-    resume_text, is_sample = load_resume_text(root, settings)
+    resume_text, is_sample = load_resume_text(root, settings, user_id)
     if is_sample:
         print("NOTE: no resume found at data/resume.txt — scoring against the "
               "bundled sample resume. Upload yours on the /resume page of the "
